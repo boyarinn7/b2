@@ -3,6 +3,7 @@ name: Ежедневный запуск скрипта main.py
 on:
   schedule:
     - cron: '0 0 * * *'  # Запуск каждый день в 00:00 UTC
+  workflow_dispatch:       # Добавляет возможность ручного запуска
 
 jobs:
   run-script:
