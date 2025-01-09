@@ -1,0 +1,9 @@
+{
+    "LEARNING": {
+        "success_threshold": 15,
+        "delete_threshold": 3
+    },
+    "METRICS": {
+        "flesch_threshold": 70
+    }
+}
