@@ -24,5 +24,5 @@ jobs:
           pip install -r requirements.txt
 
       - name: Запуск скрипта
-        run: python core/scripts/main.py
+        run: python scripts/main.py
  
