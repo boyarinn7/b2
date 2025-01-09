@@ -1,5 +1,4 @@
-name: Daily Automation
-
+name: Run Main Script
 on:
   schedule:
     - cron: '0 0 * * *' # Запуск каждый день в 00:00 UTC
@@ -24,4 +23,4 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Main Script
-      run: python core/scripts/main.py
+      run: python scripts/main.py
