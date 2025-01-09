@@ -1,0 +1,23 @@
+# Устанавливаем CRLF для всех текстовых файлов
+* text=auto eol=crlf
+
+# Явно задаем LF для Python-скриптов
+*.py text eol=lf
+
+# JSON-файлы также всегда с LF
+*.json text eol=lf
+
+# Конфигурационные файлы с LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Shell-скрипты с LF
+*.sh text eol=lf
+
+# Игнорируем перевод строк в бинарных файлах
+*.jpg -text
+*.png -text
+*.gif -text
+*.exe -text
+*.dll -text
+
