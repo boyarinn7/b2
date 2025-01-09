@@ -24,4 +24,4 @@ jobs:
           pip install -r requirements.txt
           
       - name: Запуск скрипта
-        run: python core/scripts/main.py
+        run: python /home/runner/work/b2_autonomous_system/b2_autonomous_system/core/scripts/main.py
