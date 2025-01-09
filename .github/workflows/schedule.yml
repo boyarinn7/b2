@@ -3,7 +3,7 @@ name: Daily Automation
 on:
   schedule:
     - cron: '0 0 * * *' # Запуск каждый день в 00:00 UTC
-  workflow_dispatch: # Ручной запуск через GitHub
+  workflow_dispatch: # Ручной запуск
 
 jobs:
   run-main:
@@ -24,5 +24,4 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Main Script
-      run: |
-        python core/scripts/main.py
+      run: python core/scripts/main.py
