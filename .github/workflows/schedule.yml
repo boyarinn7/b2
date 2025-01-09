@@ -1,8 +1,8 @@
-name: Запустить основной скрипт
+name: Run Main Script
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Запуск каждый день в 00:00 UTC
+    - cron: '0 0 * * *'  # Запуск ежедневно в 00:00 UTC
   workflow_dispatch:  # Ручной запуск
 
 jobs:
@@ -24,10 +24,14 @@ jobs:
         pip install -r requirements.txt
 
     - name: Set PYTHONPATH
-      run: echo "PYTHONPATH=$(pwd)/core" >> $GITHUB_ENV
+      run: |
+        echo "PYTHONPATH=$(pwd)/core" >> $GITHUB_ENV
+        echo "PYTHONPATH set to: $(pwd)/core"
+
+    - name: Debug PYTHONPATH
+      run: echo $PYTHONPATH
 
     - name: Run Main Script
       run: python scripts/main.py
       env:
         PYTHONPATH: ${{ github.workspace }}/core
-
