@@ -16,13 +16,12 @@ jobs:
       - name: Установка Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'  # Укажите вашу версию Python
+          python-version: '3.9'  # Укажите вашу версию Python
 
       - name: Установка зависимостей
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
+          
       - name: Запуск скрипта
-        run: python scripts/main.py
- 
+        run: python core/scripts/main.py
