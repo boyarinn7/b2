@@ -27,7 +27,7 @@ jobs:
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
 
     - name: Debug PYTHONPATH
-      run: echo "PYTHONPATH is set to: $PYTHONPATH"
+      run: echo "PYTHONPATH is set to :$PYTHONPATH"
 
     - name: Ensure required directories and files exist
       run: |
