@@ -27,16 +27,30 @@ jobs:
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
 
     - name: Debug PYTHONPATH
-      run: echo $PYTHONPATH
+      run: echo "PYTHONPATH is set to: $PYTHONPATH"
 
-    - name: Verify focus_tracker.json
+    - name: Ensure required directories and files exist
       run: |
+        # Проверка и создание директории data
+        if [ ! -d core/data ]; then
+          echo "Директория core/data отсутствует. Создаём её."
+          mkdir -p core/data
+        fi
+
+        # Проверка и создание файла focus_tracker.json
         if [ ! -f core/data/focus_tracker.json ]; then
           echo "Файл focus_tracker.json отсутствует. Создаём его."
-          mkdir -p core/data
           echo "[]" > core/data/focus_tracker.json
         else
           echo "Файл focus_tracker.json найден."
+        fi
+
+        # Проверка и создание файла feedback_report.json
+        if [ ! -f core/data/feedback_report.json ]; then
+          echo "Файл feedback_report.json отсутствует. Создаём его."
+          echo "{}" > core/data/feedback_report.json
+        else
+          echo "Файл feedback_report.json найден."
         fi
 
     - name: Run Main Script

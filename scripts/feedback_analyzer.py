@@ -103,6 +103,9 @@ class FeedbackAnalyzer:
     def save_report(self, analysis_result):
         """Сохранение отчёта анализа."""
         try:
+            if not self.feedback_report:
+                handle_error("Feedback Report Path Error", "Путь для отчёта анализа не задан.")
+                return
             ensure_directory_exists(os.path.dirname(self.feedback_report))
             with open(self.feedback_report, 'w', encoding='utf-8') as file:
                 json.dump(analysis_result, file, ensure_ascii=False, indent=4)

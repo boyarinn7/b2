@@ -33,7 +33,7 @@
         "content_output_path": "core/generated_content.json",
         "final_content_path": "final_content.json",
         "feedback_file": "data/feedback.json",
-        "feedback_report": "feedback_report.json",
+        "feedback_report": "data/feedback_report.json",
         "dynamic_config": "config/config_dynamic.json",
         "archive_config": "config/config_archive.json",
         "core_config": "config/config_core.json",
