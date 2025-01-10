@@ -6,6 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="fc4f12ea-b8f5-48ce-bb55-4db1b564beda" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/generated_content.json" beforeDir="false" afterPath="$PROJECT_DIR$/generated_content.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/logs/config_manager.log" beforeDir="false" afterPath="$PROJECT_DIR$/logs/config_manager.log" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/generate_content.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/generate_content.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />

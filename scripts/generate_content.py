@@ -11,10 +11,10 @@ import re
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
 
 from datetime import datetime
-from logger import get_logger
-from error_handler import handle_error
-from utils import ensure_directory_exists
-from config_manager import ConfigManager
+from modules. logger import get_logger
+from modules. error_handler import handle_error
+from modules. utils import ensure_directory_exists
+from modules. config_manager import ConfigManager
 
 # === Инициализация ===
 logger = get_logger("generate_content")
@@ -49,7 +49,7 @@ class ContentGenerator:
     def analyze_seo(self, content):
         """
         SEO-анализ текста через Ubersuggest или SEMrush API.
-        Возвращает SEO-метрики, такие как плотность ключевых слов и рекомендации.
+        Возвращает SEO-метрики, такие, как плотность ключевых слов и рекомендации.
         """
         try:
             logger.info("🔍 Выполняется SEO-анализ текста...")
@@ -209,7 +209,7 @@ class ContentGenerator:
             logger.info("🔍 Анализ генерации тем: обратная связь, архив и последние фокусы...")
 
             # === 1. Загрузка обратной связи ===
-            feedback_path = config.get('FILE_PATHS.feedback_file', 'core/data/feedback.json')
+            feedback_path = config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
             if os.path.exists(feedback_path):
                 with open(feedback_path, 'r', encoding='utf-8') as file:
                     feedback_data = json.load(file)
@@ -220,7 +220,7 @@ class ContentGenerator:
                 logger.warning("⚠️ Файл обратной связи не найден.")
 
             # === 2. Анализ архива успешных публикаций ===
-            archive_folder = config.get('FILE_PATHS.archive_folder', 'core/archive/')
+            archive_folder = config.get('FILE_PATHS.archive_folder', 'archive/')
             successful_topics = []
             if os.path.exists(archive_folder):
                 for filename in os.listdir(archive_folder):
