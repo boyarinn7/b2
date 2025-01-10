@@ -24,7 +24,7 @@
     "FILE_PATHS": {
         "meta_folder": "data/meta/",
         "focus_tracker": "core/data/focus_tracker.json",
-        "archive_folder": "archive/",
+        "archive_folder": "data/archive/",
         "folder_444": "444/",
         "folder_555": "555/",
         "folder_666": "666/",
