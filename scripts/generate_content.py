@@ -10,6 +10,10 @@ import re
 # Добавляем путь к директории modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
 
+
+print(f"Текущая рабочая директория: {os.getcwd()}")
+
+
 from datetime import datetime
 from modules. logger import get_logger
 from modules. error_handler import handle_error
