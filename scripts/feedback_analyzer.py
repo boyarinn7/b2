@@ -12,8 +12,8 @@ config = ConfigManager()
 logger = get_logger("feedback_analyzer")
 
 # === Константы ===
-FEEDBACK_FILE = config.get('FILE_PATHS.feedback_file', 'core/data/feedback.json')
-FEEDBACK_REPORT = config.get('FILE_PATHS.feedback_report', 'core/feedback_report.json')
+FEEDBACK_FILE = config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
+FEEDBACK_REPORT = config.get('FILE_PATHS.feedback_report', 'feedback_report.json')
 SUCCESS_THRESHOLD = config.get('METRICS.success_threshold', 8)
 DELETE_THRESHOLD = config.get('METRICS.delete_threshold', 3)
 RATING_COEFFICIENTS = config.get('METRICS.rating_coefficients', {
