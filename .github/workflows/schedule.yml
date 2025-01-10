@@ -31,32 +31,29 @@ jobs:
 
     - name: Ensure required directories and files exist
       run: |
-        # Проверка и создание директории data
+        # Check and create the data directory
         if [ ! -d core/data ]; then
-          echo "Директория core/data отсутствует. Создаём её."
+          echo "Directory core/data is missing. Creating it."
           mkdir -p core/data
         fi
 
-        # Проверка и создание файла focus_tracker.json
+        # Check and create the focus_tracker.json file
         if [ ! -f core/data/focus_tracker.json ]; then
-          echo "Файл focus_tracker.json отсутствует. Создаём его."
+          echo "File focus_tracker.json is missing. Creating it."
           echo "[]" > core/data/focus_tracker.json
         else
-          echo "Файл focus_tracker.json найден."
+          echo "File focus_tracker.json found."
         fi
 
-        # Проверка и создание файла feedback_report.json
+        # Check and create the feedback_report.json file
         if [ ! -f core/data/feedback_report.json ]; then
-          echo "Файл feedback_report.json отсутствует. Создаём его."
+          echo "File feedback_report.json is missing. Creating it."
           echo "{}" > core/data/feedback_report.json
         else
-          echo "Файл feedback_report.json найден."
+          echo "File feedback_report.json found."
         fi
 
     - name: Run Main Script
       run: python scripts/main.py
       env:
         PYTHONPATH: ${{ github.workspace }}
-      # В конце файла добавьте
-       #
-
