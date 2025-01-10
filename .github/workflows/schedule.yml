@@ -29,6 +29,16 @@ jobs:
     - name: Debug PYTHONPATH
       run: echo $PYTHONPATH
 
+    - name: Verify focus_tracker.json
+      run: |
+        if [ ! -f core/data/focus_tracker.json ]; then
+          echo "Файл focus_tracker.json отсутствует. Создаём его."
+          mkdir -p core/data
+          echo "[]" > core/data/focus_tracker.json
+        else
+          echo "Файл focus_tracker.json найден."
+        fi
+
     - name: Run Main Script
       run: python scripts/main.py
       env:
