@@ -449,7 +449,7 @@ class ContentGenerator:
         Добавляет новый фокус в начало списка и удаляет старые, если меток больше 200.
         """
         try:
-            tracker_file = config.get('FILE_PATHS.focus_tracker', 'core/data/focus_tracker.json')
+            tracker_file = config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
 
             # Создание файла, если он отсутствует
             if not os.path.exists(tracker_file):
@@ -481,7 +481,7 @@ class ContentGenerator:
         Исключает первые 10 фокусов из focus_tracker.json из списка focus_areas.
         """
         try:
-            tracker_file = config.get('FILE_PATHS.focus_tracker', 'core/data/focus_tracker.json')
+            tracker_file = config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
             focus_areas = config.get('CONTENT.topic.focus_areas', [])
 
             # Чтение последних фокусов
@@ -510,7 +510,7 @@ class ContentGenerator:
         """
         try:
             # Обратная связь
-            feedback_path = config.get('FILE_PATHS.feedback_file', 'core/data/feedback.json')
+            feedback_path = config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
             if os.path.exists(feedback_path):
                 with open(feedback_path, 'r', encoding='utf-8') as file:
                     feedback_data = json.load(file)
@@ -519,7 +519,7 @@ class ContentGenerator:
                 feedback_foci = []
 
             # Архив
-            archive_folder = config.get('FILE_PATHS.archive_folder', 'core/archive/')
+            archive_folder = config.get('FILE_PATHS.archive_folder', 'archive/')
             archive_foci = []
             if os.path.exists(archive_folder):
                 for filename in os.listdir(archive_folder):
