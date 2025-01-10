@@ -39,9 +39,9 @@ class ContentGenerator:
         self.max_attempts = config.get('GENERATE.max_attempts', 3)
         self.adaptation_enabled = config.get('GENERATE.adaptation_enabled', False)
         self.adaptation_params = config.get('GENERATE.adaptation_parameters', {})
-        self.content_output_path = config.get('FILE_PATHS.content_output_path', 'core/generated_content.json')
-        self.before_critique_path = config.get('FILE_PATHS.before_critique_path', 'core/before_critique.json')
-        self.after_critique_path = config.get('FILE_PATHS.after_critique_path', 'core/after_critique.json')
+        self.content_output_path = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
+        self.before_critique_path = config.get('FILE_PATHS.before_critique_path', 'before_critique.json')
+        self.after_critique_path = config.get('FILE_PATHS.after_critique_path', 'after_critique.json')
 
         self.openai_model = config.get('API_KEYS.openai.model', 'gpt-4')
         self.temperature = config.get('API_KEYS.openai.temperature', 0.7)  # Инициализация температуры
