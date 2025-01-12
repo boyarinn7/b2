@@ -20,7 +20,6 @@ from modules.config_manager import ConfigManager
 logger = get_logger("generate_content")
 config = ConfigManager()
 
-
 def get_b2_client():
     """Создает клиент для работы с Backblaze B2."""
     try:
@@ -33,28 +32,12 @@ def get_b2_client():
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e))
 
-
-def download_config_public():
-    """Загружает файл config_public.json из B2 в локальное хранилище."""
-    try:
-        s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
-        config_public_path = config.get("FILE_PATHS.config_public")
-
-        os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
-        s3.download_file(bucket_name, config_public_path, config_public_path)
-        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
-    except Exception as e:
-        handle_error("Download Config Public Error", str(e))
-
-
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
     now = datetime.utcnow()
     date_part = now.strftime("%Y%m%d")
     time_part = now.strftime("%H%M")
     return f"{date_part}-{time_part}.json"
-
 
 def save_generation_id_to_config(file_id):
     """Сохраняет ID генерации в файл config_gen.json."""
@@ -66,7 +49,6 @@ def save_generation_id_to_config(file_id):
         logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
     except Exception as e:
         handle_error("Save Generation ID Error", str(e))
-
 
 def save_to_b2(folder, content):
     """Сохраняет контент в указанную папку B2 под уникальным именем."""
@@ -85,7 +67,6 @@ def save_to_b2(folder, content):
         os.remove(local_file_path)
     except Exception as e:
         handle_error("B2 Upload Error", str(e))
-
 
 class ContentGenerator:
     def __init__(self):
@@ -185,10 +166,6 @@ class ContentGenerator:
         final_text = f"Сгенерированный текст на тему: {topic}\n{text_initial}"
 
         try:
-            # Загружаем config_public.json из B2
-            download_config_public()
-
-            # Читаем локально загруженный config_public.json
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
                 config_public = json.load(file)
                 empty_folders = config_public.get("empty", [])
@@ -203,18 +180,9 @@ class ContentGenerator:
             with open(config.get("FILE_PATHS.config_public"), "w", encoding="utf-8") as file:
                 json.dump(config_public, file, ensure_ascii=False, indent=4)
 
-            # Загружаем обновленный config_public.json обратно в B2
-            s3 = get_b2_client()
-            bucket_name = config.get("API_KEYS.b2.bucket_name")
-            s3.upload_file(
-                os.path.join("core", config.get("FILE_PATHS.config_public")),
-                bucket_name,
-                config.get("FILE_PATHS.config_public")
-            )
-            logger.info("✅ Файл config_public.json успешно обновлен и загружен обратно в B2.")
+            logger.info("🚀 Генерация контента завершена. Все данные сохранены.")
         except Exception as e:
             handle_error("Save Process Error", str(e))
-
 
 if __name__ == "__main__":
     generator = ContentGenerator()

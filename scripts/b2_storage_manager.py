@@ -1,129 +1,187 @@
-# core/scripts/b2_storage_manager.py
-
 import os
+import json
 import logging
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
 from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.utils import ensure_directory_exists
+from modules.config_manager import ConfigManager
+import subprocess  # Для запуска внешнего скрипта
 
 # === Инициализация конфигурации и логирования ===
-from modules.config_manager import ConfigManager
 config = ConfigManager()
-
 logger = get_logger("b2_storage_manager")
 
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
-META_FOLDER = config.get('FILE_PATHS.meta_folder')
+CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
+FILE_EXTENSIONS = ['.json', '.png', '.mp4']
+FOLDERS = [
+    config.get('FILE_PATHS.folder_444'),
+    config.get('FILE_PATHS.folder_555'),
+    config.get('FILE_PATHS.folder_666')
+]
 ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
-FILE_EXTENSIONS = config.get('OTHER.file_extensions', ['-metadata.json', '-image.png', '-video.mp4'])
 
+# Регулярное выражение для проверки формата имени файла
+import re
+FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
-# === Методы для работы с B2 ===
-def check_marker_file(s3):
-    """
-    Проверяет существование файла маркера публикации.
-    """
-    marker_key = f"{META_FOLDER}published_marker.json"
+def log_folders_state(s3, folders, stage):
+    logger.info(f"\n📂 Состояние папок ({stage}):")
+    for folder in folders:
+        files = list_files_in_folder(s3, folder)
+        logger.info(f"- {folder}: {files}")
+
+def load_config_public(s3):
     try:
-        s3.head_object(Bucket=B2_BUCKET_NAME, Key=marker_key)
-        logger.info(f"✅ Файл маркера публикации существует: {marker_key}")
-        return True
+        local_path = os.path.basename(CONFIG_PUBLIC_PATH)
+        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_PATH, local_path)
+        with open(local_path, 'r', encoding='utf-8') as file:
+            config_data = json.load(file)
+            logger.info(f"✅ Содержимое config_public.json: {config_data}")
+            return config_data
+    except FileNotFoundError:
+        return {}
     except ClientError as e:
-        if e.response['Error']['Code'] == "404":
-            logger.warning(f"⚠️ Файл маркера публикации отсутствует: {marker_key}")
-        else:
-            handle_error("B2 Marker Check Error", e)
-        return False
+        logger.error(f"Error loading config_public.json: {e.response['Error']['Message']}")
+        return {}
 
-
-def create_marker_file(s3):
-    """
-    Создаёт пустой файл маркера публикации.
-    """
-    marker_key = f"{META_FOLDER}published_marker.json"
-    local_file = "published_marker.json"
+def save_config_public(s3, data):
     try:
-        with open(local_file, "w") as f:
-            f.write("")
-        s3.upload_file(local_file, B2_BUCKET_NAME, marker_key)
-        logger.info(f"✅ Создан новый файл маркера публикации: {marker_key}")
-    except ClientError as e:
-        handle_error("B2 Marker Creation Error", e)
-
+        local_path = os.path.basename(CONFIG_PUBLIC_PATH)
+        with open(local_path, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        s3.upload_file(local_path, B2_BUCKET_NAME, CONFIG_PUBLIC_PATH)
+    except Exception as e:
+        logger.error(f"Error saving config_public.json: {e}")
 
 def list_files_in_folder(s3, folder_prefix):
-    """
-    Возвращает список файлов в указанной папке.
-    """
     try:
         response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=folder_prefix)
-        return [obj["Key"] for obj in response.get("Contents", []) if obj["Key"] != folder_prefix]
+        return [
+            obj['Key'] for obj in response.get('Contents', [])
+            if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty') and FILE_NAME_PATTERN.match(os.path.basename(obj['Key']))
+        ]
     except ClientError as e:
-        handle_error("B2 List Files Error", e)
+        logger.error(f"Error listing files in {folder_prefix}: {e.response['Error']['Message']}")
         return []
 
-
-def get_ready_groups(s3, folder_prefix):
-    """
-    Возвращает список групп файлов, готовых для обработки.
-    """
-    files = list_files_in_folder(s3, folder_prefix)
+def get_ready_groups(files):
     groups = {}
-
     for file_key in files:
-        parts = file_key.split("/")[-1].split("-")
-        if len(parts) >= 3:
-            calendar_date, group_id = parts[0], parts[1]
-            combined_id = f"{calendar_date}-{group_id}"
-            groups.setdefault(combined_id, []).append(file_key)
+        base_name = os.path.basename(file_key)
+        if FILE_NAME_PATTERN.match(base_name):
+            group_id = base_name.rsplit('.', 1)[0]
+            groups.setdefault(group_id, []).append(base_name)
 
-    ready_groups = [
-        group_id for group_id, group_files in groups.items()
-        if len(group_files) == len(FILE_EXTENSIONS)
-    ]
+    ready_groups = []
+    for group_id, file_list in groups.items():
+        expected_files = [group_id + ext for ext in FILE_EXTENSIONS]
+        if all(file in file_list for file in expected_files):
+            ready_groups.append(group_id)
+
     return ready_groups
 
+def handle_publish(s3, config_data):
+    publish_folder = config_data.get("publish")
+    if not publish_folder:
+        return
+
+    files = list_files_in_folder(s3, publish_folder)
+    if not files:
+        return
+
+    for file_key in files:
+        archive_key = file_key.replace(publish_folder, ARCHIVE_FOLDER)
+        try:
+            s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key}, Key=archive_key)
+            s3.delete_object(Bucket=B2_BUCKET_NAME, Key=file_key)
+        except ClientError as e:
+            logger.error(f"Error archiving {file_key}: {e.response['Error']['Message']}")
+
+    config_data.pop("publish", None)
+    save_config_public(s3, config_data)
 
 def move_group(s3, src_folder, dst_folder, group_id):
-    """
-    Перемещает группу файлов в целевую папку.
-    """
-    calendar_date, group_id_part = group_id.split("-")
     for ext in FILE_EXTENSIONS:
-        src_key = f"{src_folder}{calendar_date}-{group_id_part}{ext}"
-        dst_key = f"{dst_folder}{calendar_date}-{group_id_part}{ext}"
+        src_key = f"{src_folder}{group_id}{ext}"
+        dst_key = f"{dst_folder}{group_id}{ext}"
         try:
             s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
             s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key}, Key=dst_key)
             s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
-            logger.info(f"✅ Файл {src_key} перемещён в {dst_key}")
         except ClientError as e:
-            handle_error("B2 File Move Error", e)
+            if e.response['Error']['Code'] != "NoSuchKey":
+                logger.error(f"Error moving {src_key}: {e.response['Error']['Message']}")
 
+def process_folders(s3, folders):
+    empty_folders = set()
+    changes_made = True
 
-# === Основной процесс ===
+    while changes_made:
+        changes_made = False
+        for i in range(len(folders) - 1, 0, -1):
+            src_folder = folders[i]
+            dst_folder = folders[i - 1]
+
+            if src_folder in empty_folders:
+                continue
+
+            src_files = list_files_in_folder(s3, src_folder)
+            dst_files = list_files_in_folder(s3, dst_folder)
+
+            src_ready = get_ready_groups(src_files)
+            dst_ready = get_ready_groups(dst_files)
+
+            for group_id in src_ready:
+                if len(dst_ready) < 1:
+                    move_group(s3, src_folder, dst_folder, group_id)
+                    changes_made = True
+
+            if not src_ready:
+                empty_folders.add(src_folder)
+
+    return list(empty_folders)
+
 def main():
-    """
-    Основной процесс управления контентом в B2.
-    """
     try:
         s3 = get_b2_client()
 
-        # Проверка и создание маркера публикации
-        if not check_marker_file(s3):
-            create_marker_file(s3)
+        # Лог начального состояния папок
+        log_folders_state(s3, FOLDERS, "Начало процесса")
 
-        # Обработка файловых групп
-        ready_444 = get_ready_groups(s3, config.get('FILE_PATHS.folder_444'))
-        if ready_444:
-            move_group(s3, config.get('FILE_PATHS.folder_444'), ARCHIVE_FOLDER, ready_444[0])
+        config_data = load_config_public(s3)
+
+        handle_publish(s3, config_data)
+
+        empty_folders = process_folders(s3, FOLDERS)
+
+        if empty_folders:
+            config_data['empty'] = empty_folders
+        else:
+            config_data.pop('empty', None)
+
+        save_config_public(s3, config_data)
+
+        # Лог конечного состояния папок
+        log_folders_state(s3, FOLDERS, "Конец процесса")
+
+        # Лог содержимого config_public.json в конце процесса
+        logger.info(f"✅ Финальное содержимое config_public.json: {config_data}")
+
+        # Запуск generate_content.py при наличии пустых папок
+        if empty_folders:
+            logger.info("⚠️ Найдены пустые папки. Запуск generate_content.py...")
+            try:
+                subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
+                logger.info("✅ Скрипт generate_content.py выполнен успешно.")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Ошибка при выполнении generate_content.py: {e}")
 
     except Exception as e:
-        handle_error("B2 Storage Manager Main Error", e)
-
+        handle_error(logger, e, "Error in main process")
 
 if __name__ == "__main__":
     main()
