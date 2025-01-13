@@ -1,112 +1,117 @@
 # core/scripts/generate_media.py
 
 import os
-import time
-import random
-from modules.api_clients import get_runwayml_client
+import json
+import boto3
+from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
 from modules.error_handler import handle_error
-from modules.utils import ensure_directory_exists, encode_image_to_base64
 from modules.config_manager import ConfigManager
 
 # === Инициализация ===
-config = ConfigManager()
 logger = get_logger("generate_media")
+config = ConfigManager()
 
-# === Константы из конфигурации ===
-DEFAULT_IMAGE_PATH = config.get('FILE_PATHS.default_image_path', 'core/media/input_image.jpg')
-DEFAULT_VIDEO_PATH = config.get('FILE_PATHS.default_video_path', 'core/media/output_video.mp4')
-RUNWAY_MODEL = config.get('API_KEYS.RUNWAYML.model', 'gen3a_turbo')
-RUNWAY_DURATION = config.get('API_KEYS.RUNWAYML.duration', 5)
-RUNWAY_RATIO = config.get('API_KEYS.RUNWAYML.ratio', '1280:768')
-RUNWAY_SCENARIO = config.get('API_KEYS.RUNWAYML.default_scenario', "Атмосферная сцена с тёмной комнатой и старой картой.")
-USE_MOCK_API = config.get('OTHER.use_mock_api', True)
+# === Константы ===
+B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
+B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
+B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
+B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
+CONFIG_GEN_PATH = os.path.abspath('core/config/config_gen.json')  # Локальный путь config_gen.json
+CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь в B2
+CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')  # Временный локальный файл
 
-# === Проверка API-ключа ===
-RUNWAY_API_KEY = config.get('API_KEYS.RUNWAYML.api_key')
-if not RUNWAY_API_KEY:
-    logger.error("❌ API-ключ для RunwayML отсутствует в конфигурации.")
-    raise ValueError("API-ключ для RunwayML отсутствует. Проверьте конфигурацию.")
-
-
-# === Генерация видео через RunwayML ===
-def generate_video_with_image_and_prompt(prompt, image_path):
-    """
-    Генерация видео с использованием RunwayML API
-    """
+# === Функции ===
+def get_b2_client():
     try:
-        if USE_MOCK_API:
-            logger.warning("⚠️ Используется заглушка для генерации видео (Runway API Mock).")
-            mock_video_url = f"https://mock.runwayml.com/video_{random.randint(1000, 9999)}.mp4"
-            time.sleep(2)  # Имитация задержки запроса
-            logger.info(f"✅ Видео успешно сгенерировано (заглушка). Ссылка: {mock_video_url}")
-            return mock_video_url
-
-        base64_image = encode_image_to_base64(image_path)
-        if not base64_image:
-            handle_error("Image Encoding Error", f"Не удалось преобразовать изображение: {image_path}")
-
-        logger.info("🔄 Создаю задачу на генерацию видео через Runway...")
-        client = get_runwayml_client(api_key=RUNWAY_API_KEY)
-        task = client.image_to_video.create(
-            model=RUNWAY_MODEL,
-            prompt_image=f"data:image/jpeg;base64,{base64_image}",
-            prompt_text=prompt,
-            duration=RUNWAY_DURATION,
-            ratio=RUNWAY_RATIO
+        return boto3.client(
+            's3',
+            endpoint_url=B2_ENDPOINT,
+            aws_access_key_id=B2_ACCESS_KEY,
+            aws_secret_access_key=B2_SECRET_KEY
         )
-        logger.info(f"✅ Задача успешно создана! ID задачи: {task.id}")
-
-        # Ожидание завершения задачи
-        while True:
-            task_status = client.tasks.retrieve(task.id)
-            logger.info(f"🔍 Текущий статус задачи: {task_status.status}")
-            if task_status.status in ["SUCCEEDED", "FAILED"]:
-                break
-            time.sleep(5)  # Ждём 5 секунд перед проверкой статуса
-
-        if task_status.status == "SUCCEEDED":
-            video_url = task_status.output[0]
-            logger.info(f"🏁 Видео успешно сгенерировано! Ссылка: {video_url}")
-            save_video(video_url)
-            return video_url
-        else:
-            handle_error("Runway Video Generation Error", "Задача завершилась с ошибкой.")
-
     except Exception as e:
-        handle_error("RunwayML Video Generation Error", str(e))
+        handle_error(logger, f"B2 Client Initialization Error: {e}")
 
-
-def save_video(video_url):
-    """
-    Сохранение видео по указанному URL
-    """
+def download_file_from_b2(client, remote_path, local_path):
     try:
-        import requests
-        response = requests.get(video_url, timeout=30)
-        response.raise_for_status()
-        ensure_directory_exists(os.path.dirname(DEFAULT_VIDEO_PATH))
-        with open(DEFAULT_VIDEO_PATH, 'wb') as file:
-            file.write(response.content)
-        logger.info(f"✅ Видео сохранено в {DEFAULT_VIDEO_PATH}")
+        ensure_directory_exists(os.path.dirname(local_path))
+        client.download_file(B2_BUCKET_NAME, remote_path, local_path)
+        logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
     except Exception as e:
-        handle_error("Video Save Error", str(e))
+        handle_error(logger, f"B2 Download Error: {e}")
 
+def upload_to_b2(client, folder, file_path):
+    try:
+        file_name = os.path.basename(file_path)
+        s3_key = os.path.join(folder, file_name)
+        client.upload_file(file_path, B2_BUCKET_NAME, s3_key)
+        logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
+        os.remove(file_path)
+    except Exception as e:
+        handle_error(logger, f"B2 Upload Error: {e}")
+
+def generate_mock_video(file_id):
+    video_path = f"{file_id}.mp4"
+    try:
+        with open(video_path, 'wb') as video_file:
+            video_file.write(b'\0' * 1024 * 1024)  # 1 MB файл
+        logger.info(f"✅ Видео '{video_path}' успешно сгенерировано.")
+        return video_path
+    except Exception as e:
+        handle_error(logger, f"Video Generation Error: {e}")
+
+def update_config_public(client, folder):
+    try:
+        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+
+        if "empty" in config_public and folder in config_public["empty"]:
+            config_public["empty"].remove(folder)
+
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(config_public, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        logger.info(f"✅ Файл config_public.json обновлён: удалена папка {folder}")
+        os.remove(CONFIG_PUBLIC_LOCAL_PATH)  # Удаление временного файла
+    except Exception as e:
+        handle_error(logger, f"Config Public Update Error: {e}")
 
 def main():
-    """
-    Основной процесс генерации медиа-контента
-    """
-    logger.info("🔄 Начинаем генерацию медиа-контента...")
-    video_url = generate_video_with_image_and_prompt(RUNWAY_SCENARIO, DEFAULT_IMAGE_PATH)
+    logger.info("🔄 Начинаем процесс генерации медиа...")
+    try:
+        # Читаем локальный файл config_gen.json
+        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
+            config_gen = json.load(file)
+        file_id = os.path.splitext(config_gen["generation_id"])[0]
 
-    if video_url:
-        logger.info(f"🏁 Медиа-контент успешно сгенерирован. Ссылка: {video_url}")
-    else:
-        handle_error("Runway Media Generation Error", "Генерация медиа-контента не удалась.")
+        # Создаём клиент B2
+        b2_client = get_b2_client()
 
+        # Загрузка config_public.json из B2
+        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
 
-# === Точка входа ===
+        logger.info(f"Содержимое config_public: {config_public}")
+
+        # Проверяем наличие пустых папок
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]
+        else:
+            raise ValueError("Список 'empty' отсутствует или пуст в config_public.json")
+
+        # Генерация видео и загрузка в B2
+        video_path = generate_mock_video(file_id)
+        upload_to_b2(b2_client, target_folder, video_path)
+
+        # Обновление config_public.json
+        update_config_public(b2_client, target_folder)
+
+    except Exception as e:
+        handle_error(logger, f"Main Process Error: {e}")
+
 if __name__ == "__main__":
     try:
         main()

@@ -25,6 +25,7 @@
         "meta_folder": "data/meta/",
         "scripts_folder": "core/scripts",
         "config_public": "config/config_public.json",
+        "config_gen": "config/config_gen.json",
         "focus_tracker": "core/data/focus_tracker.json",
         "archive_folder": "data/archive/",
         "folder_444": "444/",

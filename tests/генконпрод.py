@@ -6,19 +6,57 @@ import openai
 import textstat
 import spacy
 import re
-from datetime import datetime
+import subprocess
 import boto3
+
+
+from modules.config_manager import ConfigManager
+from modules.logger import get_logger
+from modules.error_handler import handle_error
+from datetime import datetime
+from modules.utils import ensure_directory_exists
+from PIL import Image, ImageDraw
+
 
 # Добавляем путь к директории modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
-from modules.logger import get_logger
-from modules.error_handler import handle_error
-from modules.utils import ensure_directory_exists
-from modules.config_manager import ConfigManager
+
 
 # === Инициализация ===
 logger = get_logger("generate_content")
 config = ConfigManager()
+
+# === Инициализация ===
+config = ConfigManager()
+logger = get_logger("generate_media_launcher")
+
+
+def create_and_upload_image(folder, generation_id):
+    """Создает имитацию изображения и загружает его в ту же папку в B2."""
+    try:
+        # Формирование имени файла с расширением .png
+        file_name = generation_id.replace(".json", ".png")
+        local_file_path = file_name
+
+        # Создание имитации изображения
+        img = Image.new('RGB', (800, 600), color=(73, 109, 137))
+        draw = ImageDraw.Draw(img)
+        draw.text((10, 10), f"ID: {generation_id}", fill=(255, 255, 255))
+        img.save(local_file_path)
+        logger.info(f"✅ Изображение '{local_file_path}' успешно создано.")
+
+        # Загрузка изображения в ту же папку
+        s3 = get_b2_client()
+        bucket_name = config.get("API_KEYS.b2.bucket_name")
+        s3_key = f"{folder.rstrip('/')}/{file_name}"
+        s3.upload_file(local_file_path, bucket_name, s3_key)
+        logger.info(f"✅ Изображение успешно загружено в B2: {s3_key}")
+
+        # Удаление локального файла
+        os.remove(local_file_path)
+    except Exception as e:
+        handle_error("Image Upload Error", str(e))
+
 
 def get_b2_client():
     """Создает клиент для работы с Backblaze B2."""
@@ -32,12 +70,28 @@ def get_b2_client():
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e))
 
+
+def download_config_public():
+    """Загружает файл config_public.json из B2 в локальное хранилище."""
+    try:
+        s3 = get_b2_client()
+        bucket_name = config.get("API_KEYS.b2.bucket_name")
+        config_public_path = config.get("FILE_PATHS.config_public")
+
+        os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
+        s3.download_file(bucket_name, config_public_path, config_public_path)
+        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
+    except Exception as e:
+        handle_error("Download Config Public Error", str(e))
+
+
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
     now = datetime.utcnow()
     date_part = now.strftime("%Y%m%d")
     time_part = now.strftime("%H%M")
     return f"{date_part}-{time_part}.json"
+
 
 def save_generation_id_to_config(file_id):
     """Сохраняет ID генерации в файл config_gen.json."""
@@ -50,20 +104,27 @@ def save_generation_id_to_config(file_id):
     except Exception as e:
         handle_error("Save Generation ID Error", str(e))
 
+
 def save_to_b2(folder, content):
-    """Сохраняет контент в указанную папку B2 под уникальным именем."""
+    """Сохраняет контент в указанную папку B2 с уникальным именем файла."""
     try:
         file_id = generate_file_id()
         save_generation_id_to_config(file_id)
         logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
 
+        # Подготовка локального файла
         s3 = get_b2_client()
         bucket_name = config.get("API_KEYS.b2.bucket_name")
         local_file_path = file_id
         with open(local_file_path, "w", encoding="utf-8") as file:
             json.dump(content, file, ensure_ascii=False, indent=4)
-        s3.upload_file(local_file_path, bucket_name, f"{folder}/{file_id}")
-        logger.info(f"✅ Контент успешно сохранён в папке B2: {folder}/{file_id}")
+
+        # Правильное формирование пути для загрузки
+        s3_key = f"{folder.rstrip('/')}/{file_id}"
+        s3.upload_file(local_file_path, bucket_name, s3_key)
+        logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
+
+        # Удаление локального файла
         os.remove(local_file_path)
     except Exception as e:
         handle_error("B2 Upload Error", str(e))
@@ -157,32 +218,71 @@ class ContentGenerator:
             handle_error("Save to Generated Content Error", str(e))
 
     def run(self):
-        self.adapt_prompts()
-        self.clear_generated_content()
-        topic = self.generate_topic()
-        self.save_to_generated_content("topic", {"topic": topic})
-        text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
-        self.save_to_generated_content("text_initial", {"content": text_initial})
-        final_text = f"Сгенерированный текст на тему: {topic}\n{text_initial}"
-
         try:
+            # Проверяем наличие пустых папок в начале
+            download_config_public()
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
                 config_public = json.load(file)
                 empty_folders = config_public.get("empty", [])
 
             if not empty_folders:
-                logger.info("✅ Нет пустых папок. Сохранение в B2 не требуется.")
+                logger.info("✅ Нет пустых папок. Процесс завершён.")
                 return
 
-            target_folder = empty_folders.pop(0)
+            # Генерация контента
+            self.adapt_prompts()
+            self.clear_generated_content()
+            topic = self.generate_topic()
+            self.save_to_generated_content("topic", {"topic": topic})
+            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
+            self.save_to_generated_content("text_initial", {"content": text_initial})
+            final_text = f"Сгенерированный текст на тему: {topic}\n{text_initial}"
+
+            # Сохранение контента в первую пустую папку
+            target_folder = empty_folders[0]
             save_to_b2(target_folder, {"topic": topic, "content": final_text})
 
-            with open(config.get("FILE_PATHS.config_public"), "w", encoding="utf-8") as file:
-                json.dump(config_public, file, ensure_ascii=False, indent=4)
+            # Чтение generation_id из config_gen.json
+            with open(os.path.join("core", "config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+                config_gen_content = json.load(gen_file)
+                generation_id = config_gen_content["generation_id"]
 
-            logger.info("🚀 Генерация контента завершена. Все данные сохранены.")
+            # Создание и загрузка изображения
+            create_and_upload_image(target_folder, generation_id)
+
+            # Логирование содержимого конфигурационных файлов
+            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
+            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
+
         except Exception as e:
-            handle_error("Save Process Error", str(e))
+            handle_error("Run Error", str(e))
+
+def run_generate_media():
+        """Запускает скрипт generate_media.py по локальному пути."""
+        try:
+            # Получаем путь к папке скриптов из config.json
+            scripts_folder = config.get("FILE_PATHS.scripts_folder", "core/scripts")
+            script_path = os.path.join(scripts_folder, "generate_media.py")
+
+            # Проверяем, что файл существует
+            if not os.path.isfile(script_path):
+                raise FileNotFoundError(f"Скрипт не найден по пути: {script_path}")
+
+            logger.info(f"🔄 Запуск скрипта: {script_path}")
+
+            # Запуск скрипта
+            subprocess.run(["python", script_path], check=True)
+            logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
+        except subprocess.CalledProcessError as e:
+            handle_error(logger, f"Ошибка при выполнении скрипта {script_path}: {e}")
+        except FileNotFoundError as e:
+            handle_error(logger, str(e))
+        except Exception as e:
+            handle_error(logger, f"Неизвестная ошибка при запуске скрипта {script_path}: {e}")
+
+        if __name__ == "__main__":
+            run_generate_media()
+
 
 if __name__ == "__main__":
     generator = ContentGenerator()
