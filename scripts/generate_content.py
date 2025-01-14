@@ -258,7 +258,7 @@ class ContentGenerator:
         except Exception as e:
             handle_error("Run Error", str(e))
 
-            
+
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
     try:

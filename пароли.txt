@@ -1,0 +1,8 @@
+б2 boyarinn1@gmail.com - 7845qwerty
+keyID:   00577030c4f964a0000000002
+keyName:   boyarinn1
+applicationKey:   K005i/y4ymXbsv4nrAkBIqgFBIGR5RE
+ENDPOINT = https://s3.us-east-005.backblazeb2.com
+BUCKET_NAME = boyarinnbotbucket
+
+
