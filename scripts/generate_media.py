@@ -17,7 +17,7 @@ B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
 B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
 B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
-CONFIG_GEN_PATH = os.path.abspath('core/config/config_gen.json')  # Локальный путь config_gen.json
+CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')  # Локальный путь config_gen.json
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь в B2
 CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')  # Временный локальный файл
 
