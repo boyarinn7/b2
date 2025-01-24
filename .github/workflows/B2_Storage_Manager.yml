@@ -48,6 +48,9 @@ jobs:
         echo "ARCHIVE_FOLDER=${{ secrets.ARCHIVE_FOLDER }}" >> $GITHUB_ENV
         echo "SCRIPTS_FOLDER=${{ secrets.SCRIPTS_FOLDER }}" >> $GITHUB_ENV
 
+    - name: Set PYTHONPATH
+      run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+
     - name: Run B2 Storage Manager
       if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'b2_storage_manager' }}
       run: python scripts/b2_storage_manager.py
