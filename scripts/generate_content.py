@@ -320,24 +320,40 @@ class ContentGenerator:
 
     def save_to_generated_content(self, stage, data):
         try:
+            if not self.content_output_path:
+                raise ValueError("❌ Ошибка: self.content_output_path пустой!")
+
             logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
-            folder = os.path.dirname(self.content_output_path)
+
+            folder = os.path.dirname(self.content_output_path) or "."
+            logger.info(f"📁 Проверяем папку для сохранения: {folder}")
+
             if not os.path.exists(folder):
                 os.makedirs(folder)
-                logger.info(f"📁 Папка для сохранения данных создана: {folder}")
+                logger.info(f"📁 Папка создана: {folder}")
+
             if os.path.exists(self.content_output_path):
+                logger.info(f"📄 Файл {self.content_output_path} найден, загружаем данные...")
                 with open(self.content_output_path, 'r', encoding='utf-8') as file:
                     try:
                         result_data = json.load(file)
                     except json.JSONDecodeError:
+                        logger.warning(f"⚠️ Файл {self.content_output_path} поврежден, создаем новый.")
                         result_data = {}
             else:
+                logger.warning(f"⚠️ Файл {self.content_output_path} не найден, создаем новый.")
                 result_data = {}
+
             result_data["timestamp"] = datetime.utcnow().isoformat()
             result_data[stage] = data
+
+            logger.info(f"💾 Записываем данные в {self.content_output_path}...")
+
             with open(self.content_output_path, 'w', encoding='utf-8') as file:
                 json.dump(result_data, file, ensure_ascii=False, indent=4)
+
             logger.info(f"✅ Данные успешно обновлены и сохранены на этапе: {stage}")
+
         except FileNotFoundError:
             handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}")
         except PermissionError:
@@ -554,7 +570,7 @@ class ContentGenerator:
                 }
             })
 
-            with open(os.path.join("core", "config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
 
