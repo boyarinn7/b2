@@ -571,7 +571,7 @@ def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
     try:
         # Получаем путь к папке скриптов из config.json
-        scripts_folder = config.get("FILE_PATHS.scripts_folder", "core/scripts")
+        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
         script_path = os.path.join(scripts_folder, "generate_media.py")
 
         # Проверяем, что файл существует
