@@ -1,8 +1,8 @@
 name: Run Main Script
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # Запуск ежедневно в 00:00 UTC
+ # schedule:
+ #   - cron: '0 0 * * *'   Запуск ежедневно в 00:00 UTC
   workflow_dispatch:  # Ручной запуск
 
 jobs:
@@ -57,3 +57,6 @@ jobs:
       run: python scripts/main.py
       env:
         PYTHONPATH: ${{ github.workspace }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE }}

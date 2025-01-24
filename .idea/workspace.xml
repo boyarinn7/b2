@@ -5,12 +5,34 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fc4f12ea-b8f5-48ce-bb55-4db1b564beda" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.github/workflows/schedule.yml" beforeDir="false" afterPath="$PROJECT_DIR$/.github/workflows/schedule.yml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/READMEgencon.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/after_critique.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/before_critique.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/config/config.json" beforeDir="false" afterPath="$PROJECT_DIR$/config/config.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/config/config_gen.json" beforeDir="false" afterPath="$PROJECT_DIR$/config/config_gen.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/444/20250110-444-image.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/444/20250110-444-metadata.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/444/20250110-444-video.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/555/20250110-555-image.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/555/20250110-555-metadata.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/555/20250110-555-video.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/666/20250110-666-image.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/666/20250110-666-metadata.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/666/20250110-666-video.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/archive/20250109_200904_metadata.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/feedback.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/feedback.json.backup" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/feedback_report.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/final_content.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/focus_tracker.json" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/generated_content.json" beforeDir="false" afterPath="$PROJECT_DIR$/generated_content.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/logs/config_manager.log" beforeDir="false" afterPath="$PROJECT_DIR$/logs/config_manager.log" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/generate_content.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/generate_content.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/генконпрод.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/генконпрод.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/пароли.txt" beforeDir="false" afterPath="$PROJECT_DIR$/пароли.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/правила ии.txt" beforeDir="false" afterPath="$PROJECT_DIR$/правила ии.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
