@@ -95,7 +95,7 @@ def generate_file_id():
 
 def save_generation_id_to_config(file_id):
     """Сохраняет ID генерации в файл config_gen.json."""
-    config_gen_path = os.path.join("core", "config", "config_gen.json")
+    config_gen_path = os.path.join("config", "config_gen.json")
     os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
     try:
         with open(config_gen_path, "w", encoding="utf-8") as file:
@@ -187,12 +187,20 @@ class ContentGenerator:
     def clear_generated_content(self):
         try:
             logger.info("🧹 Полная очистка файла с результатами перед записью новой темы.")
+
+            if not self.content_output_path:
+                raise ValueError("❌ Ошибка: content_output_path пустой!")
+
             folder = os.path.dirname(self.content_output_path)
-            if not os.path.exists(folder):
+            if folder and not os.path.exists(folder):
                 os.makedirs(folder)
                 logger.info(f"📁 Папка для сохранения данных создана: {folder}")
+
+            logger.info(f"🔎 Debug: Очистка файла {self.content_output_path}")
+
             with open(self.content_output_path, 'w', encoding='utf-8') as file:
                 json.dump({}, file, ensure_ascii=False, indent=4)
+
             logger.info("✅ Файл успешно очищен.")
         except PermissionError:
             handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
@@ -266,8 +274,6 @@ class ContentGenerator:
         except Exception as e:
             self.logger.error(f"❌ Ошибка генерации саркастического комментария: {e}")
             return ""  # Если ошибка, возвращаем пустую строку
-
-
 
     def generate_interactive_poll(self, text):
         """
