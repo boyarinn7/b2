@@ -44,7 +44,7 @@ def list_folder(bucket_name, prefix):
         logging.error(f"❌ Ошибка при листинге {prefix}: {e}")
 
 
-def get_config(bucket_name, config_file="config_public.json"):
+def get_config(bucket_name, config_file="config/config_public.json"):
     """Проверяет и загружает config_public.json"""
     try:
         response = s3_client.get_object(Bucket=bucket_name, Key=config_file)
@@ -72,6 +72,7 @@ def get_config(bucket_name, config_file="config_public.json"):
 list_folder(B2_BUCKET_NAME, "444/")
 list_folder(B2_BUCKET_NAME, "555/")
 list_folder(B2_BUCKET_NAME, "666/")
+list_folder(B2_BUCKET_NAME, "config/")  # Добавлен листинг папки config
 
 # Проверяем и загружаем конфиг
 get_config(B2_BUCKET_NAME)
