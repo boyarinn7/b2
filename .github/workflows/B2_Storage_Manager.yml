@@ -56,9 +56,9 @@ jobs:
       run: python scripts/b2_storage_manager.py
 
     - name: Run Generate Content
-      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'generate_content' }}
+      if: ${{ github.event.inputs.stage == 'generate_content' }}
       run: python scripts/generate_content.py
 
     - name: Run Generate Media
-      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'generate_media' }}
+      if: ${{ github.event.inputs.stage == 'generate_media' }}
       run: python scripts/generate_media.py
