@@ -34,26 +34,34 @@ def get_b2_client():
         handle_error(logger, f"B2 Client Initialization Error: {e}")
 
 def download_file_from_b2(client, remote_path, local_path):
+    """Загружает файл из B2."""
     try:
+        logger.info(f"🔄 Начинаем загрузку файла из B2: {remote_path} -> {local_path}")
         ensure_directory_exists(os.path.dirname(local_path))
         client.download_file(B2_BUCKET_NAME, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
     except Exception as e:
+        logger.error(f"❌ Ошибка загрузки {remote_path}: {e}")
         handle_error(logger, f"B2 Download Error: {e}")
 
 def upload_to_b2(client, folder, file_path):
+    """Загружает файл в B2."""
     try:
         file_name = os.path.basename(file_path)
         s3_key = os.path.join(folder, file_name)
+        logger.info(f"🔄 Начинаем загрузку файла в B2: {file_path} -> {s3_key}")
         client.upload_file(file_path, B2_BUCKET_NAME, s3_key)
         logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
         os.remove(file_path)
+        logger.info(f"🗑️ Временный файл {file_path} удалён после загрузки.")
     except Exception as e:
         handle_error(logger, f"B2 Upload Error: {e}")
 
 def generate_mock_video(file_id):
+    """Создаёт заглушку видеофайла."""
     video_path = f"{file_id}.mp4"
     try:
+        logger.info(f"🎥 Генерация видеофайла: {video_path}")
         with open(video_path, 'wb') as video_file:
             video_file.write(b'\0' * 1024 * 1024)  # 1 MB файл
         logger.info(f"✅ Видео '{video_path}' успешно сгенерировано.")
@@ -62,45 +70,57 @@ def generate_mock_video(file_id):
         handle_error(logger, f"Video Generation Error: {e}")
 
 def update_config_public(client, folder):
+    """Обновляет config_public.json, удаляя папку из 'empty'."""
     try:
+        logger.info(f"🔄 Обновление config_public.json: удаление {folder} из списка 'empty'")
         download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
 
         if "empty" in config_public and folder in config_public["empty"]:
             config_public["empty"].remove(folder)
+            logger.info(f"✅ Папка {folder} удалена из 'empty'. Обновлённое содержимое: {config_public}")
 
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
+
         client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
-        logger.info(f"✅ Файл config_public.json обновлён: удалена папка {folder}")
-        os.remove(CONFIG_PUBLIC_LOCAL_PATH)  # Удаление временного файла
+        logger.info(f"✅ config_public.json обновлён и загружен обратно в B2.")
+        os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
         handle_error(logger, f"Config Public Update Error: {e}")
 
 def main():
+    """Основной процесс генерации медиа."""
     logger.info("🔄 Начинаем процесс генерации медиа...")
     try:
-        # Читаем локальный файл config_gen.json
+        # Читаем config_gen.json
+        logger.info(f"📄 Читаем config_gen.json: {CONFIG_GEN_PATH}")
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
+
         file_id = os.path.splitext(config_gen["generation_id"])[0]
+        logger.info(f"📂 ID генерации: {file_id}")
 
         # Создаём клиент B2
         b2_client = get_b2_client()
 
-        # Загрузка config_public.json из B2
+        # Логируем вызов генератора
+        logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
+
+        # Загружаем config_public.json
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
 
-        logger.info(f"Содержимое config_public: {config_public}")
+        logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
         # Проверяем наличие пустых папок
         if "empty" in config_public and config_public["empty"]:
             target_folder = config_public["empty"][0]
+            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
         else:
-            raise ValueError("Список 'empty' отсутствует или пуст в config_public.json")
+            raise ValueError("❌ Ошибка: Список 'empty' отсутствует или пуст в config_public.json")
 
         # Генерация видео и загрузка в B2
         video_path = generate_mock_video(file_id)
@@ -110,6 +130,7 @@ def main():
         update_config_public(b2_client, target_folder)
 
     except Exception as e:
+        logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, f"Main Process Error: {e}")
 
 if __name__ == "__main__":
@@ -117,3 +138,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         logger.info("🛑 Программа остановлена пользователем.")
+
