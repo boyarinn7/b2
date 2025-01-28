@@ -48,3 +48,14 @@ def encode_image_to_base64(image_path: str) -> str:
         handle_error("Image Encoding Error", f"Файл изображения не найден: {image_path}")
     except Exception as e:
         handle_error("Image Encoding Error", e)
+
+
+def list_files_in_folder(s3, folder):
+    """Возвращает список файлов в указанной папке B2."""
+    try:
+        objects = s3.list_objects_v2(Bucket="boyarinnbotbucket", Prefix=folder)
+        return [obj["Key"] for obj in objects.get("Contents", [])]
+    except Exception as e:
+        print(f"❌ Ошибка при получении списка файлов в {folder}: {e}")
+        return []
+
