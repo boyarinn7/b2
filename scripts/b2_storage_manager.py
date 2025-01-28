@@ -90,6 +90,16 @@ def process_folders(s3, folders):
         run_content_generator()
     return empty_folders
 
+def list_files_in_folder(s3, folder):
+    """Возвращает список файлов в указанной папке B2."""
+    try:
+        objects = s3.list_objects_v2(Bucket="boyarinnbotbucket", Prefix=folder)
+        return [obj["Key"] for obj in objects.get("Contents", [])]
+    except Exception as e:
+        print(f"❌ Ошибка при получении списка файлов в {folder}: {e}")
+        return []
+
+
 
 def run_content_generator():
     """Запускает генератор контента при наличии пустых папок."""
