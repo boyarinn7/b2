@@ -63,16 +63,16 @@ def handle_publish(s3, config_data):
 
 
 def archive_group(s3, src_folder, group_id):
-    """Перемещает готовую группу в архив."""
+    """Перемещает готовую группу в архив B2 (data/archive/)."""
     for ext in FILE_EXTENSIONS + [PUBLISH_EXTENSION]:
         src_key = os.path.join(src_folder, f"{group_id}{ext}")
-        archive_key = os.path.join(ARCHIVE_FOLDER, f"{group_id}{ext}")
+        archive_key = f"data/archive/{group_id}{ext}"
 
         try:
             s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
                            Key=archive_key)
             s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
-            logger.info(f"✅ {src_key} перемещен в архив")
+            logger.info(f"✅ {src_key} перемещен в архив B2: {archive_key}")
         except ClientError as e:
             logger.error(f"❌ Ошибка при архивировании {src_key}: {e.response['Error']['Message']}")
 
