@@ -195,6 +195,12 @@ def main():
     """Основной процесс генерации медиа."""
     logger.info("🔄 Начинаем процесс генерации медиа...")
     try:
+        # ✅ Определяем CONFIG_GEN_PATH перед использованием
+        CONFIG_GEN_PATH = config.get("FILE_PATHS.config_gen")
+
+        if not CONFIG_GEN_PATH:
+            raise ValueError("❌ Ошибка: Путь к config_gen.json не найден в конфигурации!")
+
         # Читаем config_gen.json
         logger.info(f"📄 Читаем config_gen.json: {CONFIG_GEN_PATH}")
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
@@ -237,6 +243,9 @@ def main():
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, f"Main Process Error: {e}")
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
