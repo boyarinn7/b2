@@ -182,45 +182,61 @@ def process_folders(s3, folders):
             if not src_ready:
                 empty_folders.add(src_folder)
 
-    return list(empty_folders)
+    # ✅ Финальная проверка: если 666/ пустая, запускаем генерацию контента
+    if is_folder_empty(s3, "666/"):
+        logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
+        subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
+
+    else:
+        logger.info("✅ Все папки заполнены. Завершаем процесс.")
+
 
 def main():
+    """Основной процесс генерации медиа."""
+    logger.info("🔄 Начинаем процесс генерации медиа...")
     try:
-        s3 = get_b2_client()
+        # Читаем config_gen.json
+        logger.info(f"📄 Читаем config_gen.json: {CONFIG_GEN_PATH}")
+        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
+            config_gen = json.load(file)
 
-        # Лог начального состояния папок
-        log_folders_state(s3, FOLDERS, "Начало процесса")
+        file_id = os.path.splitext(config_gen["generation_id"])[0]
+        logger.info(f"📂 ID генерации: {file_id}")
 
-        config_data = load_config_public(s3)
+        # Создаём клиент B2
+        b2_client = get_b2_client()
 
-        handle_publish(s3, config_data)
+        # Логируем вызов генератора
+        logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
 
-        empty_folders = process_folders(s3, FOLDERS)
+        # Загружаем config_public.json
+        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
 
-        if empty_folders:
-            config_data['empty'] = empty_folders
+        logger.info(f"📄 Загруженный config_public.json: {config_public}")
+
+        # Проверяем наличие пустых папок
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]
+            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
         else:
-            config_data.pop('empty', None)
+            raise ValueError("❌ Ошибка: Список 'empty' отсутствует или пуст в config_public.json")
 
-        save_config_public(s3, config_data)
+        # Генерация видео и загрузка в B2
+        video_path = generate_mock_video(file_id)
+        upload_to_b2(b2_client, target_folder, video_path)
 
-        # Лог конечного состояния папок
-        log_folders_state(s3, FOLDERS, "Конец процесса")
+        # Обновление config_public.json
+        update_config_public(b2_client, target_folder)
 
-        # Лог содержимого config_public.json в конце процесса
-        logger.info(f"✅ Финальное содержимое config_public.json: {config_data}")
-
-        # Запуск generate_content.py при наличии пустых папок
-        if empty_folders:
-            logger.info("⚠️ Найдены пустые папки. Запуск generate_content.py...")
-            try:
-                subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
-                logger.info("✅ Скрипт generate_content.py выполнен успешно.")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Ошибка при выполнении generate_content.py: {e}")
+        # 🔄 После генерации запускаем b2_storage_manager.py
+        logger.info("🔄 Завершена генерация медиа. Запускаем b2_storage_manager.py для проверки состояния папок...")
+        subprocess.run(["python", os.path.join(os.path.dirname(__file__), "b2_storage_manager.py")], check=True)
 
     except Exception as e:
-        handle_error(logger, e, "Error in main process")
+        logger.error(f"❌ Ошибка в основном процессе: {e}")
+        handle_error(logger, f"Main Process Error: {e}")
 
 if __name__ == "__main__":
     main()

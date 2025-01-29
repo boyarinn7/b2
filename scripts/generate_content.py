@@ -496,97 +496,76 @@ class ContentGenerator:
             handle_error("Focus Prioritization Error", str(e))
             return None
 
-    def run(self):
-        try:
-            # Основная логика генерации контента
-            download_config_public()
-            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
-                config_public = json.load(file)
-                empty_folders = config_public.get("empty", [])
+def run(self):
+    try:
+        # Загружаем config_public.json
+        download_config_public()
+        with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
+            config_public = json.load(file)
+            empty_folders = config_public.get("empty", [])
 
-            if not empty_folders:
-                logger.info("✅ Нет пустых папок. Процесс завершён.")
-                return
+        if not empty_folders:
+            logger.info("✅ Нет пустых папок. Процесс завершён.")
+            return
 
-            self.adapt_prompts()
-            self.clear_generated_content()
+        self.adapt_prompts()
+        self.clear_generated_content()
 
-            # Анализ обратной связи и архива
-            valid_topics = self.analyze_topic_generation()
-            chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
+        # Анализируем темы и выбираем подходящую
+        valid_topics = self.analyze_topic_generation()
+        chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
 
-            # Логирование выбранной темы
-            if chosen_focus:
-                self.logger.info(f"✅ Выбранный фокус для генерации: {chosen_focus}")
-            else:
-                self.logger.warning("⚠️ Фокус не выбран. Используем стандартный список тем.")
+        if chosen_focus:
+            self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
+        else:
+            self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
 
-            topic = self.generate_topic()
-            self.save_to_generated_content("topic", {"topic": topic})
-            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
+        # Генерация темы и текста
+        topic = self.generate_topic()
+        self.save_to_generated_content("topic", {"topic": topic})
 
-            # Выполнение критики текста
-            critique = self.critique_content(text_initial)
+        text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
 
-            # Логирование и сохранение критики
-            self.logger.info(f"📋 Критика текста:\n{critique}")
-            self.save_to_generated_content("critique", {"critique": critique})
+        # Выполнение критики текста
+        critique = self.critique_content(text_initial)
+        self.save_to_generated_content("critique", {"critique": critique})
 
-            final_text = f"Сгенерированный текст на тему: {topic}\n{text_initial}"
+        # Генерация саркастического комментария и вопроса (но не добавляем их в content)
+        sarcastic_comment = self.generate_sarcastic_comment(text_initial)
+        sarcastic_poll = self.generate_interactive_poll(text_initial)
 
-            # После улучшения текста добавляем сарказм
-            if self.config.get('SARCASM.enabled', False):
-                self.logger.info("🔄 Добавление саркастических комментариев и вопросов к тексту.")
-                sarcastic_comment = self.generate_sarcastic_comment(text_initial)
-                sarcastic_poll = self.generate_interactive_poll(text_initial)
+        # Сохранение сарказма в отдельной секции JSON
+        self.save_to_generated_content("sarcasm", {
+            "comment": sarcastic_comment,
+            "poll": sarcastic_poll
+        })
 
-                # Логирование результатов сарказма
-                if sarcastic_comment:
-                    self.logger.info(f"🎩 Саркастический комментарий: {sarcastic_comment}")
-                if sarcastic_poll:
-                    self.logger.info(f"🎭 Саркастический вопрос: {sarcastic_poll}")
+        # Убираем заголовки и ненужные элементы
+        final_text = text_initial.strip()
 
-                # Добавляем сарказм к финальному тексту
-                final_text = f"{final_text}\n\n🔶 Саркастический комментарий:\n{sarcastic_comment}\n\n🔸 Саркастический вопрос:\n{sarcastic_poll}"
+        # Записываем только текст в content
+        target_folder = empty_folders[0]
+        save_to_b2(target_folder, {"content": final_text})
 
-                # ✅ Сохраняем сарказм в generated_content.json
-                self.save_to_generated_content("sarcasm", {
-                    "comment": sarcastic_comment,
-                    "poll": sarcastic_poll
-                })
+        # Сохраняем ID генерации
+        with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+            config_gen_content = json.load(gen_file)
+            generation_id = config_gen_content["generation_id"]
 
-            else:
-                self.logger.info("🔕 Сарказм отключён в конфигурации.")
+        # Генерация и загрузка изображения
+        create_and_upload_image(target_folder, generation_id)
 
-            self.save_to_generated_content("text_initial", {"content": text_initial})
+        # Логирование содержимого config-файлов
+        logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
+        logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
 
-            target_folder = empty_folders[0]
-            save_to_b2(target_folder, {
-                "topic": {"topic": topic},
-                "text_initial": {"content": final_text},
-                "sarcasm": {
-                    "comment": sarcastic_comment,
-                    "poll": sarcastic_poll
-                }
-            })
+        # Запуск скрипта generate_media.py
+        logger.info("🔄 Запуск generate_media.py...")
+        run_generate_media()
+        logger.info("✅ Скрипт generate_media.py выполнен.")
 
-            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                config_gen_content = json.load(gen_file)
-                generation_id = config_gen_content["generation_id"]
-
-            create_and_upload_image(target_folder, generation_id)
-
-            # Логирование содержимого конфигурационных файлов
-            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
-            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
-
-            # Запускаем generate_media.py
-            logger.info("🔄 Запуск скрипта generate_media.py...")
-            run_generate_media()
-            logger.info("✅ Скрипт generate_media.py успешно выполнен.")
-
-        except Exception as e:
-            handle_error("Run Error", str(e))
+    except Exception as e:
+        handle_error("Run Error", str(e))
 
 
 def run_generate_media():
