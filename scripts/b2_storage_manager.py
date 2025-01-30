@@ -8,6 +8,8 @@ from modules.error_handler import handle_error
 from modules.utils import ensure_directory_exists
 from modules.config_manager import ConfigManager
 import subprocess  # Для запуска внешнего скрипта
+from scripts.generate_content import generate_file_id
+
 
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
@@ -259,7 +261,7 @@ def main():
 
         if files_to_publish:
             # 4️⃣ Генерируем новый generation_id
-            generation_id = generate_new_generation_id()
+            generation_id = generate_file_id().replace(".json", "")  # Убираем .json из имени
             logger.info(f"📄 Публикация группы с generation_id: {generation_id}")
 
             # 5️⃣ Записываем generation_id в config_public.json
