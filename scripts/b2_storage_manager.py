@@ -22,6 +22,7 @@ B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
 CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
+CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get('FILE_PATHS.folder_444'),
