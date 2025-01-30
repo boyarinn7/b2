@@ -63,7 +63,7 @@ def list_files_by_generation_id(s3, gen_id):
         matched_files = [f for f in all_files if gen_id in f]  # Фильтруем по generation_id
 
         if not matched_files:
-            logger.info(f"⚠️ Файлы с generation_id {gen_id} не найдены.")
+            logger.info(f"🔍 Найденные файлы для {gen_id}: {matched_files}")
         return matched_files
 
     except ClientError as e:
@@ -267,7 +267,7 @@ def main():
 
         # 6️⃣ Архивация опубликованных файлов по generation_id
         for gen_id in published_generations:
-            logger.info(f"📦 Архивируем файлы по generation_id: {gen_id}")
+            logger.info(f"🔍 Архивируем generation_id {gen_id}, найденные файлы: {files}")
             files = list_files_by_generation_id(s3, gen_id)
             if files:
                 archive_files(s3, files)
