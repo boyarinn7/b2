@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import subprocess  # Для запуска внешнего скрипта
 
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
@@ -9,7 +10,8 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.utils import ensure_directory_exists
 from modules.config_manager import ConfigManager
-import subprocess  # Для запуска внешнего скрипта
+
+
 
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
@@ -19,6 +21,7 @@ logger = get_logger("b2_storage_manager")
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
 CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')
+CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get('FILE_PATHS.folder_444'),
@@ -239,7 +242,8 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
-        handle_error("Ошибка основного процесса", e)
+        handle_error(logger, "Ошибка основного процесса", e)
+
 
 
 if __name__ == "__main__":
