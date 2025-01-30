@@ -3,9 +3,7 @@
 import logging
 from modules.logger import get_logger
 
-logger = get_logger("error_handler")
-
-def handle_error(context, exception):
+def handle_error(logger, context, exception):
     """
     Обрабатывает ошибки и логирует их.
     """
