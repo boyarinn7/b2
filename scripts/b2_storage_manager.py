@@ -84,18 +84,18 @@ def list_files_in_bucket(s3):
 def archive_files(s3, files):
     """Перемещает файлы, содержащие generation_id, в data/archive/ в B2."""
     try:
-        for file in files:
-            new_path = f"data/archive/{file.split('/')[-1]}"  # Перемещаем в data/archive/
+        logger.info(f"📦 Архивируем файлы: {files}")
 
-            # Копируем файл в новую папку
+        for file in files:
+            new_path = f"data/archive/{file.split('/')[-1]}"
+
             s3.copy_object(Bucket="boyarinnbotbucket",
                            CopySource={"Bucket": "boyarinnbotbucket", "Key": file},
                            Key=new_path)
 
-            # Удаляем оригинал после копирования
             s3.delete_object(Bucket="boyarinnbotbucket", Key=file)
 
-            logger.info(f"📦 Файл {file} перемещён в {new_path}.")
+            logger.info(f"✅ Файл {file} перемещён в {new_path}.")
 
     except Exception as e:
         logger.error(f"❌ Ошибка при архивировании файлов: {e}")
@@ -207,6 +207,7 @@ def move_group(s3, src_folder, dst_folder, group_id):
                 logger.error(f"Error moving {src_key}: {e.response['Error']['Message']}")
 
 def process_folders(s3, folders):
+    """Перемещает файлы между 666/ → 555/ → 444/."""
     empty_folders = set()
     changes_made = True
 
@@ -222,13 +223,17 @@ def process_folders(s3, folders):
             src_files = list_files_in_folder(s3, src_folder)
             dst_files = list_files_in_folder(s3, dst_folder)
 
+            logger.info(f"📂 Проверяем {src_folder} → {dst_folder}")
+            logger.info(f"Файлы в {src_folder}: {src_files}")
+            logger.info(f"Файлы в {dst_folder}: {dst_files}")
+
             src_ready = get_ready_groups(src_files)
             dst_ready = get_ready_groups(dst_files)
 
             for group_id in src_ready:
-                if len(dst_ready) < 1:
-                    move_group(s3, src_folder, dst_folder, group_id)
-                    changes_made = True
+                logger.info(f"📦 Перемещаем группу {group_id} из {src_folder} в {dst_folder}")
+                move_group(s3, src_folder, dst_folder, group_id)
+                changes_made = True
 
             if not src_ready:
                 empty_folders.add(src_folder)
@@ -273,15 +278,18 @@ def main():
         cleanup_archive(s3)
 
         # 8️⃣ Запускаем generate_content.py, если 666/ пустая
-        if not list_files_in_folder(s3, "666/"):
+        files_in_666 = list_files_in_folder(s3, "666/")  # Получаем список файлов
+
+        if not files_in_666:  # Если папка пуста
             logger.info("⚠️ Папка 666/ пустая. Запускаем generate_content.py...")
             try:
-                subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
+                subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
+                               check=True)
                 logger.info("✅ Скрипт generate_content.py выполнен успешно.")
             except subprocess.CalledProcessError as e:
                 logger.error(f"❌ Ошибка при выполнении generate_content.py: {e}")
-
-        logger.info("✅ Работа B2 Storage Manager завершена.")
+        else:
+            logger.info(f"📂 В 666/ остались файлы: {files_in_666}")
 
     except Exception as e:
         handle_error(logger, e, "❌ Ошибка в B2 Storage Manager")
