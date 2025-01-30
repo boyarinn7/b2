@@ -16,6 +16,7 @@ logger = get_logger("b2_storage_manager")
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
+CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get('FILE_PATHS.folder_444'),
@@ -236,7 +237,7 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
-        handle_error(logger, f"Main Process Error: {e}")
+        handle_error(f"Main Process Error: {e}")
 
 if __name__ == "__main__":
     main()
