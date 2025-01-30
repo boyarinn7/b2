@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+
+from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
 from modules.logger import get_logger
@@ -237,7 +239,8 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
-        handle_error(f"Main Process Error: {e}")
+        handle_error("Ошибка основного процесса", e)
+
 
 if __name__ == "__main__":
     main()
