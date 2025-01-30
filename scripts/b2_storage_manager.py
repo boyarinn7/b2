@@ -207,15 +207,15 @@ def move_group(s3, src_folder, dst_folder, group_id):
                 logger.error(f"Error moving {src_key}: {e.response['Error']['Message']}")
 
 def process_folders(s3, folders):
-    """Перемещает файлы между 666/ → 555/ → 444/."""
+    """Перемещает файлы между 666/ → 555/ → 444/ (от большей папки к меньшей)."""
     empty_folders = set()
     changes_made = True
 
     while changes_made:
         changes_made = False
-        for i in range(len(folders) - 1, 0, -1):
+        for i in range(len(folders) - 1):  # Изменено: теперь идём от 666 к 444
             src_folder = folders[i]
-            dst_folder = folders[i - 1]
+            dst_folder = folders[i + 1]
 
             if src_folder in empty_folders:
                 continue
