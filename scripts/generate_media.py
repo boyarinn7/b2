@@ -3,6 +3,8 @@
 import os
 import json
 import boto3
+import botocore
+
 from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
 from modules.error_handler import handle_error
@@ -144,7 +146,8 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
-        handle_error(logger, f"Main Process Error: {e}")
+        handle_error(logger, "Ошибка загрузки файла из B2", e)
+
 
 if __name__ == "__main__":
     try:
