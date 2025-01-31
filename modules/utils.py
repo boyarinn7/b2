@@ -92,6 +92,7 @@ def move_to_archive(s3, bucket_name, generation_id, logger):
     """
     Перемещает файлы, относящиеся к generation_id, в архив.
     """
+    logger.info(f"🛠 Перед вызовом move_to_archive(): b2_client={type(b2_client)}")
     archive_folder = f"archive/{generation_id}/"
     source_folder = f"generated/{generation_id}/"
 
