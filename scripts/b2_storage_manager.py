@@ -230,6 +230,7 @@ def main():
         logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
 
         # Загружаем config_public.json
+        logger.info(f"🔍 Перед вызовом download_file_from_b2(): {type(b2_client)}")
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         config_public = load_config_public(CONFIG_PUBLIC_LOCAL_PATH)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
