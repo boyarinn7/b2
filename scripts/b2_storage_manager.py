@@ -21,6 +21,7 @@ from scripts.generate_media import (
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 
+
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
@@ -34,6 +35,7 @@ FOLDERS = [
     config.get('FILE_PATHS.folder_666')
 ]
 ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
+
 
 # Регулярное выражение для проверки формата имени файла
 
@@ -228,8 +230,7 @@ def main():
 
         # Загружаем config_public.json
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
-            config_public = json.load(file)
+        config_public = load_config_public(CONFIG_PUBLIC_LOCAL_PATH)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
         if "empty" in config_public and config_public["empty"]:
@@ -252,6 +253,12 @@ def main():
             for gen_id in config_public["generation_id"]:
                 logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
                 move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)  # ✅ Исправленный вызов
+
+                # Удаляем generation_id, которые уже заархивированы
+            config_public["generation_id"] = []
+            save_config_public(CONFIG_PUBLIC_LOCAL_PATH, config_public)  # ✅ Сохраняем изменения
+            logger.info("✅ Все generation_id удалены из config_public.json")
+            
         else:
             logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
 
