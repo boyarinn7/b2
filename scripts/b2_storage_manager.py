@@ -230,6 +230,9 @@ def main():
         logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
 
         # Загружаем config_public.json
+        import inspect
+        logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
+
         logger.info(f"🔍 Перед вызовом download_file_from_b2(): {type(b2_client)}")
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         config_public = load_config_public(CONFIG_PUBLIC_LOCAL_PATH)
@@ -250,6 +253,9 @@ def main():
                     subprocess.run(
                         ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
                         check=True)
+
+            import inspect
+            logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
