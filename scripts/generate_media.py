@@ -42,16 +42,15 @@ def download_file_from_b2(client, remote_path, local_path):
         logger.info(f"🔄 Начинаем загрузку файла из B2: {remote_path} -> {local_path}")
         ensure_directory_exists(os.path.dirname(local_path))
 
-        b2_client = get_b2_client()
-        if not isinstance(b2_client, botocore.client.BaseClient):
-            raise TypeError("❌ Ошибка: b2_client не является объектом S3-клиента!")
+        if not isinstance(client, botocore.client.BaseClient):
+            raise TypeError("❌ Ошибка: client не является объектом S3-клиента!")
 
-        logger.info(f"🛠 b2_client перед вызовом download_file_from_b2(): {b2_client}")
+        logger.info(f"🛠 client перед вызовом download_file_from_b2(): {type(client)}")
         logger.info(f"🔍 download_file(): Bucket={B2_BUCKET_NAME}, Key={remote_path}, Filename={local_path}")
         logger.info(f"🔍 Тип client: {type(client)}")
-        logger.info(f"🔍 Тип remote_path: {type(remote_path)}")
         logger.info(f"🔍 Перед вызовом .download_file() в download_file_from_b2(): {type(client)}")
-        client.download_file(Bucket=B2_BUCKET_NAME, Key=remote_path, Filename=local_path)  # ✅ Исправлено
+
+        client.download_file(Bucket=B2_BUCKET_NAME, Key=remote_path, Filename=local_path)
 
         logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
     except Exception as e:
