@@ -43,7 +43,7 @@ def download_file_from_b2(client, remote_path, local_path):
         logger.info(f"🔍 download_file(): Bucket={B2_BUCKET_NAME}, Key={remote_path}, Filename={local_path}")
         logger.info(f"🔍 Тип client: {type(client)}")
         logger.info(f"🔍 Тип remote_path: {type(remote_path)}")
-
+        logger.info(f"🔍 Перед вызовом .download_file() в download_file_from_b2(): {type(client)}")
         client.download_file(Bucket=B2_BUCKET_NAME, Key=remote_path, Filename=local_path)  # ✅ Исправлено
 
         logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
