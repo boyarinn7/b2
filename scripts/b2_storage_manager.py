@@ -235,6 +235,9 @@ def main():
 
         logger.info(f"🔍 Перед вызовом download_file_from_b2(): {type(b2_client)}")
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+
+        logger.info(f"🔍 Тип объекта b2_client перед вызовом download_file_from_b2: {type(b2_client)}")
+
         config_public = load_config_public(CONFIG_PUBLIC_LOCAL_PATH)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
