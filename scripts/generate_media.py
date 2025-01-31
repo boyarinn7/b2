@@ -88,6 +88,7 @@ def update_config_public(client, folder):
     """Обновляет config_public.json, удаляя папку из 'empty'."""
     try:
         logger.info(f"🔄 Обновление config_public.json: удаление {folder} из списка 'empty'")
+        logger.info(f"🛠 Перед вызовом download_file_from_b2(): client={type(client)}")
         download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
@@ -99,6 +100,7 @@ def update_config_public(client, folder):
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
 
+        logger.info(f"🛠 Перед вызовом upload_file(): client={type(client)}")
         client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
         logger.info(f"✅ config_public.json обновлён и загружен обратно в B2.")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
