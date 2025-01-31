@@ -4,13 +4,12 @@ import logging
 import subprocess  # Для запуска внешнего скрипта
 import re
 
-from modules.utils import is_folder_empty
+from modules.utils import is_folder_empty, ensure_directory_exists, move_to_archive
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
 from modules.logger import get_logger
 from modules.error_handler import handle_error
-from modules.utils import ensure_directory_exists
 from modules.config_manager import ConfigManager
 from scripts.generate_media import download_file_from_b2, generate_mock_video
 from scripts.generate_media import (
@@ -202,6 +201,12 @@ def process_folders(s3, folders):
     else:
         logger.info("✅ Все папки заполнены. Завершаем процесс.")
 
+    # Обновляем config_public.json пустыми папками
+    config_data = load_config_public(s3)
+    config_data["empty"] = list(empty_folders)  # Записываем пустые папки
+    save_config_public(s3, config_data)
+    logger.info(f"📂 Обновлены пустые папки в config_public.json: {config_data['empty']}")
+
 
 def main():
     """Основной процесс генерации медиа."""
@@ -226,6 +231,13 @@ def main():
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
+
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]  # Берём первую пустую папку
+            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
+        else:
+            logger.error("❌ Нет пустых папок для загрузки контента.")
+            return  # Прерываем выполнение, если нет папок
 
         if "empty" in config_public and config_public["empty"]:
             logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
