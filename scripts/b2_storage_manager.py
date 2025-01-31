@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import subprocess  # Для запуска внешнего скрипта
+import re
 
 from modules.utils import is_folder_empty
 from scripts.generate_media import download_file_from_b2
@@ -16,10 +17,6 @@ from scripts.generate_media import (
     download_file_from_b2, generate_mock_video,
     update_config_public, upload_to_b2
 )
-
-
-
-
 
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
@@ -40,7 +37,7 @@ FOLDERS = [
 ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
 
 # Регулярное выражение для проверки формата имени файла
-import re
+
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 def log_folders_state(s3, folders, stage):
@@ -228,14 +225,21 @@ def main():
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
-
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
+
+        if "empty" in config_public and config_public["empty"]:
+            logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
+            for empty_folder in config_public["empty"]:
+                if empty_folder == "666/":
+                    logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
+                    subprocess.run(
+                        ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
+                        check=True)
 
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
                 logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
-                # Добавляем логику перемещения файлов в архив (реализуем в utils.py)
-                move_to_archive(gen_id)
+                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)  # ✅ Исправленный вызов
         else:
             logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
 
@@ -253,9 +257,6 @@ def main():
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, "Ошибка основного процесса", e)
-
-
-
 
 
 if __name__ == "__main__":
