@@ -33,16 +33,20 @@ def get_b2_client():
     except Exception as e:
         handle_error(logger, f"B2 Client Initialization Error: {e}")
 
+
 def download_file_from_b2(client, remote_path, local_path):
-    """Загружает файл из B2."""
+    """Загружает файл из B2 (S3)."""
     try:
         logger.info(f"🔄 Начинаем загрузку файла из B2: {remote_path} -> {local_path}")
         ensure_directory_exists(os.path.dirname(local_path))
-        client.download_file(B2_BUCKET_NAME, remote_path, local_path)
+
+        client.download_file(Bucket=B2_BUCKET_NAME, Key=remote_path, Filename=local_path)  # ✅ Исправлено
+
         logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки {remote_path}: {e}")
         handle_error(logger, f"B2 Download Error: {e}")
+
 
 def upload_to_b2(client, folder, file_path):
     """Загружает файл в B2."""
