@@ -70,3 +70,29 @@ def is_folder_empty(s3, bucket_name, folder_prefix):
         handle_error("B2 Folder Check Error", e)
 
 
+def move_to_archive(s3, bucket_name, generation_id, logger):
+    """
+    Перемещает файлы, относящиеся к generation_id, в архив.
+    """
+    archive_folder = f"archive/{generation_id}/"
+    source_folder = f"generated/{generation_id}/"
+
+    try:
+        objects = s3.list_objects_v2(Bucket=bucket_name, Prefix=source_folder)
+        if "Contents" in objects:
+            for obj in objects["Contents"]:
+                old_key = obj["Key"]
+                new_key = old_key.replace(source_folder, archive_folder, 1)
+
+                # Копируем файл
+                s3.copy_object(Bucket=bucket_name, CopySource={"Bucket": bucket_name, "Key": old_key}, Key=new_key)
+
+                # Удаляем оригинал
+                s3.delete_object(Bucket=bucket_name, Key=old_key)
+
+                logger.info(f"📁 Файл {old_key} перемещён в {new_key}")
+
+    except Exception as e:
+        handle_error(logger, "Ошибка перемещения в архив", e)
+
+

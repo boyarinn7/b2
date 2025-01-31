@@ -231,12 +231,13 @@ def main():
 
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
-        # Проверяем наличие пустых папок
-        if "empty" in config_public and config_public["empty"]:
-            target_folder = config_public["empty"][0]
-            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
+        if "generation_id" in config_public:
+            for gen_id in config_public["generation_id"]:
+                logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
+                # Добавляем логику перемещения файлов в архив (реализуем в utils.py)
+                move_to_archive(gen_id)
         else:
-            raise ValueError("❌ Ошибка: Список 'empty' отсутствует или пуст в config_public.json")
+            logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
 
         # Генерация видео и загрузка в B2
         video_path = generate_mock_video(file_id)
@@ -252,6 +253,8 @@ def main():
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, "Ошибка основного процесса", e)
+
+
 
 
 
