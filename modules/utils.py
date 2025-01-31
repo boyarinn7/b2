@@ -70,6 +70,24 @@ def is_folder_empty(s3, bucket_name, folder_prefix):
         handle_error("B2 Folder Check Error", e)
 
 
+def load_config_public(config_path):
+    """
+    Загружает config_public.json.
+    """
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    return {}
+
+def save_config_public(config_path, config_data):
+    """
+    Сохраняет config_public.json.
+    """
+    with open(config_path, 'w', encoding='utf-8') as file:
+        json.dump(config_data, file, indent=4, ensure_ascii=False)
+
+
+
 def move_to_archive(s3, bucket_name, generation_id, logger):
     """
     Перемещает файлы, относящиеся к generation_id, в архив.
@@ -94,5 +112,13 @@ def move_to_archive(s3, bucket_name, generation_id, logger):
 
     except Exception as e:
         handle_error(logger, "Ошибка перемещения в архив", e)
+
+    # Удаляем generation_id из config_public.json
+    config_data = load_config_public(s3)
+    if "generation_id" in config_data and generation_id in config_data["generation_id"]:
+        config_data["generation_id"].remove(generation_id)  # Удаляем ID группы
+        save_config_public(s3, config_data)  # Сохраняем обновлённый config_public.json
+        logger.info(f"🗑️ Удалён generation_id {generation_id} из config_public.json")
+
 
 

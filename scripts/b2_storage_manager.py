@@ -258,7 +258,7 @@ def main():
             config_public["generation_id"] = []
             save_config_public(CONFIG_PUBLIC_LOCAL_PATH, config_public)  # ✅ Сохраняем изменения
             logger.info("✅ Все generation_id удалены из config_public.json")
-            
+
         else:
             logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
 
