@@ -3,6 +3,7 @@ import json
 import logging
 import subprocess  # Для запуска внешнего скрипта
 
+from modules.utils import is_folder_empty
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
@@ -10,6 +11,13 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.utils import ensure_directory_exists
 from modules.config_manager import ConfigManager
+from scripts.generate_media import download_file_from_b2, generate_mock_video
+from scripts.generate_media import (
+    download_file_from_b2, generate_mock_video,
+    update_config_public, upload_to_b2
+)
+
+
 
 
 

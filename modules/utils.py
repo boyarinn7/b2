@@ -59,3 +59,14 @@ def list_files_in_folder(s3, folder):
         print(f"❌ Ошибка при получении списка файлов в {folder}: {e}")
         return []
 
+def is_folder_empty(s3, bucket_name, folder_prefix):
+    """
+    Проверяет, пустая ли папка в B2.
+    """
+    try:
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_prefix)
+        return "Contents" not in response  # Если нет содержимого, папка пустая
+    except Exception as e:
+        handle_error("B2 Folder Check Error", e)
+
+
