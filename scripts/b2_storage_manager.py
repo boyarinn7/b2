@@ -224,6 +224,7 @@ def main():
 
         # Создаём клиент B2
         b2_client = get_b2_client()
+        logger.info(f"ℹ️ Тип объекта b2_client: {type(b2_client)}")
 
         # Логируем вызов генератора
         logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
