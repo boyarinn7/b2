@@ -177,8 +177,8 @@ def process_folders(s3, folders):
                     changes_made = True
             if not src_ready:
                 empty_folders.add(src_folder)
-    # Обновлённый вызов с тремя аргументами
-    if is_folder_empty(b2_client, B2_BUCKET_NAME, "666/"):
+    # Используем переменную s3, которая передана в функцию, вместо b2_client
+    if is_folder_empty(s3, B2_BUCKET_NAME, "666/"):
         logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
         subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
     else:
