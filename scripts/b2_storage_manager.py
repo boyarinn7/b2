@@ -257,7 +257,7 @@ def main():
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
                 logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
-                move_to_archive(B2_BUCKET_NAME, gen_id, logger)
+                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)
             config_public["generation_id"] = []
             save_config_public(b2_client, config_public)
             logger.info("✅ Все generation_id удалены из config_public.json")

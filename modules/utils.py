@@ -95,8 +95,6 @@ def move_to_archive(s3, bucket_name, generation_id, logger):
     Перемещает файлы, относящиеся к generation_id, в архив.
     """
 
-
-
     logger.info(f"🛠 Проверка s3 в {__file__}, строка {inspect.currentframe().f_lineno}: {type(s3)}")
     logger.info(f"🛠 Перед вызовом move_to_archive(): s3={type(s3)}")
 
