@@ -175,7 +175,7 @@ def process_folders(s3, folders):
                     changes_made = True
             if not src_ready:
                 empty_folders.add(src_folder)
-    # Вызов is_folder_empty с корректными параметрами: s3, bucket_name, и префикс папки
+    # Вызов is_folder_empty с корректными параметрами: (s3, bucket_name, folder_prefix)
     if is_folder_empty(s3, B2_BUCKET_NAME, "666/"):
         logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
         subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
@@ -253,10 +253,11 @@ def main():
                     import inspect
                     logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
+        # Исправленный вызов: вызываем move_to_archive без передачи b2_client
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
                 logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
-                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)
+                move_to_archive(B2_BUCKET_NAME, gen_id, logger)
             config_public["generation_id"] = []
             save_config_public(b2_client, config_public)
             logger.info("✅ Все generation_id удалены из config_public.json")
