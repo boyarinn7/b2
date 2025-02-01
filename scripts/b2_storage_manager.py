@@ -5,27 +5,22 @@ import subprocess  # Для запуска внешнего скрипта
 import re
 
 from modules.utils import is_folder_empty, ensure_directory_exists, move_to_archive
-from scripts.generate_media import download_file_from_b2
-from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
 from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
-from scripts.generate_media import download_file_from_b2, generate_mock_video
-from scripts.generate_media import (
-    download_file_from_b2, generate_mock_video,
-    update_config_public, upload_to_b2
-)
+from scripts.generate_media import download_file_from_b2, generate_mock_video, update_config_public, upload_to_b2
+from botocore.exceptions import ClientError
 
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 
-
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
-CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
+CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # Используется в локальной конфигурации, если необходимо
 CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')
+# Здесь явно определяем, какой ключ используется в B2 и куда сохраняется локально
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
 CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
@@ -36,9 +31,7 @@ FOLDERS = [
 ]
 ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
 
-
 # Регулярное выражение для проверки формата имени файла
-
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 def log_folders_state(s3, folders, stage):
@@ -48,26 +41,32 @@ def log_folders_state(s3, folders, stage):
         logger.info(f"- {folder}: {files}")
 
 def load_config_public(s3):
+    """
+    Загружает config_public.json с удалённого хранилища и возвращает его содержимое как словарь.
+    """
     try:
-        local_path = os.path.basename(CONFIG_PUBLIC_PATH)
-        logger.info(f"🔍 s3 перед .download_file(): {type(s3)}")  # Исправлено!
-        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_PATH, local_path)
+        local_path = CONFIG_PUBLIC_LOCAL_PATH
+        logger.info(f"🔍 s3 перед .download_file(): {type(s3)}")
+        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             config_data = json.load(file)
             logger.info(f"✅ Содержимое config_public.json: {config_data}")
             return config_data
     except FileNotFoundError:
+        logger.error("❌ Файл config_public.json не найден локально.")
         return {}
     except ClientError as e:
         logger.error(f"Error loading config_public.json: {e.response['Error']['Message']}")
         return {}
 
 def save_config_public(s3, data):
+    """
+    Сохраняет данные в config_public.json локально и загружает его в B2.
+    """
     try:
-        local_path = os.path.basename(CONFIG_PUBLIC_PATH)
-        with open(local_path, 'w', encoding='utf-8') as file:
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        s3.upload_file(local_path, B2_BUCKET_NAME, CONFIG_PUBLIC_PATH)
+        s3.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
     except Exception as e:
         logger.error(f"Error saving config_public.json: {e}")
 
@@ -98,16 +97,14 @@ def get_ready_groups(files):
 
     return ready_groups
 
-
 def handle_publish(s3, config_data):
     """Перемещает все файлы с указанными generation_id в архив B2, пока список не станет пустым."""
-
     while True:
         generation_ids = config_data.get("generation_id", [])
 
         if not generation_ids:
             logger.info("📂 Нет generation_id в config_public.json, публикация завершена.")
-            return  # ❌ Если generation_id пуст – процесс завершается
+            return
 
         if isinstance(generation_ids, str):
             generation_ids = [generation_ids]  # Приводим к списку, если это строка
@@ -117,45 +114,44 @@ def handle_publish(s3, config_data):
         # Папки, где ищем файлы с этими generation_id
         source_folders = ["444/", "555/", "666/"]
 
-        archived_ids = []  # 🔹 Список ID, которые отправлены в архив
+        archived_ids = []  # Список ID, которые отправлены в архив
 
         for generation_id in generation_ids:
             for folder in source_folders:
                 files_to_move = list_files_in_folder(s3, folder)  # Получаем список файлов
 
                 for file_key in files_to_move:
-                    if generation_id in file_key:  # 🏷 Фильтруем файлы по generation_id
+                    if generation_id in file_key:  # Фильтруем файлы по generation_id
                         archive_path = f"data/archive/{os.path.basename(file_key)}"
 
                         try:
-                            # 📤 Перемещаем файл в архив
+                            # Перемещаем файл в архив
                             s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key},
                                            Key=archive_path)
                             s3.delete_object(Bucket=B2_BUCKET_NAME, Key=file_key)
                             logger.info(f"✅ Файл {file_key} перемещён в архив: {archive_path}")
 
                             if generation_id not in archived_ids:
-                                archived_ids.append(generation_id)  # Запоминаем, что этот ID заархивирован
+                                archived_ids.append(generation_id)
 
                         except ClientError as e:
                             logger.error(f"❌ Ошибка при архивировании {file_key}: {e.response['Error']['Message']}")
 
-        # 🏷 Удаляем только заархивированные generation_id из списка
+        # Удаляем только заархивированные generation_id из списка
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
 
-        # ✅ Если список generation_id пуст – удаляем ключ
+        # Если список generation_id пуст – удаляем ключ
         if not config_data["generation_id"]:
             del config_data["generation_id"]
 
-        # 📤 Загружаем обновлённый config_public.json в B2
+        # Загружаем обновлённый config_public.json в B2
         save_config_public(s3, config_data)
         logger.info(f"✅ Архивация завершена для: {archived_ids}")
 
-        # 🔄 Проверяем, остались ли generation_id, если нет – выходим из цикла
+        # Проверяем, остались ли generation_id, если нет – выходим из цикла
         if not config_data.get("generation_id"):
             logger.info("🎉 Все опубликованные группы заархивированы, завершаем процесс.")
             break
-
 
 def move_group(s3, src_folder, dst_folder, group_id):
     for ext in FILE_EXTENSIONS:
@@ -196,11 +192,10 @@ def process_folders(s3, folders):
             if not src_ready:
                 empty_folders.add(src_folder)
 
-    # ✅ Финальная проверка: если 666/ пустая, запускаем генерацию контента
+    # Финальная проверка: если 666/ пустая, запускаем генерацию контента
     if is_folder_empty(s3, "666/"):
         logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
         subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
-
     else:
         logger.info("✅ Все папки заполнены. Завершаем процесс.")
 
@@ -209,7 +204,6 @@ def process_folders(s3, folders):
     config_data["empty"] = list(empty_folders)  # Записываем пустые папки
     save_config_public(s3, config_data)
     logger.info(f"📂 Обновлены пустые папки в config_public.json: {config_data['empty']}")
-
 
 def main():
     """Основной процесс генерации медиа."""
@@ -230,7 +224,6 @@ def main():
         # Логируем вызов генератора
         logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
 
-        # Загружаем config_public.json
         import inspect
         logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
@@ -239,7 +232,8 @@ def main():
         logger.info(f"🔍 После download_file_from_b2() b2_client: {type(b2_client)}")
         logger.info(f"🔍 Тип объекта b2_client перед вызовом download_file_from_b2: {type(b2_client)}")
 
-        config_public = load_config_public(CONFIG_PUBLIC_LOCAL_PATH)
+        # Загружаем config_public.json с B2
+        config_public = load_config_public(b2_client)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
         if "empty" in config_public and config_public["empty"]:
@@ -257,20 +251,17 @@ def main():
                     subprocess.run(
                         ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
                         check=True)
-
-            import inspect
-            logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
+                    import inspect
+                    logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
                 logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
-                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)  # ✅ Исправленный вызов
-
-                # Удаляем generation_id, которые уже заархивированы
+                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)
+            # Удаляем generation_id, которые уже заархивированы
             config_public["generation_id"] = []
-            save_config_public(CONFIG_PUBLIC_LOCAL_PATH, config_public)  # ✅ Сохраняем изменения
+            save_config_public(b2_client, config_public)
             logger.info("✅ Все generation_id удалены из config_public.json")
-
         else:
             logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
 
@@ -281,14 +272,13 @@ def main():
         # Обновление config_public.json
         update_config_public(b2_client, target_folder)
 
-        # 🔄 После генерации запускаем b2_storage_manager.py
+        # После генерации запускаем b2_storage_manager.py для проверки состояния папок
         logger.info("🔄 Завершена генерация медиа. Запускаем b2_storage_manager.py для проверки состояния папок...")
         subprocess.run(["python", os.path.join(os.path.dirname(__file__), "b2_storage_manager.py")], check=True)
 
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, "Ошибка основного процесса", e)
-
 
 if __name__ == "__main__":
     main()
