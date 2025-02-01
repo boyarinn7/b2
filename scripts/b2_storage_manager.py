@@ -177,10 +177,10 @@ def process_folders(s3, folders):
                     changes_made = True
             if not src_ready:
                 empty_folders.add(src_folder)
-    if is_folder_empty(s3, "666/"):
+    # Исправленный вызов: функция is_folder_empty теперь вызывается только с префиксом папки
+    if is_folder_empty("666/"):
         logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
-        subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
-                       check=True)
+        subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
     else:
         logger.info("✅ Все папки заполнены. Завершаем процесс.")
     config_data = load_config_public(s3)
