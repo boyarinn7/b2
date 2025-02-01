@@ -50,6 +50,7 @@ def log_folders_state(s3, folders, stage):
 def load_config_public(s3):
     try:
         local_path = os.path.basename(CONFIG_PUBLIC_PATH)
+        logger.info(f"🔍 s3 перед .download_file(): {type(s3)}")  # Исправлено!
         s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             config_data = json.load(file)

@@ -2,6 +2,8 @@ import os
 import hashlib
 import json
 import base64
+import inspect
+
 from modules.error_handler import handle_error
 
 
@@ -92,10 +94,12 @@ def move_to_archive(s3, bucket_name, generation_id, logger):
     """
     Перемещает файлы, относящиеся к generation_id, в архив.
     """
-    import inspect
-    logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
-    logger.info(f"🛠 Перед вызовом move_to_archive(): b2_client={type(b2_client)}")
+
+
+    logger.info(f"🛠 Проверка s3 в {__file__}, строка {inspect.currentframe().f_lineno}: {type(s3)}")
+    logger.info(f"🛠 Перед вызовом move_to_archive(): s3={type(s3)}")
+
     archive_folder = f"archive/{generation_id}/"
     source_folder = f"generated/{generation_id}/"
 
