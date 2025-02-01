@@ -239,8 +239,9 @@ def main():
             target_folder = config_public["empty"][0]
             logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
         else:
-            logger.error("❌ Нет пустых папок для загрузки контента.")
-            return
+            if not config_public.get("empty", []):
+                logger.info("✅ Нет пустых папок для загрузки. Завершаем процесс.")
+                return  # Завершаем без ошибки
 
         if "empty" in config_public and config_public["empty"]:
             logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
