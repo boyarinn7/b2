@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-import subprocess  # Для запуска внешнего скрипта
+import subprocess  # Для запуска внешних скриптов
 import re
 
 from modules.utils import is_folder_empty, ensure_directory_exists, move_to_archive
@@ -18,7 +18,7 @@ logger = get_logger("b2_storage_manager")
 
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
-CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # локальный путь (например, "config/config_public.json")
+CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # например, "config/config_public.json"
 CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # ключ в B2
 CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')
@@ -78,8 +78,7 @@ def list_files_in_folder(s3, folder_prefix):
         response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=folder_prefix)
         return [
             obj['Key'] for obj in response.get('Contents', [])
-            if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty') and FILE_NAME_PATTERN.match(
-                os.path.basename(obj['Key']))
+            if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty') and FILE_NAME_PATTERN.match(os.path.basename(obj['Key']))
         ]
     except ClientError as e:
         logger.error(f"Error listing files in {folder_prefix}: {e.response['Error']['Message']}")
@@ -120,8 +119,7 @@ def handle_publish(s3, config_data):
                     if generation_id in file_key:
                         archive_path = f"data/archive/{os.path.basename(file_key)}"
                         try:
-                            s3.copy_object(Bucket=B2_BUCKET_NAME,
-                                           CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key},
+                            s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key},
                                            Key=archive_path)
                             s3.delete_object(Bucket=B2_BUCKET_NAME, Key=file_key)
                             logger.info(f"✅ Файл {file_key} перемещён в архив: {archive_path}")
@@ -177,7 +175,7 @@ def process_folders(s3, folders):
                     changes_made = True
             if not src_ready:
                 empty_folders.add(src_folder)
-    # Используем переменную s3, которая передана в функцию, вместо b2_client
+    # Вызов is_folder_empty с корректными параметрами: s3, bucket_name, и префикс папки
     if is_folder_empty(s3, B2_BUCKET_NAME, "666/"):
         logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
         subprocess.run(["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")], check=True)
@@ -189,7 +187,26 @@ def process_folders(s3, folders):
     logger.info(f"📂 Обновлены пустые папки в config_public.json: {config_data['empty']}")
 
 
+def run_generate_media():
+    """Запускает скрипт generate_media.py по локальному пути."""
+    try:
+        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
+        script_path = os.path.join(scripts_folder, "generate_media.py")
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
+        logger.info(f"🔄 Запуск скрипта: {script_path}")
+        subprocess.run(["python", script_path], check=True)
+        logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
+    except subprocess.CalledProcessError as e:
+        handle_error("Script Execution Error", f"Ошибка при выполнении скрипта {script_path}: {e}")
+    except FileNotFoundError as e:
+        handle_error("File Not Found Error", str(e))
+    except Exception as e:
+        handle_error("Unknown Error", f"Ошибка при запуске скрипта {script_path}: {e}")
+
+
 def main():
+    """Основной процесс генерации медиа."""
     logger.info("🔄 Начинаем процесс генерации медиа...")
     try:
         # Читаем config_gen.json
@@ -198,6 +215,7 @@ def main():
             config_gen = json.load(file)
         file_id = os.path.splitext(config_gen["generation_id"])[0]
         logger.info(f"📂 ID генерации: {file_id}")
+
         # Создаём клиент B2
         b2_client = get_b2_client()
         logger.info(f"ℹ️ Тип объекта b2_client: {type(b2_client)}")
@@ -209,7 +227,7 @@ def main():
         logger.info(f"🔍 После download_file_from_b2() b2_client: {type(b2_client)}")
         logger.info(f"🔍 Тип объекта b2_client перед вызовом download_file_from_b2: {type(b2_client)}")
 
-        # Новое: Обновляем состояние папок через process_folders
+        # Обновляем состояние папок через process_folders
         logger.info("🔄 Обновление состояния папок через process_folders()")
         process_folders(b2_client, FOLDERS)
 
@@ -218,7 +236,7 @@ def main():
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
         if "empty" in config_public and config_public["empty"]:
-            target_folder = config_public["empty"][0]  # Берём первую пустую папку
+            target_folder = config_public["empty"][0]
             logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
         else:
             logger.error("❌ Нет пустых папок для загрузки контента.")
@@ -233,8 +251,7 @@ def main():
                         ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
                         check=True)
                     import inspect
-                    logger.info(
-                        f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
+                    logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
         if "generation_id" in config_public:
             for gen_id in config_public["generation_id"]:
@@ -249,10 +266,14 @@ def main():
         # Генерация видео и загрузка в B2
         video_path = generate_mock_video(file_id)
         upload_to_b2(b2_client, target_folder, video_path)
+
         # Обновление config_public.json
         update_config_public(b2_client, target_folder)
+
+        # После генерации запускаем b2_storage_manager.py для проверки состояния папок
         logger.info("🔄 Завершена генерация медиа. Запускаем b2_storage_manager.py для проверки состояния папок...")
         subprocess.run(["python", os.path.join(os.path.dirname(__file__), "b2_storage_manager.py")], check=True)
+
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, "Ошибка основного процесса", e)
