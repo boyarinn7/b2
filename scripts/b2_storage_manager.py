@@ -239,66 +239,66 @@ def main():
     """Основной процесс генерации медиа."""
     logger.info("🔄 Начинаем процесс генерации медиа...")
     try:
-        # Читаем config_gen.json
+        # 1) Читаем config_gen.json
         logger.info(f"📄 Читаем config_gen.json: {CONFIG_GEN_PATH}")
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
+
         file_id = os.path.splitext(config_gen["generation_id"])[0]
         logger.info(f"📂 ID генерации: {file_id}")
 
-        # Создаём клиент B2
+        # 2) Создаём клиент B2
         b2_client = get_b2_client()
         logger.info(f"ℹ️ Тип объекта b2_client: {type(b2_client)}")
         logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
         import inspect
         logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
+
+        # 3) Скачиваем config_public.json из B2 (актуальные данные)
         logger.info(f"🔍 Перед вызовом download_file_from_b2(): {type(b2_client)}")
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         logger.info(f"🔍 После download_file_from_b2() b2_client: {type(b2_client)}")
         logger.info(f"🔍 Тип объекта b2_client перед вызовом download_file_from_b2: {type(b2_client)}")
 
-        # Обновляем состояние папок через process_folders
+        # 4) Запускаем process_folders(...) - определение пустых/заполненных папок, возможно перемещение групп
         logger.info("🔄 Обновление состояния папок через process_folders()")
         process_folders(b2_client, FOLDERS)
 
-        # Перезагружаем config_public.json после обновления пустых папок
+        # 5) Перечитываем config_public.json после обновления пустых папок
         config_public = load_config_public(b2_client)
         logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
-        if "empty" in config_public and config_public["empty"]:
-            target_folder = config_public["empty"][0]
-            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
-        else:
-            if not config_public.get("empty", []):
-                logger.info("✅ Нет пустых папок для загрузки. Завершаем процесс.")
-                return  # Завершаем без ошибки
-
-        if "empty" in config_public and config_public["empty"]:
-            logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
-            for empty_folder in config_public["empty"]:
-                if empty_folder == "666/":
-                    logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию контента...")
-                    subprocess.run(
-                        ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
-                        check=True)
-                    import inspect
-                    logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
-
-        # Вместо логики с move_to_archive(...)
+        # 6) Если есть generation_id, запускаем handle_publish(...) для архивирования опубликованных групп
         if "generation_id" in config_public and config_public["generation_id"]:
-            # Вызов handle_publish(...) - перебирает все generation_id и архивирует
+            logger.info(f"📂 Вызываем handle_publish(...) для {config_public['generation_id']}")
             handle_publish(b2_client, config_public)
         else:
             logger.info("⚠️ В config_public.json отсутствует generation_id или он пуст. Пропускаем архивирование.")
 
-        # Генерация видео и загрузка в B2
+        # 7) После архивирования ещё раз запустим process_folders,
+        #    т.к. папка могла стать пустой
+        process_folders(b2_client, FOLDERS)
+        config_public = load_config_public(b2_client)
+
+        # 8) Если после архивирования остались пустые папки - запускаем генерацию контента (если это входит в вашу логику)
+        #    У вас есть блок, где, если папка 666/ пуста, generate_content.py запускается прямо в process_folders.
+        #    Но если нужна дополнительная проверка - можно её вставить здесь.
+        if "empty" in config_public and config_public["empty"]:
+            logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
+            # Пример: запустить generate_content.py самостоятельно
+            # (или оставить генерацию, как уже сделано в process_folders)
+        else:
+            if not config_public.get("empty", []):
+                logger.info("✅ Нет пустых папок для загрузки. Переходим к финальным шагам...")
+
+        # 9) Генерация (или имитация) видео и загрузка в B2
         video_path = generate_mock_video(file_id)
-        upload_to_b2(b2_client, target_folder, video_path)
+        upload_to_b2(b2_client, config_public.get("empty", [])[0] if config_public.get("empty") else FOLDERS[-1], video_path)
 
-        # Обновление config_public.json
-        update_config_public(b2_client, target_folder)
+        # 10) Обновление config_public.json после загрузки видео
+        update_config_public(b2_client, config_public.get("empty", [])[0] if config_public.get("empty") else FOLDERS[-1])
 
-        # После генерации запускаем b2_storage_manager.py для проверки состояния папок
+        # 11) В конце вызываем сам b2_storage_manager.py снова, если нужно повторно проверить состояние
         logger.info("🔄 Завершена генерация медиа. Запускаем b2_storage_manager.py для проверки состояния папок...")
         subprocess.run(["python", os.path.join(os.path.dirname(__file__), "b2_storage_manager.py")], check=True)
 
