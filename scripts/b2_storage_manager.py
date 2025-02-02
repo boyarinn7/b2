@@ -101,37 +101,67 @@ def get_ready_groups(files):
 
 
 def handle_publish(s3, config_data):
-    """Перемещает все файлы с указанными generation_id в архив B2, пока список не станет пустым."""
+    """
+    Перемещает все файлы с указанными generation_id в архив B2, пока список не станет пустым.
+    Перебирает папки ["444/", "555/", "666/"], ищет файлы, где 'generation_id' входит
+    в имя (например, '444/20250201-1131.json') и копирует их в 'data/archive/'.
+    После копирования — удаляет файлы из исходной папки, а из config_public.json
+    — соответствующий generation_id.
+    """
+
     while True:
         generation_ids = config_data.get("generation_id", [])
+        # Если вообще нет generation_id, архивировать нечего
         if not generation_ids:
             logger.info("📂 Нет generation_id в config_public.json, публикация завершена.")
             return
+
+        # Если кто-то записал строку вместо списка — превращаем в список
         if isinstance(generation_ids, str):
             generation_ids = [generation_ids]
+
         logger.info(f"📂 Найдены generation_id: {generation_ids}, перемещаем файлы в архив...")
+
+        # Папки, среди которых ищем файлы
         source_folders = ["444/", "555/", "666/"]
         archived_ids = []
+
         for generation_id in generation_ids:
             for folder in source_folders:
+                # Берём список файлов в папке
                 files_to_move = list_files_in_folder(s3, folder)
                 for file_key in files_to_move:
+                    # Ищем совпадение по generation_id
                     if generation_id in file_key:
                         archive_path = f"data/archive/{os.path.basename(file_key)}"
                         try:
-                            s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key},
-                                           Key=archive_path)
+                            # Копируем в архив
+                            s3.copy_object(
+                                Bucket=B2_BUCKET_NAME,
+                                CopySource={"Bucket": B2_BUCKET_NAME, "Key": file_key},
+                                Key=archive_path
+                            )
+                            # Удаляем исходник
                             s3.delete_object(Bucket=B2_BUCKET_NAME, Key=file_key)
                             logger.info(f"✅ Файл {file_key} перемещён в архив: {archive_path}")
+
+                            # Запоминаем, что этот gen_id уже заархивирован (успешно перенесли хотя бы один файл)
                             if generation_id not in archived_ids:
                                 archived_ids.append(generation_id)
+
                         except ClientError as e:
                             logger.error(f"❌ Ошибка при архивировании {file_key}: {e.response['Error']['Message']}")
+
+        # Убираем из config_public все gen_id, которые полностью заархивированы
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
         if not config_data["generation_id"]:
-            del config_data["generation_id"]
+            del config_data["generation_id"]  # Если пуст, можно удалить ключ
+
+        # Сохраняем обновлённое состояние
         save_config_public(s3, config_data)
         logger.info(f"✅ Архивация завершена для: {archived_ids}")
+
+        # Если больше нет generation_id, значит архивировать нечего, выходим
         if not config_data.get("generation_id"):
             logger.info("🎉 Все опубликованные группы заархивированы, завершаем процесс.")
             break
@@ -254,16 +284,12 @@ def main():
                     import inspect
                     logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
 
-        # Исправленный вызов: вызываем move_to_archive без передачи b2_client
-        if "generation_id" in config_public:
-            for gen_id in config_public["generation_id"]:
-                logger.info(f"📂 Перемещаем файлы группы {gen_id} в архив...")
-                move_to_archive(b2_client, B2_BUCKET_NAME, gen_id, logger)
-            config_public["generation_id"] = []
-            save_config_public(b2_client, config_public)
-            logger.info("✅ Все generation_id удалены из config_public.json")
+        # Вместо логики с move_to_archive(...)
+        if "generation_id" in config_public and config_public["generation_id"]:
+            # Вызов handle_publish(...) - перебирает все generation_id и архивирует
+            handle_publish(b2_client, config_public)
         else:
-            logger.info("⚠️ В config_public.json отсутствует generation_id. Пропускаем архивирование.")
+            logger.info("⚠️ В config_public.json отсутствует generation_id или он пуст. Пропускаем архивирование.")
 
         # Генерация видео и загрузка в B2
         video_path = generate_mock_video(file_id)
