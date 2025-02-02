@@ -447,7 +447,17 @@ class ContentGenerator:
 
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
-            save_to_b2(target_folder, {"content": final_text})
+
+            # -- Исправленный блок: передаём полный словарь с topic, content и sarcasm --
+            content_dict = {
+                "topic": topic,
+                "content": final_text,
+                "sarcasm": {
+                    "comment": sarcastic_comment,
+                    "poll": sarcastic_poll
+                }
+            }
+            save_to_b2(target_folder, content_dict)
 
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)

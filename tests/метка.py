@@ -42,24 +42,16 @@ def save_config_public(data):
         print(f"❌ Ошибка сохранения config_public.json: {e}")
 
 
-def mark_as_published(generation_id):
-    """Добавляет generation_id в config_public.json, не перезаписывая старые ID."""
+def clear_generation_ids():
+    """Очищает список generation_id в config_public.json."""
     config_data = load_config_public()
 
-    # ✅ Проверяем, есть ли уже generation_id
-    existing_ids = config_data.get("generation_id", [])
-    if isinstance(existing_ids, str):  # Если это строка, превращаем в список
-        existing_ids = [existing_ids]
-
-    if generation_id not in existing_ids:
-        existing_ids.append(generation_id)  # Добавляем новый ID
-
-    config_data["generation_id"] = existing_ids  # Обновляем JSON
+    # ❗ Полностью стираем все generation_id
+    config_data["generation_id"] = []
 
     save_config_public(config_data)
-    print(f"✅ Добавлен generation_id: {generation_id}")
+    print(f"✅ Все generation_id удалены, теперь: {config_data}")
 
 
 if __name__ == "__main__":
-    generation_id_to_publish = "20250124-0358"  # Укажи ID группы для публикации
-    mark_as_published(generation_id_to_publish)
+    clear_generation_ids()
