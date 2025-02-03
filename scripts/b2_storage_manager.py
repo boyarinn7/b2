@@ -31,50 +31,130 @@ ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 
-def check_files_exist(s3, generation_id):
-    """Проверяет наличие всех файлов группы в рабочих папках."""
-    for folder in FOLDERS:
-        for ext in FILE_EXTENSIONS:
-            key = f"{folder}{generation_id}{ext}"
-            try:
-                s3.head_object(Bucket=B2_BUCKET_NAME, Key=key)
-                return True
-            except ClientError:
+def load_config_public(s3):
+    """Загружает config_public.json из B2"""
+    try:
+        local_path = CONFIG_PUBLIC_PATH
+        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        with open(local_path, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            logger.warning("⚠️ Конфиг не найден, создаем новый")
+            return {"processing_lock": False, "empty": [], "generation_id": []}
+        logger.error(f"❌ Ошибка загрузки конфига: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"❌ Неизвестная ошибка: {e}")
+        return {}
+
+
+def save_config_public(s3, data):
+    """Сохраняет config_public.json в B2"""
+    try:
+        with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        s3.upload_file(CONFIG_PUBLIC_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения конфига: {e}")
+
+
+def list_files_in_folder(s3, folder_prefix):
+    """Возвращает список файлов в папке"""
+    try:
+        response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=folder_prefix)
+        return [
+            obj['Key'] for obj in response.get('Contents', [])
+            if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty')
+               and FILE_NAME_PATTERN.match(os.path.basename(obj['Key']))
+        ]
+    except ClientError as e:
+        logger.error(f"Ошибка получения списка файлов: {e}")
+        return []
+
+
+def get_ready_groups(files):
+    """Возвращает список готовых групп файлов"""
+    groups = {}
+    for file_key in files:
+        base_name = os.path.basename(file_key)
+        if FILE_NAME_PATTERN.match(base_name):
+            group_id = base_name.rsplit('.', 1)[0]
+            groups.setdefault(group_id, []).append(base_name)
+    return [
+        group_id for group_id, file_list in groups.items()
+        if all(f"{group_id}{ext}" in file_list for ext in FILE_EXTENSIONS)
+    ]
+
+
+def move_group(s3, src_folder, dst_folder, group_id):
+    """Перемещает группу файлов между папками"""
+    for ext in FILE_EXTENSIONS:
+        src_key = f"{src_folder}{group_id}{ext}"
+        dst_key = f"{dst_folder}{group_id}{ext}"
+        try:
+            s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+            s3.copy_object(
+                Bucket=B2_BUCKET_NAME,
+                CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
+                Key=dst_key
+            )
+            s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+            logger.info(f"✅ Перемещено: {src_key} -> {dst_key}")
+        except ClientError as e:
+            if e.response['Error']['Code'] != "NoSuchKey":
+                logger.error(f"Ошибка перемещения {src_key}: {e}")
+
+
+def process_folders(s3, folders):
+    """Перемещает готовые группы файлов между папками и обновляет статус пустых папок"""
+    empty_folders = set()
+    changes_made = True
+
+    while changes_made:
+        changes_made = False
+        for i in range(len(folders) - 1, 0, -1):
+            src_folder = folders[i]
+            dst_folder = folders[i - 1]
+
+            if src_folder in empty_folders:
                 continue
-    return False
 
+            # Получаем списки файлов
+            src_files = list_files_in_folder(s3, src_folder)
+            dst_files = list_files_in_folder(s3, dst_folder)
 
-def move_to_archive(s3, generation_id):
-    """Перемещает все файлы группы в архив."""
-    success = True
-    for folder in FOLDERS:
-        for ext in FILE_EXTENSIONS:
-            src_key = f"{folder}{generation_id}{ext}"
-            dst_key = f"{ARCHIVE_FOLDER}{generation_id}{ext}"
+            # Определяем готовые группы
+            src_ready = get_ready_groups(src_files)
+            dst_ready = get_ready_groups(dst_files)
 
-            try:
-                # Проверяем существование файла перед перемещением
-                s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+            # Перемещаем группы из src в dst
+            for group_id in src_ready:
+                if len(dst_ready) < 1:  # Проверка емкости целевой папки
+                    move_group(s3, src_folder, dst_folder, group_id)
+                    changes_made = True
 
-                # Копируем в архив
-                s3.copy_object(
-                    Bucket=B2_BUCKET_NAME,
-                    CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
-                    Key=dst_key
-                )
-                # Удаляем оригинал
-                s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
-                logger.info(f"✅ Успешно перемещено: {src_key} -> {dst_key}")
+            # Обновляем список пустых папок
+            if not src_ready:
+                empty_folders.add(src_folder)
 
-            except ClientError as e:
-                if e.response['Error']['Code'] != '404':
-                    logger.error(f"❌ Ошибка архивации {src_key}: {e}")
-                    success = False
-    return success
+    # Проверяем папку 666/ на пустоту
+    if is_folder_empty(s3, B2_BUCKET_NAME, "666/"):
+        logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию...")
+        subprocess.run(
+            ["python", os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")],
+            check=True
+        )
+
+    # Обновляем конфиг
+    config_data = load_config_public(s3)
+    config_data["empty"] = list(empty_folders)
+    save_config_public(s3, config_data)
+    logger.info(f"📂 Обновлены пустые папки: {config_data['empty']}")
 
 
 def handle_publish(s3, config_data):
-    """Улучшенная логика архивации с проверками"""
+    """Архивирует старые группы файлов"""
     generation_ids = config_data.get("generation_id", [])
 
     if not generation_ids:
@@ -89,67 +169,65 @@ def handle_publish(s3, config_data):
     for generation_id in generation_ids:
         logger.info(f"🔄 Архивируем группу: {generation_id}")
 
-        if not check_files_exist(s3, generation_id):
+        # Проверяем наличие файлов
+        files_exist = any(
+            list_files_in_folder(s3, folder) for folder in FOLDERS
+        )
+        if not files_exist:
             logger.error(f"❌ Файлы группы {generation_id} не найдены!")
             continue
 
-        if move_to_archive(s3, generation_id):
-            archived_ids.append(generation_id)
-        else:
-            logger.warning(f"⚠️ Частичная ошибка архивации {generation_id}")
+        # Перемещаем файлы в архив
+        success = True
+        for folder in FOLDERS:
+            for ext in FILE_EXTENSIONS:
+                src_key = f"{folder}{generation_id}{ext}"
+                dst_key = f"{ARCHIVE_FOLDER}{generation_id}{ext}"
 
-    # Обновляем конфиг только при успешной архивации
+                try:
+                    s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+                    s3.copy_object(
+                        Bucket=B2_BUCKET_NAME,
+                        CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
+                        Key=dst_key
+                    )
+                    s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+                    logger.info(f"✅ Успешно перемещено: {src_key} -> {dst_key}")
+                except ClientError as e:
+                    if e.response['Error']['Code'] != '404':
+                        logger.error(f"❌ Ошибка архивации {src_key}: {e}")
+                        success = False
+
+        if success:
+            archived_ids.append(generation_id)
+
+    # Обновляем конфиг
     if archived_ids:
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
         if not config_data["generation_id"]:
             del config_data["generation_id"]
-
-        try:
-            with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, indent=4, ensure_ascii=False)
-            s3.upload_file(CONFIG_PUBLIC_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
-            logger.info(f"✅ Успешно заархивированы: {archived_ids}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка сохранения конфига: {e}")
+        save_config_public(s3, config_data)
+        logger.info(f"✅ Успешно заархивированы: {archived_ids}")
     else:
         logger.warning("⚠️ Не удалось заархивировать ни одну группу")
 
 
-# Остальные функции остаются без изменений
-# ================================================
-def load_config_public(s3):
-    """Загружает config_public.json из B2"""
-    try:
-        local_path = CONFIG_PUBLIC_PATH
-        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
-        with open(local_path, 'r', encoding='utf-8') as file:
-            return json.load(file)
-    except Exception as e:
-        logger.error(f"Ошибка загрузки конфига: {e}")
-        return {}
-
-
-def process_folders(s3, folders):
-    """Оригинальная логика перемещения файлов между папками"""
-    # ... (без изменений)
-
-
 def main():
-    """Обновленная основная функция"""
+    """Основной процесс управления B2-хранилищем"""
+    b2_client = None
     try:
         b2_client = get_b2_client()
 
         # Проверка блокировки
         config_public = load_config_public(b2_client)
         if config_public.get("processing_lock"):
-            logger.info("🔒 Процесс уже выполняется")
+            logger.info("🔒 Процесс уже выполняется. Завершаем.")
             return
 
         # Установка блокировки
         config_public["processing_lock"] = True
-        with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as f:
-            json.dump(config_public, f, indent=4)
-        b2_client.upload_file(CONFIG_PUBLIC_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        save_config_public(b2_client, config_public)
+        logger.info("🔒 Блокировка установлена")
 
         # Основная логика
         config_public = load_config_public(b2_client)
@@ -166,15 +244,15 @@ def main():
         logger.error(f"❌ Критическая ошибка: {e}")
     finally:
         # Гарантированное снятие блокировки
-        try:
-            config_public = load_config_public(b2_client)
-            config_public["processing_lock"] = False
-            with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as f:
-                json.dump(config_public, f, indent=4)
-            b2_client.upload_file(CONFIG_PUBLIC_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
-            logger.info("🔓 Блокировка снята")
-        except Exception as e:
-            logger.error(f"❌ Ошибка снятия блокировки: {e}")
+        if b2_client:
+            try:
+                config_public = load_config_public(b2_client)
+                if config_public.get("processing_lock"):
+                    config_public["processing_lock"] = False
+                    save_config_public(b2_client, config_public)
+                    logger.info("🔓 Блокировка снята")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при завершении: {e}")
 
 
 if __name__ == "__main__":
