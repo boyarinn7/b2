@@ -236,75 +236,53 @@ def run_generate_media():
 
 
 def main():
-    """Основной процесс генерации медиа."""
-    logger.info("🔄 Начинаем процесс генерации медиа...")
+    """Основной процесс управления B2-хранилищем (публикатор)."""
+    logger.info("🔄 Запуск pубликатора (b2_storage_manager.py) ...")
     try:
-        # 1) Читаем config_gen.json
-        logger.info(f"📄 Читаем config_gen.json: {CONFIG_GEN_PATH}")
-        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
-            config_gen = json.load(file)
-
-        file_id = os.path.splitext(config_gen["generation_id"])[0]
-        logger.info(f"📂 ID генерации: {file_id}")
-
-        # 2) Создаём клиент B2
+        # 1) Загружаем config_public.json
         b2_client = get_b2_client()
-        logger.info(f"ℹ️ Тип объекта b2_client: {type(b2_client)}")
-        logger.info(f"🚀 generate_media.py вызван из: {os.environ.get('GITHUB_WORKFLOW', 'локальный запуск')}")
-        import inspect
-        logger.info(f"🛠 Проверка b2_client в {__file__}, строка {inspect.currentframe().f_lineno}: {type(b2_client)}")
-
-        # 3) Скачиваем config_public.json из B2 (актуальные данные)
-        logger.info(f"🔍 Перед вызовом download_file_from_b2(): {type(b2_client)}")
+        logger.info(f"🔍 Скачиваем config_public.json из B2 ...")
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-        logger.info(f"🔍 После download_file_from_b2() b2_client: {type(b2_client)}")
-        logger.info(f"🔍 Тип объекта b2_client перед вызовом download_file_from_b2: {type(b2_client)}")
-
-        # 4) Запускаем process_folders(...) - определение пустых/заполненных папок, возможно перемещение групп
-        logger.info("🔄 Обновление состояния папок через process_folders()")
-        process_folders(b2_client, FOLDERS)
-
-        # 5) Перечитываем config_public.json после обновления пустых папок
         config_public = load_config_public(b2_client)
-        logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
-        # 6) Если есть generation_id, запускаем handle_publish(...) для архивирования опубликованных групп
+        # 2) Если есть generation_id -> handle_publish() - архивируем старые группы
         if "generation_id" in config_public and config_public["generation_id"]:
-            logger.info(f"📂 Вызываем handle_publish(...) для {config_public['generation_id']}")
+            logger.info(f"📂 Найдены опубликованные группы: {config_public['generation_id']}. Архивируем ...")
             handle_publish(b2_client, config_public)
         else:
-            logger.info("⚠️ В config_public.json отсутствует generation_id или он пуст. Пропускаем архивирование.")
+            logger.info("⚠️ Нет опубликованных групп (generation_id). Пропускаем архивирование.")
 
-        # 7) После архивирования ещё раз запустим process_folders,
-        #    т.к. папка могла стать пустой
+        # 3) Сразу после архивирования: process_folders(...) - перемещаем готовые группы сверху вниз
+        logger.info("🔄 Вызываем process_folders(...) для перекладывания групп (666→555→444).")
         process_folders(b2_client, FOLDERS)
+
+        # 4) Ещё раз перечитываем config_public.json, чтобы узнать, не стала ли папка пустой
         config_public = load_config_public(b2_client)
+        empty_folders = config_public.get("empty", [])
+        logger.info(f"🔎 Пустые папки: {empty_folders}")
 
-        # 8) Если после архивирования остались пустые папки - запускаем генерацию контента (если это входит в вашу логику)
-        #    У вас есть блок, где, если папка 666/ пуста, generate_content.py запускается прямо в process_folders.
-        #    Но если нужна дополнительная проверка - можно её вставить здесь.
-        if "empty" in config_public and config_public["empty"]:
-            logger.info(f"📂 Обнаружены пустые папки: {config_public['empty']}")
-            # Пример: запустить generate_content.py самостоятельно
-            # (или оставить генерацию, как уже сделано в process_folders)
+        # 5) Если всё ещё пусто (например, 444/ пуста), запускаем generate_content.py
+        if empty_folders:
+            logger.info(f"⚠️ Есть пустые папки: {empty_folders}. Запускаем generate_content.py ...")
+            subprocess.run(
+                [
+                    "python",
+                    os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")
+                ],
+                check=True
+            )
+            logger.info("✅ generate_content.py завершился. (Он сам запустит generate_media.py)")
         else:
-            if not config_public.get("empty", []):
-                logger.info("✅ Нет пустых папок для загрузки. Переходим к финальным шагам...")
+            logger.info("✅ Папки не пустые, новую генерацию контента не запускаем.")
 
-        # 9) Генерация (или имитация) видео и загрузка в B2
-        video_path = generate_mock_video(file_id)
-        upload_to_b2(b2_client, config_public.get("empty", [])[0] if config_public.get("empty") else FOLDERS[-1], video_path)
-
-        # 10) Обновление config_public.json после загрузки видео
-        update_config_public(b2_client, config_public.get("empty", [])[0] if config_public.get("empty") else FOLDERS[-1])
-
-        # 11) В конце вызываем сам b2_storage_manager.py снова, если нужно повторно проверить состояние
-        logger.info("🔄 Завершена генерация медиа. Запускаем b2_storage_manager.py для проверки состояния папок...")
-        subprocess.run(["python", os.path.join(os.path.dirname(__file__), "b2_storage_manager.py")], check=True)
+        # 6) (Опционально) Если нужно, можно здесь завершить скрипт
+        #    и вернуться к вызывающему скрипту (generate_media.py или CI/CD),
+        #    который по окончании тоже может вызвать этот b2_storage_manager.py еще раз.
+        logger.info("✅ Завершение pубликатора (b2_storage_manager.py).")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка в основном процессе: {e}")
-        handle_error(logger, "Ошибка основного процесса", e)
+        logger.error(f"❌ Ошибка в pубликаторе: {e}")
+        handle_error(logger, "Ошибка публикатора", e)
 
 
 if __name__ == "__main__":
