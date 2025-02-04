@@ -107,6 +107,27 @@ def update_config_public(client, folder):
         handle_error(logger, f"Config Public Update Error: {e}")
 
 
+def reset_processing_lock(client):
+    """
+    Сбрасывает флаг блокировки (processing_lock) в config_public.json, устанавливая его в false.
+    Это необходимо, чтобы менеджер B2 мог запуститься, если ранее блокировка была установлена.
+    """
+    try:
+        logger.info("🔄 Сброс флага processing_lock в config_public.json")
+        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+        if config_public.get("processing_lock", False):
+            config_public["processing_lock"] = False
+            logger.info("✅ Флаг processing_lock сброшен.")
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(config_public, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        os.remove(CONFIG_PUBLIC_LOCAL_PATH)
+    except Exception as e:
+        handle_error(logger, f"Processing Lock Reset Error: {e}")
+
+
 def main():
     """Основной процесс генерации медиа."""
     logger.info("🔄 Начинаем процесс генерации медиа...")
@@ -147,7 +168,10 @@ def main():
         # Обновление config_public.json для исключения заполненной папки
         update_config_public(b2_client, target_folder)
 
-        # --- Новый блок: вызов скрипта b2_storage_manager.py ---
+        # Сброс блокировки processing_lock перед вызовом менеджера
+        reset_processing_lock(b2_client)
+
+        # --- Вызов скрипта b2_storage_manager.py ---
         current_dir = os.path.dirname(os.path.abspath(__file__))
         b2_storage_manager_script = os.path.join(current_dir, "b2_storage_manager.py")
         logger.info(f"🔄 Запуск скрипта: {b2_storage_manager_script}")
