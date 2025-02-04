@@ -19,8 +19,8 @@ logger = get_logger("b2_storage_manager")
 
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
-CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')
-CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
+CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # Локальный путь для временной записи
+CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь к файлу в B2
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get('FILE_PATHS.folder_444'),
@@ -30,7 +30,7 @@ FOLDERS = [
 ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
-# Определяем единый путь к скрипту генерации контента (используется в обоих местах)
+# Путь к скрипту генерации контента (generate_content.py)
 GENERATE_CONTENT_SCRIPT = os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")
 
 
@@ -40,10 +40,12 @@ def load_config_public(s3):
         local_path = CONFIG_PUBLIC_PATH
         s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
-            return json.load(file)
+            data = json.load(file)
+        logger.info("✅ Конфигурация успешно загружена.")
+        return data
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
-            logger.warning("⚠️ Конфиг не найден, создаем новый")
+            logger.warning("⚠️ Конфиг не найден, создаём новый.")
             return {"processing_lock": False, "empty": [], "generation_id": []}
         logger.error(f"❌ Ошибка загрузки конфига: {e}")
         return {}
@@ -58,12 +60,13 @@ def save_config_public(s3, data):
         with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         s3.upload_file(CONFIG_PUBLIC_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        logger.info("✅ Конфигурация успешно сохранена.")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
 
 
 def list_files_in_folder(s3, folder_prefix):
-    """Возвращает список файлов в папке."""
+    """Возвращает список файлов в указанной папке (кроме placeholder)."""
     try:
         response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=folder_prefix)
         return [
@@ -77,9 +80,9 @@ def list_files_in_folder(s3, folder_prefix):
 
 
 def get_ready_groups(files):
-    """Возвращает список готовых групп файлов.
-
-    Группа считается готовой, если для базового имени (group_id) присутствуют файлы со всеми требуемыми расширениями.
+    """
+    Возвращает список идентификаторов групп, для которых присутствуют файлы со всеми требуемыми расширениями.
+    Идентификатор группы получается как имя файла без расширения.
     """
     groups = {}
     for file_key in files:
@@ -94,7 +97,7 @@ def get_ready_groups(files):
 
 
 def move_group(s3, src_folder, dst_folder, group_id):
-    """Перемещает группу файлов между папками."""
+    """Перемещает файлы группы (по всем расширениям) из src_folder в dst_folder."""
     for ext in FILE_EXTENSIONS:
         src_key = f"{src_folder}{group_id}{ext}"
         dst_key = f"{dst_folder}{group_id}{ext}"
@@ -113,13 +116,19 @@ def move_group(s3, src_folder, dst_folder, group_id):
 
 
 def process_folders(s3, folders):
-    """Перемещает готовые группы файлов между папками и обновляет статус пустых папок."""
+    """
+    Перемещает готовые группы файлов между папками сверху вниз:
+    из 666/ в 555/ и из 555/ в 444/. При этом, если в исходной папке нет готовых групп,
+    папка отмечается как пустая.
+    Если папка 666/ оказывается пустой, запускается генерация контента.
+    После перемещений обновляется список пустых папок в config_public.json.
+    """
     empty_folders = set()
     changes_made = True
 
     while changes_made:
         changes_made = False
-        # Проходим по папкам «снизу вверх»: 666 -> 555, 555 -> 444.
+        # Проходим по папкам снизу вверх (индексы: [444, 555, 666])
         for i in range(len(folders) - 1, 0, -1):
             src_folder = folders[i]
             dst_folder = folders[i - 1]
@@ -131,11 +140,12 @@ def process_folders(s3, folders):
             src_files = list_files_in_folder(s3, src_folder)
             dst_files = list_files_in_folder(s3, dst_folder)
 
-            # Определяем готовые группы файлов
+            # Определяем готовые группы в исходной папке
             src_ready = get_ready_groups(src_files)
+            # Если в целевой папке уже есть готовая группа, считаем, что она заполнена
             dst_ready = get_ready_groups(dst_files)
 
-            # Перемещаем группы из src в dst, если в целевой папке нет готовых групп (проверка «емкости»)
+            # Перемещаем группы из src в dst, если в целевой папке их ещё нет (емкость проверяется как наличие готовых групп)
             for group_id in src_ready:
                 if len(dst_ready) < 1:
                     move_group(s3, src_folder, dst_folder, group_id)
@@ -145,12 +155,12 @@ def process_folders(s3, folders):
             if not src_ready:
                 empty_folders.add(src_folder)
 
-    # Если папка "666/" пуста, запускаем генерацию контента
-    if is_folder_empty(s3, B2_BUCKET_NAME, "666/"):
-        logger.info("⚠️ Папка 666/ пуста. Запускаем генерацию...")
+    # Если папка 666/ пуста, можно запускать генерацию контента (она будет заполнена медиа-файлом)
+    if is_folder_empty(s3, B2_BUCKET_NAME, folders[-1]):
+        logger.info("⚠️ Папка 666/ пуста. Запуск генерации контента...")
         subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
 
-    # Обновляем конфиг с информацией о пустых папках
+    # Обновляем список пустых папок в конфигурации
     config_data = load_config_public(s3)
     config_data["empty"] = list(empty_folders)
     save_config_public(s3, config_data)
@@ -158,14 +168,18 @@ def process_folders(s3, folders):
 
 
 def handle_publish(s3, config_data):
-    """Архивирует старые группы файлов (публикацию) по generation_id."""
+    """
+    Архивирует старые группы файлов по generation_id.
+    Для каждого идентификатора группы файлы из всех рабочих папок копируются в архивную папку.
+    После успешной архивации обновляется config_public.json.
+    """
     generation_ids = config_data.get("generation_id", [])
 
     if not generation_ids:
         logger.info("📂 Нет generation_id для архивации.")
         return
 
-    # Если передана строка, превращаем в список
+    # Если передан один идентификатор в виде строки – преобразуем в список
     if isinstance(generation_ids, str):
         generation_ids = [generation_ids]
 
@@ -174,19 +188,17 @@ def handle_publish(s3, config_data):
     for generation_id in generation_ids:
         logger.info(f"🔄 Архивируем группу: {generation_id}")
 
-        # Проверяем наличие файлов хотя бы в одной из папок
+        # Проверяем наличие файлов хотя бы в одной из рабочих папок
         files_exist = any(list_files_in_folder(s3, folder) for folder in FOLDERS)
         if not files_exist:
             logger.error(f"❌ Файлы группы {generation_id} не найдены!")
             continue
 
-        # Перемещаем файлы в архив
         success = True
         for folder in FOLDERS:
             for ext in FILE_EXTENSIONS:
                 src_key = f"{folder}{generation_id}{ext}"
                 dst_key = f"{ARCHIVE_FOLDER}{generation_id}{ext}"
-
                 try:
                     s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
                     s3.copy_object(
@@ -200,11 +212,10 @@ def handle_publish(s3, config_data):
                     if e.response['Error']['Code'] != '404':
                         logger.error(f"❌ Ошибка архивации {src_key}: {e}")
                         success = False
-
         if success:
             archived_ids.append(generation_id)
 
-    # Обновляем конфиг: удаляем заархивированные generation_id
+    # Обновляем конфигурацию: удаляем заархивированные generation_id
     if archived_ids:
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
         if not config_data["generation_id"]:
@@ -212,17 +223,35 @@ def handle_publish(s3, config_data):
         save_config_public(s3, config_data)
         logger.info(f"✅ Успешно заархивированы: {archived_ids}")
     else:
-        logger.warning("⚠️ Не удалось заархивировать ни одну группу")
+        logger.warning("⚠️ Не удалось заархивировать ни одну группу.")
 
 
 def main():
-    """Основной процесс управления B2-хранилищем."""
+    """
+    Основной процесс управления B2-хранилищем.
+
+    Логика:
+      1. При запуске считывается config_public.json из B2.
+      2. Если отсутствует и запись generation_id, и пустые папки – скрипт завершает работу.
+      3. Если есть запись generation_id – архивируются соответствующие группы файлов.
+      4. Затем выполняется перемещение готовых групп файлов:
+         из 666/ в 555/, из 555/ в 444/.
+      5. После перемещений обновляется конфигурация пустых папок.
+      6. Если обнаружены пустые папки – запускается генерация контента (generate_content.py),
+         которая, в свою очередь, вызывает генератор медиа.
+      7. Скрипт использует блокировку (processing_lock) для предотвращения параллельного запуска.
+    """
     b2_client = None
     try:
         b2_client = get_b2_client()
-
-        # Проверка блокировки процесса
         config_public = load_config_public(b2_client)
+
+        # Если ни generation_id, ни пустых папок нет – хранилище заполнено, выходим
+        if not config_public.get("generation_id") and not config_public.get("empty"):
+            logger.info("🚦 Нет записей о публикациях и пустых папок. Скрипт завершает работу.")
+            return
+
+        # Если уже установлена блокировка – завершаем работу
         if config_public.get("processing_lock"):
             logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
             return
@@ -230,30 +259,36 @@ def main():
         # Устанавливаем блокировку
         config_public["processing_lock"] = True
         save_config_public(b2_client, config_public)
-        logger.info("🔒 Блокировка установлена")
+        logger.info("🔒 Блокировка установлена.")
 
-        # Основные операции: архивирование и перемещение групп файлов
+        # Если имеется запись generation_id – архивируем соответствующие группы
         config_public = load_config_public(b2_client)
-        handle_publish(b2_client, config_public)
+        if config_public.get("generation_id"):
+            handle_publish(b2_client, config_public)
+
+        # Перемещаем группы файлов «сверху вниз»
         process_folders(b2_client, FOLDERS)
 
-        # Если обнаружены пустые папки, запускаем генерацию контента
+        # После перемещений проверяем наличие пустых папок:
+        # если есть пустые папки, запускаем генерацию контента.
         config_public = load_config_public(b2_client)
         if config_public.get("empty"):
-            logger.info("⚠️ Обнаружены пустые папки, запускаем генерацию...")
+            logger.info("⚠️ Обнаружены пустые папки, запускаем генерацию контента...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
+        else:
+            logger.info("✅ Нет пустых папок – генерация контента не требуется.")
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
     finally:
-        # Гарантированное снятие блокировки
+        # Снимаем блокировку независимо от результатов
         if b2_client:
             try:
                 config_public = load_config_public(b2_client)
                 if config_public.get("processing_lock"):
                     config_public["processing_lock"] = False
                     save_config_public(b2_client, config_public)
-                    logger.info("🔓 Блокировка снята")
+                    logger.info("🔓 Блокировка снята.")
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
 
