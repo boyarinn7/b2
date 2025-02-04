@@ -2,6 +2,8 @@ import os
 import json
 import boto3
 import botocore
+import sys
+import subprocess
 
 from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
@@ -18,8 +20,9 @@ B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
 B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
 B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
 CONFIG_GEN_PATH = os.path.abspath('config/config_gen.json')  # Локальный путь к config_gen.json
-CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"       # Путь к config_public.json в B2
-CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json') # Временный локальный файл для config_public.json
+CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь к config_public.json в B2
+CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath('config_public.json')  # Временный локальный файл для config_public.json
+
 
 def get_b2_client():
     """Создаёт и возвращает клиент B2 (S3)."""
@@ -34,6 +37,7 @@ def get_b2_client():
     except Exception as e:
         handle_error(logger, f"B2 Client Initialization Error: {e}")
 
+
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3)."""
     try:
@@ -41,11 +45,12 @@ def download_file_from_b2(client, remote_path, local_path):
         ensure_directory_exists(os.path.dirname(local_path))
         if not hasattr(client, 'download_file'):
             raise TypeError("❌ Ошибка: client не является объектом S3-клиента!")
-        client.download_file(Bucket=B2_BUCKET_NAME, Key=remote_path, Filename=local_path)
+        client.download_file(B2_BUCKET_NAME, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен из B2 в {local_path}")
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки {remote_path}: {e}")
         handle_error(logger, f"B2 Download Error: {e}")
+
 
 def upload_to_b2(client, folder, file_path):
     """Загружает файл в B2 и удаляет локальную копию."""
@@ -63,6 +68,7 @@ def upload_to_b2(client, folder, file_path):
     except Exception as e:
         handle_error(logger, f"B2 Upload Error: {e}")
 
+
 def generate_mock_video(file_id):
     """Создаёт заглушку видеофайла размером 1 MB."""
     video_path = f"{file_id}.mp4"
@@ -74,6 +80,7 @@ def generate_mock_video(file_id):
         return video_path
     except Exception as e:
         handle_error(logger, f"Video Generation Error: {e}")
+
 
 def update_config_public(client, folder):
     """
@@ -98,6 +105,7 @@ def update_config_public(client, folder):
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
         handle_error(logger, f"Config Public Update Error: {e}")
+
 
 def main():
     """Основной процесс генерации медиа."""
@@ -139,9 +147,16 @@ def main():
         # Обновление config_public.json для исключения заполненной папки
         update_config_public(b2_client, target_folder)
 
+        # --- Новый блок: вызов скрипта b2_storage_manager.py ---
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        b2_storage_manager_script = os.path.join(current_dir, "b2_storage_manager.py")
+        logger.info(f"🔄 Запуск скрипта: {b2_storage_manager_script}")
+        subprocess.run([sys.executable, b2_storage_manager_script], check=True)
+
     except Exception as e:
         logger.error(f"❌ Ошибка в основном процессе: {e}")
         handle_error(logger, "Ошибка в процессе генерации медиа", e)
+
 
 if __name__ == "__main__":
     try:

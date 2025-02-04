@@ -24,7 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'm
 logger = get_logger("generate_content")
 config = ConfigManager()
 
-# Дополнительная инициализация логгера (если нужно, можно оставить один)
+# Дополнительная инициализация логгера (при необходимости можно оставить один)
 logger = get_logger("generate_media_launcher")
 
 
@@ -80,7 +80,7 @@ def download_config_public():
 
 
 def generate_file_id():
-    """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
+    """Создает уникальный ID генерации в формате YYYYMMDD-HHmm.json."""
     now = datetime.utcnow()
     date_part = now.strftime("%Y%m%d")
     time_part = now.strftime("%H%M")
@@ -243,6 +243,10 @@ class ContentGenerator:
             return ""
 
     def generate_interactive_poll(self, text):
+        """
+        Генерирует интерактивный опрос по заданному тексту.
+        Если OpenAI возвращает корректный JSON, используется он; иначе, производится разбор текста.
+        """
         if not self.config.get('SARCASM.enabled', False):
             self.logger.info("🔕 Сарказм отключён в конфигурации.")
             return {}
@@ -262,12 +266,13 @@ class ContentGenerator:
                     return poll_data
             except json.JSONDecodeError:
                 self.logger.warning("⚠️ OpenAI вернул текст, а не JSON. Разбираем вручную...")
-            match = re.findall(r"\d\.-\s*(.+)", poll_text)
+            # Изменённое регулярное выражение: ищем строки вида "1. Текст..."
+            match = re.findall(r"\d+\.\s*(.+)", poll_text)
             if len(match) >= 4:
                 question = match[0].strip()
                 options = [opt.strip() for opt in match[1:4]]
                 return {"question": question, "options": options}
-            self.logger.error("❌ OpenAI вернул некорректный формат! Возвращаем пустой объект.")
+            self.logger.error("❌ OpenAI вернул некорректный формат опроса! Возвращаем пустой объект.")
             return {}
         except Exception as e:
             handle_error("Sarcasm Poll Generation Error", str(e))
@@ -448,7 +453,7 @@ class ContentGenerator:
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
 
-            # -- Исправленный блок: передаём полный словарь с topic, content и sarcasm --
+            # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
                 "topic": topic,
                 "content": final_text,
