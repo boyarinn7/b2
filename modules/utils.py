@@ -6,6 +6,30 @@ import inspect
 
 from modules.error_handler import handle_error
 
+CONFIG_PATH = "config/config.json"
+
+def load_config():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+config = load_config()
+
+def load_topics_tracker():
+    tracker_path = config["FILE_PATHS"]["topics_tracker"]
+    if os.path.exists(tracker_path):
+        try:
+            with open(tracker_path, "r", encoding="utf-8") as file:
+                return json.load(file)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_topics_tracker(tracker):
+    tracker_path = config["FILE_PATHS"]["topics_tracker"]
+    os.makedirs(os.path.dirname(tracker_path), exist_ok=True)
+    with open(tracker_path, "w", encoding="utf-8") as file:
+        json.dump(tracker, file, ensure_ascii=False, indent=4)
+
 
 def calculate_file_hash(file_path):
     """

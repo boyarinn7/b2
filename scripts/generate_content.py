@@ -190,6 +190,39 @@ class ContentGenerator:
         except Exception as e:
             handle_error("Clear Content Error", str(e))
 
+    def generate_topic_with_short_label(self, chosen_focus):
+        tracker = load_topics_tracker()
+        recent_short_topics = tracker.get(chosen_focus, [])
+
+        exclusions = ", ".join(recent_short_topics) if recent_short_topics else ""
+
+        prompt_template = config["topic"]["prompt_template_with_short"]
+        prompt = prompt_template.format(focus_areas=chosen_focus, exclusions=exclusions)
+
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            response = self.request_openai(prompt)
+            try:
+                topic_data = json.loads(response)
+                full_topic = topic_data.get("full_topic", "").strip()
+                short_topic = topic_data.get("short_topic", "").strip()
+                if not short_topic:
+                    raise ValueError("Краткий ярлык не сгенерирован.")
+
+                if short_topic in recent_short_topics:
+                    continue
+                else:
+                    recent_short_topics.append(short_topic)
+                    if len(recent_short_topics) > 10:
+                        recent_short_topics.pop(0)
+                    tracker[chosen_focus] = recent_short_topics
+                    save_topics_tracker(tracker)
+                    return topic_data
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        raise Exception("Не удалось сгенерировать уникальную тему после нескольких попыток.")
+
     def generate_topic(self):
         try:
             prompt_template = config.get('CONTENT.topic.prompt_template')
@@ -416,30 +449,20 @@ class ContentGenerator:
             return None
 
     def run(self):
-        """Основной процесс генерации контента."""
         try:
-            download_config_public()
-            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
-                config_public = json.load(file)
-            empty_folders = config_public.get("empty", [])
-            if not empty_folders:
-                logger.info("✅ Нет пустых папок. Процесс завершён.")
-                return
-
             self.adapt_prompts()
             self.clear_generated_content()
 
             valid_topics = self.analyze_topic_generation()
             chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
-            if chosen_focus:
-                self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
-            else:
-                self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
+            if not chosen_focus:
+                chosen_focus = config["topic"]["focus_areas"][0]
 
-            topic = self.generate_topic()
-            self.save_to_generated_content("topic", {"topic": topic})
+            topic_data = self.generate_topic_with_short_label(chosen_focus)
+            self.save_to_generated_content("topic", topic_data)
 
-            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
+            text_initial = self.request_openai(
+                config['CONTENT.text.prompt_template'].format(topic=topic_data["full_topic"]))
             critique = self.critique_content(text_initial)
             self.save_to_generated_content("critique", {"critique": critique})
 
@@ -453,9 +476,8 @@ class ContentGenerator:
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
 
-            # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
-                "topic": topic,
+                "topic": topic_data,
                 "content": final_text,
                 "sarcasm": {
                     "comment": sarcastic_comment,
@@ -463,15 +485,6 @@ class ContentGenerator:
                 }
             }
             save_to_b2(target_folder, content_dict)
-
-            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                config_gen_content = json.load(gen_file)
-                generation_id = config_gen_content["generation_id"]
-
-            create_and_upload_image(target_folder, generation_id)
-
-            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
-            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
 
             run_generate_media()
             self.logger.info("✅ Генерация контента завершена.")
