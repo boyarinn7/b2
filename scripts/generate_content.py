@@ -207,7 +207,9 @@ class ContentGenerator:
 
         max_attempts = config.get("GENERATE.max_attempts", 3)
         for attempt in range(max_attempts):
+            self.logger.info(f"Промпт для генерации темы с коротким ярлыком: {prompt}")
             response = self.request_openai(prompt)
+            self.logger.info(f"Сырой ответ от OpenAI: {response}")
             try:
                 topic_data = json.loads(response)
                 full_topic = topic_data.get("full_topic", "").strip()
@@ -477,7 +479,6 @@ class ContentGenerator:
             return None
 
     def run(self):
-        """Основной процесс генерации контента."""
         try:
             download_config_public()
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
@@ -496,12 +497,15 @@ class ContentGenerator:
                 self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
             else:
                 self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
+                chosen_focus = config.get("CONTENT.topic.focus_areas")[0]  # или другая логика выбора
 
             # Используем новый метод генерации с коротким ярлыком
             topic_data = self.generate_topic_with_short_label(chosen_focus)
             self.save_to_generated_content("topic", topic_data)
 
-            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic_data))
+            # Остальная логика остается прежней (генерация текста, сарказма, загрузка и т.д.)
+            text_initial = self.request_openai(
+                config.get('CONTENT.text.prompt_template').format(topic=topic_data.get("full_topic")))
             critique = self.critique_content(text_initial)
             self.save_to_generated_content("critique", {"critique": critique})
 
@@ -515,7 +519,6 @@ class ContentGenerator:
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
 
-            # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
                 "topic": topic_data,
                 "content": final_text,
