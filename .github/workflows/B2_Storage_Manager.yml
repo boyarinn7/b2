@@ -2,7 +2,7 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # Запуск ежедневно в 13:00 UTC
+    - cron: '03 16 * * *'  # Запуск ежедневно в 13:00 UTC
   workflow_dispatch:  # Возможность ручного запуска
     inputs:
       stage:
@@ -52,7 +52,6 @@ jobs:
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
 
     - name: Run B2 Storage Manager
-      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'b2_storage_manager' }}
       run: python scripts/b2_storage_manager.py
 
     - name: Run Generate Content
