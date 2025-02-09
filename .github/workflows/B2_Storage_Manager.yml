@@ -2,7 +2,7 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '* 13 * * *'  # Запуск ежедневно в 13:00 UTC
+    - cron: '10 13 * * *'  # Запуск ежедневно в 13:00 UTC
   workflow_dispatch:  # Возможность ручного запуска
     inputs:
       stage:

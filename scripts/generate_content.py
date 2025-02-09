@@ -28,6 +28,26 @@ config = ConfigManager()
 logger = get_logger("generate_media_launcher")
 
 
+
+def load_topics_tracker():
+    tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
+    if os.path.exists(tracker_path):
+        try:
+            with open(tracker_path, "r", encoding="utf-8") as file:
+                return json.load(file)
+        except json.JSONDecodeError:
+            logger.warning(f"Файл {tracker_path} поврежден. Будет создан новый трекер.")
+            return {}
+    return {}
+
+def save_topics_tracker(tracker):
+    tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
+    # Убедимся, что папка существует
+    os.makedirs(os.path.dirname(tracker_path), exist_ok=True)
+    with open(tracker_path, "w", encoding="utf-8") as file:
+        json.dump(tracker, file, ensure_ascii=False, indent=4)
+
+
 def create_and_upload_image(folder, generation_id):
     """Создает имитацию изображения и загружает его в ту же папку в B2."""
     try:
@@ -171,6 +191,47 @@ class ContentGenerator:
         logger.info("🔄 Применяю адаптацию промптов на основе обратной связи...")
         for key, value in self.adaptation_params.items():
             logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
+
+    def generate_topic_with_short_label(self, chosen_focus):
+        tracker = load_topics_tracker()
+        recent_short_topics = tracker.get(chosen_focus, [])
+
+        # Формирование строки исключений
+        exclusions = ", ".join(recent_short_topics) if recent_short_topics else ""
+
+        prompt_template = config.get("CONTENT.topic.prompt_template_with_short")
+        prompt = prompt_template.format(
+            focus_areas=chosen_focus,
+            exclusions=exclusions
+        )
+
+        max_attempts = config.get("GENERATE.max_attempts", 3)
+        for attempt in range(max_attempts):
+            response = self.request_openai(prompt)
+            try:
+                topic_data = json.loads(response)
+                full_topic = topic_data.get("full_topic", "").strip()
+                short_topic = topic_data.get("short_topic", "").strip()
+                if not short_topic:
+                    raise ValueError("Краткий ярлык не сгенерирован.")
+
+                # Проверяем уникальность
+                if short_topic in recent_short_topics:
+                    logger.warning(
+                        f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}.")
+                    continue  # Повторяем генерацию
+                else:
+                    # Обновляем трекер: добавляем новый ярлык и поддерживаем максимум 10 значений
+                    recent_short_topics.append(short_topic)
+                    if len(recent_short_topics) > 10:
+                        recent_short_topics.pop(0)
+                    tracker[chosen_focus] = recent_short_topics
+                    save_topics_tracker(tracker)
+                    return topic_data  # Успешно сгенерировали тему
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"Ошибка при генерации темы с коротким ярлыком: {e}")
+
+        raise Exception("Не удалось сгенерировать уникальную тему после нескольких попыток.")
 
     def clear_generated_content(self):
         try:
@@ -436,10 +497,11 @@ class ContentGenerator:
             else:
                 self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
 
-            topic = self.generate_topic()
-            self.save_to_generated_content("topic", {"topic": topic})
+            # Используем новый метод генерации с коротким ярлыком
+            topic_data = self.generate_topic_with_short_label(chosen_focus)
+            self.save_to_generated_content("topic", topic_data)
 
-            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
+            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic_data))
             critique = self.critique_content(text_initial)
             self.save_to_generated_content("critique", {"critique": critique})
 
@@ -455,7 +517,7 @@ class ContentGenerator:
 
             # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
-                "topic": topic,
+                "topic": topic_data,
                 "content": final_text,
                 "sarcasm": {
                     "comment": sarcastic_comment,
