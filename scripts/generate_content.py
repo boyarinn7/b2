@@ -24,12 +24,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'm
 # === Инициализация ===
 logger = get_logger("generate_content")
 config = ConfigManager()
-# Дополнительная инициализация логгера (при необходимости можно оставить один)
-logger = get_logger("generate_media_launcher")
-
+logger = get_logger("generate_media_launcher")  # Дополнительная инициализация логгера
 
 # ======================================================
-# Функции для работы с Backblaze B2 для topics_tracker.json
+# Функции для работы с Backblaze B2 для объединённого трекера topics_tracker.json
 # ======================================================
 
 def get_b2_client():
@@ -44,11 +42,11 @@ def get_b2_client():
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e))
 
-
 def load_topics_tracker():
     """
     Загружает файл topics_tracker.json из B2 и возвращает его содержимое как словарь.
-    Если файла нет или происходит ошибка, возвращает пустой словарь.
+    Если файла нет или происходит ошибка, возвращает структуру:
+      {"used_focuses": [], "focus_data": {}}
     """
     tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
     bucket_name = config.get("API_KEYS.b2.bucket_name")
@@ -59,14 +57,17 @@ def load_topics_tracker():
         tracker_stream.seek(0)
         data = json.load(tracker_stream)
         logger.info(f"Содержимое трекера, загруженного из B2: {data}")
+        # Если структура не соответствует, возвращаем стандартную
+        if not isinstance(data, dict) or "used_focuses" not in data or "focus_data" not in data:
+            logger.warning("Структура трекера некорректна. Создаем новую.")
+            return {"used_focuses": [], "focus_data": {}}
         return data
     except s3.exceptions.NoSuchKey:
         logger.warning(f"Файл {tracker_path} не найден в B2. Будет создан новый трекер.")
-        return {}
+        return {"used_focuses": [], "focus_data": {}}
     except Exception as e:
         logger.warning(f"Ошибка загрузки трекера из B2: {e}. Будет создан новый трекер.")
-        return {}
-
+        return {"used_focuses": [], "focus_data": {}}
 
 def save_topics_tracker(tracker):
     """
@@ -84,9 +85,8 @@ def save_topics_tracker(tracker):
     except Exception as e:
         handle_error("B2 Tracker Save Error", str(e))
 
-
 # ======================================================
-# Остальные функции, работающие с B2 (для конфигураций, контента и изображений)
+# Остальные функции, работающие с B2 (конфигурация, контент, изображения)
 # ======================================================
 
 def create_and_upload_image(folder, generation_id):
@@ -95,14 +95,12 @@ def create_and_upload_image(folder, generation_id):
         file_name = generation_id.replace(".json", ".png")
         local_file_path = file_name
 
-        # Создаем имитацию изображения
         img = Image.new('RGB', (800, 600), color=(73, 109, 137))
         draw = ImageDraw.Draw(img)
         draw.text((10, 10), f"ID: {generation_id}", fill=(255, 255, 255))
         img.save(local_file_path)
         logger.info(f"✅ Изображение '{local_file_path}' успешно создано.")
 
-        # Загрузка изображения в ту же папку в B2
         s3 = get_b2_client()
         bucket_name = config.get("API_KEYS.b2.bucket_name")
         s3_key = f"{folder.rstrip('/')}/{file_name}"
@@ -112,7 +110,6 @@ def create_and_upload_image(folder, generation_id):
         os.remove(local_file_path)
     except Exception as e:
         handle_error("Image Upload Error", str(e))
-
 
 def download_config_public():
     """Загружает файл config_public.json из B2 в локальное хранилище."""
@@ -126,14 +123,10 @@ def download_config_public():
     except Exception as e:
         handle_error("Download Config Public Error", str(e))
 
-
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm.json."""
     now = datetime.utcnow()
-    date_part = now.strftime("%Y%m%d")
-    time_part = now.strftime("%H%M")
-    return f"{date_part}-{time_part}.json"
-
+    return f"{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}.json"
 
 def save_generation_id_to_config(file_id):
     """Сохраняет ID генерации в файл config_gen.json."""
@@ -145,7 +138,6 @@ def save_generation_id_to_config(file_id):
         logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
     except Exception as e:
         handle_error("Save Generation ID Error", str(e))
-
 
 def save_to_b2(folder, content):
     """Сохраняет контент в B2 без двойного кодирования JSON."""
@@ -185,13 +177,11 @@ def save_to_b2(folder, content):
         s3.upload_fileobj(json_bytes, bucket_name, s3_key)
 
         logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
-
     except Exception as e:
         handle_error("B2 Upload Error", str(e))
 
-
 # ======================================================
-# Класс генерации контента
+# Класс генерации контента с обновлённой логикой трекера
 # ======================================================
 
 class ContentGenerator:
@@ -225,17 +215,28 @@ class ContentGenerator:
             logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
 
     def generate_topic_with_short_label(self, chosen_focus):
+        # Загружаем объединённый трекер из B2
         tracker = load_topics_tracker()
-        recent_short_topics = tracker.get(chosen_focus, [])
+        if "used_focuses" not in tracker or "focus_data" not in tracker:
+            tracker = {"used_focuses": [], "focus_data": {}}
 
-        # Формирование строки исключений
+        # Обновляем массив недавно использованных фокусов:
+        used_focuses = tracker["used_focuses"]
+        if chosen_focus in used_focuses:
+            used_focuses.remove(chosen_focus)
+        used_focuses.insert(0, chosen_focus)
+        tracker["used_focuses"] = used_focuses
+
+        # Получаем список коротких тем для выбранного фокуса:
+        focus_data = tracker.get("focus_data", {})
+        recent_short_topics = focus_data.get(chosen_focus, [])
         exclusions = ", ".join(recent_short_topics) if recent_short_topics else ""
+
         prompt_template = config.get("CONTENT.topic.prompt_template_with_short")
         prompt = prompt_template.format(
             focus_areas=chosen_focus,
             exclusions=exclusions
         )
-
         self.logger.info(f"Промпт для генерации темы с коротким ярлыком: {prompt}")
         max_attempts = config.get("GENERATE.max_attempts", 3)
         for attempt in range(max_attempts):
@@ -248,21 +249,20 @@ class ContentGenerator:
                     raise ValueError("Краткий ярлык не сгенерирован.")
 
                 if short_topic in recent_short_topics:
-                    logger.warning(
-                        f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}."
-                    )
-                    continue  # Повторяем генерацию
+                    logger.warning(f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}.")
+                    continue  # повторяем генерацию
                 else:
-                    recent_short_topics.append(short_topic)
+                    # Добавляем новый short_topic в начало списка для выбранного фокуса
+                    recent_short_topics.insert(0, short_topic)
                     if len(recent_short_topics) > 10:
-                        recent_short_topics.pop(0)
-                    tracker[chosen_focus] = recent_short_topics
+                        recent_short_topics.pop()
+                    focus_data[chosen_focus] = recent_short_topics
+                    tracker["focus_data"] = focus_data
                     save_topics_tracker(tracker)
-                    logger.info(f"Обновлённый трекер для фокуса '{chosen_focus}': {tracker.get(chosen_focus)}")
+                    logger.info(f"Обновлённый трекер для фокуса '{chosen_focus}': {recent_short_topics}")
                     return topic_data
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Ошибка при генерации темы с коротким ярлыком: {e}")
-
         raise Exception("Не удалось сгенерировать уникальную тему после нескольких попыток.")
 
     def clear_generated_content(self):
@@ -282,18 +282,6 @@ class ContentGenerator:
             handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
         except Exception as e:
             handle_error("Clear Content Error", str(e))
-
-    def generate_topic(self):
-        try:
-            prompt_template = config.get('CONTENT.topic.prompt_template')
-            prompt = prompt_template.format(focus_areas="новая тема")
-            logger.info("🔄 Запрос к OpenAI для генерации темы...")
-            topic = self.request_openai(prompt)
-            self.save_to_generated_content("topic", {"topic": topic})
-            logger.info(f"✅ Тема успешно сгенерирована: {topic}")
-            return topic
-        except Exception as e:
-            handle_error("Topic Generation Error", str(e))
 
     def request_openai(self, prompt):
         try:
@@ -373,7 +361,7 @@ class ContentGenerator:
     def save_to_generated_content(self, stage, data):
         try:
             if not self.content_output_path:
-                raise ValueError("❌ Ошибка: content_output_path пустой!")
+                raise ValueError("❌ Ошибка: self.content_output_path пустой!")
             logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
             folder = os.path.dirname(self.content_output_path) or "."
             logger.info(f"📁 Проверяем папку для сохранения: {folder}")
@@ -458,21 +446,17 @@ class ContentGenerator:
             return []
 
     def get_valid_focus_areas(self):
-        try:
-            tracker_file = self.config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
-            focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
-            if os.path.exists(tracker_file):
-                with open(tracker_file, 'r', encoding='utf-8') as file:
-                    focus_tracker = json.load(file)
-                excluded_foci = focus_tracker[:10]
-            else:
-                excluded_foci = []
-            valid_focus_areas = [focus for focus in focus_areas if focus not in excluded_foci]
-            self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
-            return valid_focus_areas
-        except Exception as e:
-            handle_error("Focus Area Filtering Error", str(e))
-            return []
+        """
+        Выбирает валидные фокусы из общего списка, исключая 10 последних использованных.
+        Теперь используется объединённый трекер из B2.
+        """
+        all_focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
+        tracker = load_topics_tracker()
+        used_focuses = tracker.get("used_focuses", [])
+        recent_used = used_focuses[:10]
+        valid_focus = [focus for focus in all_focus_areas if focus not in recent_used]
+        self.logger.info(f"✅ Доступные фокусы после исключения: {valid_focus}")
+        return valid_focus
 
     def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
         try:
@@ -548,7 +532,6 @@ class ContentGenerator:
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
 
-            # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
                 "topic": topic_data,
                 "content": final_text,
@@ -574,7 +557,6 @@ class ContentGenerator:
         except Exception as e:
             handle_error("Run Error", str(e))
 
-
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
     try:
@@ -591,7 +573,6 @@ def run_generate_media():
         handle_error("File Not Found Error", str(e))
     except Exception as e:
         handle_error("Unknown Error", f"Ошибка при запуске скрипта {script_path}: {e}")
-
 
 if __name__ == "__main__":
     generator = ContentGenerator()
