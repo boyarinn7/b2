@@ -10,12 +10,13 @@ import subprocess
 import boto3
 import io
 
+from datetime import datetime
+from PIL import Image, ImageDraw
+
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
 from modules.error_handler import handle_error
-from datetime import datetime
-from modules.utils import ensure_directory_exists  # Если get_b2_client не определён здесь, он может быть импортирован отдельно
-from PIL import Image, ImageDraw
+from modules.utils import ensure_directory_exists  # Если get_b2_client не определён здесь, его можно импортировать отдельно
 
 # Добавляем путь к директории modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
@@ -23,30 +24,70 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'm
 # === Инициализация ===
 logger = get_logger("generate_content")
 config = ConfigManager()
-
 # Дополнительная инициализация логгера (при необходимости можно оставить один)
 logger = get_logger("generate_media_launcher")
 
 
+# ======================================================
+# Функции для работы с Backblaze B2 для topics_tracker.json
+# ======================================================
+
+def get_b2_client():
+    """Создает клиент для работы с Backblaze B2."""
+    try:
+        return boto3.client(
+            's3',
+            endpoint_url=config.get("API_KEYS.b2.endpoint"),
+            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
+            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
+        )
+    except Exception as e:
+        handle_error("B2 Client Initialization Error", str(e))
+
 
 def load_topics_tracker():
+    """
+    Загружает файл topics_tracker.json из B2 и возвращает его содержимое как словарь.
+    Если файла нет или происходит ошибка, возвращает пустой словарь.
+    """
     tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
-    if os.path.exists(tracker_path):
-        try:
-            with open(tracker_path, "r", encoding="utf-8") as file:
-                return json.load(file)
-        except json.JSONDecodeError:
-            logger.warning(f"Файл {tracker_path} поврежден. Будет создан новый трекер.")
-            return {}
-    return {}
+    bucket_name = config.get("API_KEYS.b2.bucket_name")
+    s3 = get_b2_client()
+    try:
+        tracker_stream = io.BytesIO()
+        s3.download_fileobj(bucket_name, tracker_path, tracker_stream)
+        tracker_stream.seek(0)
+        data = json.load(tracker_stream)
+        logger.info(f"Содержимое трекера, загруженного из B2: {data}")
+        return data
+    except s3.exceptions.NoSuchKey:
+        logger.warning(f"Файл {tracker_path} не найден в B2. Будет создан новый трекер.")
+        return {}
+    except Exception as e:
+        logger.warning(f"Ошибка загрузки трекера из B2: {e}. Будет создан новый трекер.")
+        return {}
+
 
 def save_topics_tracker(tracker):
+    """
+    Сохраняет словарь tracker в файл topics_tracker.json в B2.
+    """
     tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
-    # Убедимся, что папка существует
-    os.makedirs(os.path.dirname(tracker_path), exist_ok=True)
-    with open(tracker_path, "w", encoding="utf-8") as file:
-        json.dump(tracker, file, ensure_ascii=False, indent=4)
+    bucket_name = config.get("API_KEYS.b2.bucket_name")
+    s3 = get_b2_client()
+    try:
+        tracker_stream = io.BytesIO()
+        tracker_stream.write(json.dumps(tracker, ensure_ascii=False, indent=4).encode("utf-8"))
+        tracker_stream.seek(0)
+        s3.upload_fileobj(tracker_stream, bucket_name, tracker_path)
+        logger.info(f"Трекер сохранён в B2 по пути {tracker_path}: {json.dumps(tracker)}")
+    except Exception as e:
+        handle_error("B2 Tracker Save Error", str(e))
 
+
+# ======================================================
+# Остальные функции, работающие с B2 (для конфигураций, контента и изображений)
+# ======================================================
 
 def create_and_upload_image(folder, generation_id):
     """Создает имитацию изображения и загружает его в ту же папку в B2."""
@@ -71,19 +112,6 @@ def create_and_upload_image(folder, generation_id):
         os.remove(local_file_path)
     except Exception as e:
         handle_error("Image Upload Error", str(e))
-
-
-def get_b2_client():
-    """Создает клиент для работы с Backblaze B2."""
-    try:
-        return boto3.client(
-            's3',
-            endpoint_url=config.get("API_KEYS.b2.endpoint"),
-            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
-            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
-        )
-    except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e))
 
 
 def download_config_public():
@@ -162,6 +190,10 @@ def save_to_b2(folder, content):
         handle_error("B2 Upload Error", str(e))
 
 
+# ======================================================
+# Класс генерации контента
+# ======================================================
+
 class ContentGenerator:
     def __init__(self):
         self.topic_threshold = config.get('GENERATE.topic_threshold', 7)
@@ -198,18 +230,16 @@ class ContentGenerator:
 
         # Формирование строки исключений
         exclusions = ", ".join(recent_short_topics) if recent_short_topics else ""
-
         prompt_template = config.get("CONTENT.topic.prompt_template_with_short")
         prompt = prompt_template.format(
             focus_areas=chosen_focus,
             exclusions=exclusions
         )
 
+        self.logger.info(f"Промпт для генерации темы с коротким ярлыком: {prompt}")
         max_attempts = config.get("GENERATE.max_attempts", 3)
         for attempt in range(max_attempts):
-            self.logger.info(f"Промпт для генерации темы с коротким ярлыком: {prompt}")
             response = self.request_openai(prompt)
-            self.logger.info(f"Сырой ответ от OpenAI: {response}")
             try:
                 topic_data = json.loads(response)
                 full_topic = topic_data.get("full_topic", "").strip()
@@ -217,19 +247,19 @@ class ContentGenerator:
                 if not short_topic:
                     raise ValueError("Краткий ярлык не сгенерирован.")
 
-                # Проверяем уникальность
                 if short_topic in recent_short_topics:
                     logger.warning(
-                        f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}.")
+                        f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}."
+                    )
                     continue  # Повторяем генерацию
                 else:
-                    # Обновляем трекер: добавляем новый ярлык и поддерживаем максимум 10 значений
                     recent_short_topics.append(short_topic)
                     if len(recent_short_topics) > 10:
                         recent_short_topics.pop(0)
                     tracker[chosen_focus] = recent_short_topics
                     save_topics_tracker(tracker)
-                    return topic_data  # Успешно сгенерировали тему
+                    logger.info(f"Обновлённый трекер для фокуса '{chosen_focus}': {tracker.get(chosen_focus)}")
+                    return topic_data
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Ошибка при генерации темы с коротким ярлыком: {e}")
 
@@ -329,7 +359,6 @@ class ContentGenerator:
                     return poll_data
             except json.JSONDecodeError:
                 self.logger.warning("⚠️ OpenAI вернул текст, а не JSON. Разбираем вручную...")
-            # Изменённое регулярное выражение: ищем строки вида "1. Текст..."
             match = re.findall(r"\d+\.\s*(.+)", poll_text)
             if len(match) >= 4:
                 question = match[0].strip()
@@ -344,7 +373,7 @@ class ContentGenerator:
     def save_to_generated_content(self, stage, data):
         try:
             if not self.content_output_path:
-                raise ValueError("❌ Ошибка: self.content_output_path пустой!")
+                raise ValueError("❌ Ошибка: content_output_path пустой!")
             logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
             folder = os.path.dirname(self.content_output_path) or "."
             logger.info(f"📁 Проверяем папку для сохранения: {folder}")
@@ -479,6 +508,7 @@ class ContentGenerator:
             return None
 
     def run(self):
+        """Основной процесс генерации контента."""
         try:
             download_config_public()
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
@@ -497,15 +527,14 @@ class ContentGenerator:
                 self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
             else:
                 self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
-                chosen_focus = config.get("CONTENT.topic.focus_areas")[0]  # или другая логика выбора
 
             # Используем новый метод генерации с коротким ярлыком
             topic_data = self.generate_topic_with_short_label(chosen_focus)
             self.save_to_generated_content("topic", topic_data)
 
-            # Остальная логика остается прежней (генерация текста, сарказма, загрузка и т.д.)
             text_initial = self.request_openai(
-                config.get('CONTENT.text.prompt_template').format(topic=topic_data.get("full_topic")))
+                config.get('CONTENT.text.prompt_template').format(topic=topic_data)
+            )
             critique = self.critique_content(text_initial)
             self.save_to_generated_content("critique", {"critique": critique})
 
@@ -519,6 +548,7 @@ class ContentGenerator:
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
 
+            # Передаем полный словарь с topic, content и sarcasm
             content_dict = {
                 "topic": topic_data,
                 "content": final_text,
