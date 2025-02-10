@@ -47,6 +47,11 @@ def load_topics_tracker():
     Загружает файл topics_tracker.json из B2 и возвращает его содержимое как словарь.
     Если файла нет или происходит ошибка, возвращает структуру:
       {"used_focuses": [], "focus_data": {}}
+    Если обнаружена старая структура (без ключей "used_focuses" и "focus_data"),
+    выполняется миграция: новый объект формируется следующим образом:
+      - "used_focuses" заполняется списком ключей старого объекта.
+      - "focus_data" становится равным старому объекту.
+    После миграции новый объект сохраняется в B2.
     """
     tracker_path = config.get("FILE_PATHS.topics_tracker", "data/topics_tracker.json")
     bucket_name = config.get("API_KEYS.b2.bucket_name")
@@ -56,11 +61,15 @@ def load_topics_tracker():
         s3.download_fileobj(bucket_name, tracker_path, tracker_stream)
         tracker_stream.seek(0)
         data = json.load(tracker_stream)
+        # Если загруженная структура не соответствует новой (нет ключей "used_focuses" и "focus_data")
+        if not (isinstance(data, dict) and "used_focuses" in data and "focus_data" in data):
+            logger.warning("Старая структура трекера обнаружена. Начинается миграция.")
+            # Предполагаем, что data - это словарь, где ключи – фокусы, а значения – списки short_topic.
+            new_data = {"used_focuses": list(data.keys()), "focus_data": data}
+            # Сохраняем мигрированный трекер обратно в B2.
+            save_topics_tracker(new_data)
+            data = new_data
         logger.info(f"Содержимое трекера, загруженного из B2: {data}")
-        # Если структура не соответствует, возвращаем стандартную
-        if not isinstance(data, dict) or "used_focuses" not in data or "focus_data" not in data:
-            logger.warning("Структура трекера некорректна. Создаем новую.")
-            return {"used_focuses": [], "focus_data": {}}
         return data
     except s3.exceptions.NoSuchKey:
         logger.warning(f"Файл {tracker_path} не найден в B2. Будет создан новый трекер.")
