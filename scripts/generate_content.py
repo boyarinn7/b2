@@ -12,6 +12,7 @@ import io
 import logging
 
 print("Текущая рабочая директория:", os.getcwd())
+print("Файл для записи:", os.path.join(os.getcwd(), "generated_content.json"))
 
 from datetime import datetime
 from PIL import Image, ImageDraw
