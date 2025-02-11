@@ -224,32 +224,33 @@ class ContentGenerator:
             logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
 
     def generate_topic_with_short_label(self, chosen_focus):
-        # Загружаем объединённый трекер из B2
         tracker = load_topics_tracker()
         if "used_focuses" not in tracker or "focus_data" not in tracker:
             tracker = {"used_focuses": [], "focus_data": {}}
 
-        # Обновляем массив недавно использованных фокусов:
+        # Обновляем массив недавно использованных фокусов
         used_focuses = tracker["used_focuses"]
         if chosen_focus in used_focuses:
             used_focuses.remove(chosen_focus)
         used_focuses.insert(0, chosen_focus)
         tracker["used_focuses"] = used_focuses
 
-        # Получаем список коротких тем для выбранного фокуса:
+        # Получаем список коротких тем для выбранного фокуса
         focus_data = tracker.get("focus_data", {})
         recent_short_topics = focus_data.get(chosen_focus, [])
         exclusions = ", ".join(recent_short_topics) if recent_short_topics else ""
 
         prompt_template = config.get("CONTENT.topic.prompt_template_with_short")
-        prompt = prompt_template.format(
+        base_prompt = prompt_template.format(
             focus_areas=chosen_focus,
             exclusions=exclusions
         )
-        self.logger.info(f"Промпт для генерации темы с коротким ярлыком: {prompt}")
-        max_attempts = config.get("GENERATE.max_attempts", 3)
+
+        self.logger.info(f"Промпт для генерации темы: {base_prompt}")
+
+        max_attempts = self.max_attempts
         for attempt in range(max_attempts):
-            response = self.request_openai(prompt)
+            response = self.request_openai(base_prompt)
             try:
                 topic_data = json.loads(response)
                 full_topic = topic_data.get("full_topic", "").strip()
@@ -258,20 +259,28 @@ class ContentGenerator:
                     raise ValueError("Краткий ярлык не сгенерирован.")
 
                 if short_topic in recent_short_topics:
-                    logger.warning(f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}.")
-                    continue  # повторяем генерацию
-                else:
-                    # Добавляем новый short_topic в начало списка для выбранного фокуса
-                    recent_short_topics.insert(0, short_topic)
-                    if len(recent_short_topics) > 10:
-                        recent_short_topics.pop()
-                    focus_data[chosen_focus] = recent_short_topics
-                    tracker["focus_data"] = focus_data
-                    save_topics_tracker(tracker)
-                    logger.info(f"Обновлённый трекер для фокуса '{chosen_focus}': {recent_short_topics}")
-                    return topic_data
+                    self.logger.warning(
+                        f"Ярлык '{short_topic}' уже использован для фокуса '{chosen_focus}'. Попытка {attempt + 1}.")
+                    continue  # пробуем еще раз
+
+                # Если все попытки исчерпаны, добавить уникальный суффикс
+                if attempt == max_attempts - 1:
+                    unique_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    short_topic += "-" + unique_suffix
+                    self.logger.info(f"Добавлен уникальный суффикс: {short_topic}")
+
+                # Обновляем список коротких тем для фокуса
+                recent_short_topics.insert(0, short_topic)
+                if len(recent_short_topics) > 10:
+                    recent_short_topics.pop()
+                focus_data[chosen_focus] = recent_short_topics
+                tracker["focus_data"] = focus_data
+                save_topics_tracker(tracker)
+                self.logger.info(f"Обновлённый трекер для фокуса '{chosen_focus}': {recent_short_topics}")
+                return topic_data
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Ошибка при генерации темы с коротким ярлыком: {e}")
+                self.logger.error(f"Ошибка при генерации темы с коротким ярлыком: {e}")
+
         raise Exception("Не удалось сгенерировать уникальную тему после нескольких попыток.")
 
     def clear_generated_content(self):
