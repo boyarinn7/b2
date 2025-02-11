@@ -9,6 +9,7 @@ import re
 import subprocess
 import boto3
 import io
+import logging
 
 from datetime import datetime
 from PIL import Image, ImageDraw
@@ -22,9 +23,15 @@ from modules.utils import ensure_directory_exists  # Если get_b2_client не
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
 
 # === Инициализация ===
+
+# Создаем один логгер для всего модуля
 logger = get_logger("generate_content")
+
+# Инициализируем конфигурационный менеджер
 config = ConfigManager()
-logger = get_logger("generate_media_launcher")  # Дополнительная инициализация логгера
+
+# Логируем успешную инициализацию
+logger.info("✅ Конфигурация загружена.")
 
 # ======================================================
 # Функции для работы с Backblaze B2 для объединённого трекера topics_tracker.json
@@ -93,6 +100,26 @@ def save_topics_tracker(tracker):
         logger.info(f"Трекер сохранён в B2 по пути {tracker_path}: {json.dumps(tracker)}")
     except Exception as e:
         handle_error("B2 Tracker Save Error", str(e))
+
+def handle_error(error_type, message, exception=None):
+    """
+    Логирует ошибку и останавливает выполнение при критической ошибке.
+
+    :param error_type: Тип ошибки (строка)
+    :param message: Сообщение ошибки (строка)
+    :param exception: Объект исключения (опционально)
+    """
+    error_msg = f"❌ {error_type}: {message}"
+
+    if exception:
+        error_msg += f" | Exception: {str(exception)}"
+
+    logger.error(error_msg)
+
+    # Если критическая ошибка — останавливаем выполнение
+    if "Critical" in error_type or "Критическая" in error_type:
+        raise SystemExit(error_msg)
+
 
 # ======================================================
 # Остальные функции, работающие с B2 (конфигурация, контент, изображения)
@@ -377,6 +404,7 @@ class ContentGenerator:
             return {}
 
     def save_to_generated_content(self, stage, data):
+        logger.critical(f"🚨 [CRITICAL] Вызван save_to_generated_content() -> stage: {stage}")
         logger.info(
             f"🔄 [DEBUG] save_to_generated_content() вызван для: {stage} с данными: {json.dumps(data, ensure_ascii=False, indent=4)}")
         try:
