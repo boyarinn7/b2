@@ -10,6 +10,7 @@ import subprocess
 import boto3
 import io
 import logging
+import shutil
 
 print("Текущая рабочая директория:", os.getcwd())
 print("Файл для записи:", os.path.join(os.getcwd(), "generated_content.json"))
@@ -51,6 +52,18 @@ def get_b2_client():
         )
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e))
+
+def duplicate_generated_content():
+    # Абсолютный путь, куда нужно скопировать файл
+    local_debug_path = r"C:\Users\boyar\b2\generated_content.json"
+    # Путь к файлу, который используется системой (определяется через конфиг)
+    source_file = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
+    try:
+        shutil.copy(source_file, local_debug_path)
+        logger.info(f"Файл успешно скопирован в {local_debug_path}")
+    except Exception as e:
+        logger.error(f"Ошибка копирования файла в {local_debug_path}: {e}")
+
 
 def load_topics_tracker():
     """
@@ -607,6 +620,9 @@ class ContentGenerator:
 
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
+
+            # После завершения всех этапов дублируем файл для отладки
+            duplicate_generated_content()
 
             run_generate_media()
             self.logger.info("✅ Генерация контента завершена.")
