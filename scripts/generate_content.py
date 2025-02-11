@@ -377,6 +377,8 @@ class ContentGenerator:
             return {}
 
     def save_to_generated_content(self, stage, data):
+        logger.info(
+            f"🔄 [DEBUG] save_to_generated_content() вызван для: {stage} с данными: {json.dumps(data, ensure_ascii=False, indent=4)}")
         try:
             if not self.content_output_path:
                 raise ValueError("❌ Ошибка: self.content_output_path пустой!")
@@ -532,16 +534,21 @@ class ContentGenerator:
 
             # Используем новый метод генерации с коротким ярлыком
             topic_data = self.generate_topic_with_short_label(chosen_focus)
+            self.logger.info(f"📝 [DEBUG] Перед сохранением в 'topic': {json.dumps(topic_data, ensure_ascii=False, indent=4)}")
             self.save_to_generated_content("topic", topic_data)
 
             text_initial = self.request_openai(
                 config.get('CONTENT.text.prompt_template').format(topic=topic_data)
             )
             critique = self.critique_content(text_initial)
+            self.logger.info(
+                f"📝 [DEBUG] Перед сохранением в 'critique': {json.dumps(critique, ensure_ascii=False, indent=4)}")
             self.save_to_generated_content("critique", {"critique": critique})
 
             sarcastic_comment = self.generate_sarcastic_comment(text_initial)
             sarcastic_poll = self.generate_interactive_poll(text_initial)
+            self.logger.info(
+                f"📝 [DEBUG] Перед сохранением в 'sarcasm': {json.dumps({'comment': sarcastic_comment, 'poll': sarcastic_poll}, ensure_ascii=False, indent=4)}")
             self.save_to_generated_content("sarcasm", {
                 "comment": sarcastic_comment,
                 "poll": sarcastic_poll
@@ -558,6 +565,7 @@ class ContentGenerator:
                     "poll": sarcastic_poll
                 }
             }
+            logger.info(f"📤 [DEBUG] Перед отправкой в B2: {json.dumps(content_dict, ensure_ascii=False, indent=4)}")
             save_to_b2(target_folder, content_dict)
 
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
