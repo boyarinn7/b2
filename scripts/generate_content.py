@@ -419,19 +419,33 @@ class ContentGenerator:
             handle_error("Sarcasm Poll Generation Error", str(e))
             return {}
 
+    import os
+    import json
+    import shutil
+    import logging
+    from datetime import datetime
+
+    logger = logging.getLogger(__name__)
+
     def save_to_generated_content(self, stage, data):
-        logger.critical(f"🚨 [CRITICAL] Вызван save_to_generated_content() -> stage: {stage}")
+        """
+        Сохраняет данные в generated_content.json и дублирует локально в C:\Users\boyar\b2\generated_content.json
+        """
         logger.info(
             f"🔄 [DEBUG] save_to_generated_content() вызван для: {stage} с данными: {json.dumps(data, ensure_ascii=False, indent=4)}")
+
         try:
             if not self.content_output_path:
                 raise ValueError("❌ Ошибка: self.content_output_path пустой!")
-            logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
+
+            logger.info(f"📁 Используемый путь к файлу: {self.content_output_path}")
+
             folder = os.path.dirname(self.content_output_path) or "."
-            logger.info(f"📁 Проверяем папку для сохранения: {folder}")
             if not os.path.exists(folder):
                 os.makedirs(folder)
                 logger.info(f"📁 Папка создана: {folder}")
+
+            # Читаем существующий файл или создаем новый словарь
             if os.path.exists(self.content_output_path):
                 logger.info(f"📄 Файл {self.content_output_path} найден, загружаем данные...")
                 with open(self.content_output_path, 'r', encoding='utf-8') as file:
@@ -443,18 +457,34 @@ class ContentGenerator:
             else:
                 logger.warning(f"⚠️ Файл {self.content_output_path} не найден, создаем новый.")
                 result_data = {}
+
+            # Обновляем содержимое
             result_data["timestamp"] = datetime.utcnow().isoformat()
             result_data[stage] = data
-            logger.info(f"💾 Записываем данные в {self.content_output_path}...")
+
+            # Записываем обновленные данные в файл
             with open(self.content_output_path, 'w', encoding='utf-8') as file:
                 json.dump(result_data, file, ensure_ascii=False, indent=4)
+
             logger.info(f"✅ Данные успешно обновлены и сохранены на этапе: {stage}")
+
+            # Дублирование в локальный путь
+            local_path = r"C:\Users\boyar\b2\generated_content.json"
+            shutil.copy2(self.content_output_path, local_path)
+            logger.info(f"✅ Файл успешно дублирован в {local_path}")
+
+            # Проверка существования локального файла
+            if os.path.exists(local_path):
+                logger.info(f"📂 Файл успешно создан: {local_path}")
+            else:
+                logger.error(f"❌ Ошибка! Файл не найден: {local_path}")
+
         except FileNotFoundError:
-            handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}")
+            logger.error(f"❌ Ошибка: Файл не найден: {self.content_output_path}")
         except PermissionError:
-            handle_error("Save to Generated Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
+            logger.error(f"❌ Ошибка: Нет прав на запись в файл: {self.content_output_path}")
         except Exception as e:
-            handle_error("Save to Generated Content Error", str(e))
+            logger.error(f"❌ Ошибка в save_to_generated_content: {str(e)}")
 
     def critique_content(self, content):
         try:
