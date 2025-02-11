@@ -429,7 +429,7 @@ class ContentGenerator:
 
     def save_to_generated_content(self, stage, data):
         """
-        Сохраняет данные в generated_content.json и дублирует локально в C:\Users\boyar\b2\generated_content.json
+        Сохраняет данные в generated_content.json и дублирует локально 
         """
         logger.info(
             f"🔄 [DEBUG] save_to_generated_content() вызван для: {stage} с данными: {json.dumps(data, ensure_ascii=False, indent=4)}")
