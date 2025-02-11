@@ -11,6 +11,8 @@ import boto3
 import io
 import logging
 
+print("Текущая рабочая директория:", os.getcwd())
+
 from datetime import datetime
 from PIL import Image, ImageDraw
 
