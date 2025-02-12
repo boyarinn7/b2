@@ -54,15 +54,26 @@ def get_b2_client():
         handle_error("B2 Client Initialization Error", str(e))
 
 def duplicate_generated_content():
-    # Абсолютный путь, куда нужно скопировать файл
-    local_debug_path = r"C:\Users\boyar\b2\generated_content.json"
-    # Путь к файлу, который используется системой (определяется через конфиг)
+    # Определяем целевой путь в зависимости от ОС
+    if os.name == "nt":  # Windows
+        local_debug_path = r"C:\Users\boyar\b2\generated_content.json"
+    else:
+        # Например, для Linux используем текущую рабочую директорию + имя файла
+        local_debug_path = os.path.join(os.getcwd(), "generated_content_debug.json")
+
+    # Получаем путь исходного файла (относительный, из конфига)
     source_file = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
+
+    # Проверяем, существует ли исходный файл
+    if not os.path.exists(source_file):
+        logger.error(f"Исходный файл не найден: {source_file}")
+        return
+
     try:
-        shutil.copy(source_file, local_debug_path)
-        logger.info(f"Файл успешно скопирован в {local_debug_path}")
+        shutil.copy2(source_file, local_debug_path)
+        logger.info(f"✅ Файл успешно скопирован в {local_debug_path}")
     except Exception as e:
-        logger.error(f"Ошибка копирования файла в {local_debug_path}: {e}")
+        logger.error(f"❌ Ошибка копирования файла в {local_debug_path}: {e}")
 
 
 def load_topics_tracker():
@@ -419,17 +430,11 @@ class ContentGenerator:
             handle_error("Sarcasm Poll Generation Error", str(e))
             return {}
 
-    import os
-    import json
-    import shutil
-    import logging
-    from datetime import datetime
 
-    logger = logging.getLogger(__name__)
 
     def save_to_generated_content(self, stage, data):
         """
-        Сохраняет данные в generated_content.json и дублирует локально 
+        Сохраняет данные в generated_content.json и дублирует локально
         """
         logger.info(
             f"🔄 [DEBUG] save_to_generated_content() вызван для: {stage} с данными: {json.dumps(data, ensure_ascii=False, indent=4)}")
@@ -606,19 +611,24 @@ class ContentGenerator:
             else:
                 self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
 
-            # Используем новый метод генерации с коротким ярлыком
+            # Генерация темы с коротким ярлыком
             topic_data = self.generate_topic_with_short_label(chosen_focus)
-            self.logger.info(f"📝 [DEBUG] Перед сохранением в 'topic': {json.dumps(topic_data, ensure_ascii=False, indent=4)}")
+            self.logger.info(
+                f"📝 [DEBUG] Перед сохранением в 'topic': {json.dumps(topic_data, ensure_ascii=False, indent=4)}")
             self.save_to_generated_content("topic", topic_data)
 
+            # Генерация исходного текста поста
             text_initial = self.request_openai(
                 config.get('CONTENT.text.prompt_template').format(topic=topic_data)
             )
+
+            # Критика текста
             critique = self.critique_content(text_initial)
             self.logger.info(
                 f"📝 [DEBUG] Перед сохранением в 'critique': {json.dumps(critique, ensure_ascii=False, indent=4)}")
             self.save_to_generated_content("critique", {"critique": critique})
 
+            # Генерация саркастического комментария и интерактивного опроса
             sarcastic_comment = self.generate_sarcastic_comment(text_initial)
             sarcastic_poll = self.generate_interactive_poll(text_initial)
             self.logger.info(
@@ -628,9 +638,13 @@ class ContentGenerator:
                 "poll": sarcastic_poll
             })
 
+            # Сохранение окончательного (исправленного) текста под ключом "content"
             final_text = text_initial.strip()
+            self.save_to_generated_content("content", {"content": final_text})
+
             target_folder = empty_folders[0]
 
+            # Формирование словаря для отправки в B2
             content_dict = {
                 "topic": topic_data,
                 "content": final_text,
@@ -651,7 +665,6 @@ class ContentGenerator:
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
 
-            # После завершения всех этапов дублируем файл для отладки
             duplicate_generated_content()
 
             run_generate_media()
@@ -659,6 +672,7 @@ class ContentGenerator:
 
         except Exception as e:
             handle_error("Run Error", str(e))
+
 
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""

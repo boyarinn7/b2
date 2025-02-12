@@ -1,5 +1,8 @@
 {
+    "publish": "444/, 555/, 666/",
     "empty": [
-        "666/"
-    ]
+        "666/",
+        "555/"
+    ],
+    "processing_lock": false
 }
