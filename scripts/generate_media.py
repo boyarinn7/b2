@@ -13,10 +13,12 @@ from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 
 # === Инициализация конфигурации и логгера ===
+
 config = ConfigManager()
 logger = get_logger("generate_media")
 
 # === Загрузка всех настроек из конфига ===
+
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
 B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
 B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
@@ -35,8 +37,13 @@ VIDEO_MAX_TOKENS = config.get("MEDIA.video_max_tokens", 300)
 VIDEO_TEMPERATURE = config.get("MEDIA.video_temperature", 0.7)
 IMAGE_SIZE = config.get("MEDIA.image_size", "1024x768")
 
+# Новые настройки для описания картинки (первого кадра)
+FIRST_FRAME_MAX_TOKENS = config.get("MEDIA.first_frame_max_tokens", 100)
+FIRST_FRAME_TEMPERATURE = config.get("MEDIA.first_frame_temperature", 0.7)
+
 # Путь к скрипту b2_storage_manager.py (вынимается из конфига)
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
+
 
 # === Функции работы с Backblaze B2 ===
 
@@ -121,37 +128,6 @@ def reset_processing_lock(client):
     except Exception as e:
         handle_error(logger, f"Processing Lock Reset Error: {e}")
 
-# === Новые функции генерации сценария видео и изображения первого кадра ===
-
-def generate_video_scenario(post_text):
-    """
-    Генерирует сценарий 10-секундного видео на основе текста поста.
-    Использует промпт из конфига, подставляя {text} вместо исходного текста.
-    Ожидается ответ в формате JSON с ключами:
-      - 'video_scenario': сценарий видео,
-      - 'first_frame_prompt': промпт для генерации изображения первого кадра.
-    """
-    try:
-        prompt = VIDEO_SCENARIO_PROMPT.format(text=post_text)
-        logger.info(f"🔎 Отправка запроса для видео-сценария с prompt: {prompt}")
-        response = openai.ChatCompletion.create(
-            model=config.get("API_KEYS.openai.model", "gpt-4"),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=VIDEO_MAX_TOKENS,
-            temperature=VIDEO_TEMPERATURE,
-        )
-        response_text = response['choices'][0]['message']['content'].strip()
-        logger.info(f"Сырой ответ OpenAI для видео-сценария: {response_text}")
-        try:
-            scenario_dict = json.loads(response_text)
-            return scenario_dict
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Ошибка генерации видео-сценария: {e}. Сырой ответ: {response_text}")
-            return None
-    except Exception as e:
-        logger.error(f"❌ Ошибка генерации видео-сценария: {e}")
-        return None
-
 def generate_image_with_dalle(prompt, generation_id):
     """
     Генерирует изображение первого кадра с помощью DALL‑E 3 по заданному промпту.
@@ -179,6 +155,55 @@ def generate_image_with_dalle(prompt, generation_id):
     except Exception as e:
         logger.error(f"❌ Ошибка генерации изображения DALL‑E 3: {e}")
         return None
+
+def get_video_scenario_text(post_text):
+    """
+    Генерирует детальный сценарий для 10-секундного видео, подставляя значение {text} из поля "content".
+    Используется готовый промпт из конфига MEDIA.video_scenario_prompt.
+    """
+    prompt = VIDEO_SCENARIO_PROMPT.format(text=post_text)
+    logger.info(f"🔎 Отправка запроса для генерации видео-сценария с prompt: {prompt}")
+    response = openai.ChatCompletion.create(
+        model=config.get("API_KEYS.openai.model", "gpt-4"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=VIDEO_MAX_TOKENS,
+        temperature=VIDEO_TEMPERATURE,
+    )
+    video_scenario = response['choices'][0]['message']['content'].strip()
+    logger.info(f"✅ Сгенерирован видео-сценарий (первые 100 символов): {video_scenario[:100]}...")
+    return video_scenario
+
+def get_first_frame_prompt_text(video_scenario):
+    """
+    На основе готового видео-сценария генерирует краткое и ёмкое описание для первого кадра,
+    используя шаблон из конфига MEDIA.first_frame_prompt_template.
+    """
+    template = config.get("MEDIA.first_frame_prompt_template")
+    if not template:
+        raise ValueError("❌ Ошибка: Шаблон промпта для первого кадра не задан в конфиге (MEDIA.first_frame_prompt_template)")
+    prompt = template.format(text=video_scenario)
+    logger.info(f"🔎 Отправка запроса для генерации промпта первого кадра с prompt: {prompt}")
+    response = openai.ChatCompletion.create(
+        model=config.get("API_KEYS.openai.model", "gpt-4"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=FIRST_FRAME_MAX_TOKENS,
+        temperature=FIRST_FRAME_TEMPERATURE,
+    )
+    first_frame_prompt = response['choices'][0]['message']['content'].strip()
+    logger.info(f"✅ Сгенерирован промпт первого кадра (первые 100 символов): {first_frame_prompt[:100]}...")
+    return first_frame_prompt
+
+def create_structured_result(post_text):
+    """
+    Объединяет два результата: видео-сценарий и описание для первого кадра,
+    возвращая JSON-объект с ключами "video_scenario" и "first_frame_prompt".
+    """
+    video_scenario = get_video_scenario_text(post_text)
+    first_frame_prompt = get_first_frame_prompt_text(video_scenario)
+    return {
+        "video_scenario": video_scenario,
+        "first_frame_prompt": first_frame_prompt
+    }
 
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
@@ -213,14 +238,20 @@ def main():
         post_text = generated_content.get("content", "")
         if not post_text:
             raise ValueError("❌ Ошибка: Текст поста пуст!")
-        logger.info(f"📝 Текст поста: {post_text[:100]}...")
+        logger.info(f"📝 Текст поста (первые 100 символов): {post_text[:100]}...")
 
-        # Генерация видео-сценария и извлечение промпта для первого кадра
-        scenario = generate_video_scenario(post_text)
-        if scenario is None or "first_frame_prompt" not in scenario:
-            raise ValueError("❌ Ошибка: Не удалось получить промпт для первого кадра!")
-        first_frame_prompt = scenario["first_frame_prompt"]
-        logger.info(f"🎬 Промпт для первого кадра: {first_frame_prompt}")
+        # Генерация видео-сценария и промпта для первого кадра через объединяющую функцию
+        structured_result = create_structured_result(post_text)
+        video_scenario = structured_result["video_scenario"]
+        first_frame_prompt = structured_result["first_frame_prompt"]
+        logger.info(f"🎬 Видео-сценарий (первые 100 символов): {video_scenario[:100]}...")
+        logger.info(f"🖼️ Промпт для первого кадра (первые 100 символов): {first_frame_prompt[:100]}...")
+
+        # Сохранение видео-сценария для отладки в файл с именем {file_id}.json
+        scenario_file_path = f"{file_id}.json"
+        with open(scenario_file_path, 'w', encoding='utf-8') as scenario_file:
+            json.dump({"video_scenario": video_scenario}, scenario_file, ensure_ascii=False, indent=4)
+        logger.info(f"✅ Видео-сценарий сохранён в файл: {scenario_file_path}")
 
         # Генерация изображения первого кадра с помощью DALL‑E 3
         image_path = generate_image_with_dalle(first_frame_prompt, file_id)
@@ -247,3 +278,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         logger.info("🛑 Программа остановлена пользователем.")
+
