@@ -54,17 +54,23 @@ def get_b2_client():
         handle_error("B2 Client Initialization Error", str(e))
 
 def duplicate_generated_content():
-    # Определяем целевой путь в зависимости от ОС
-    if os.name == "nt":  # Windows
+    """
+    Дублирует файл, указанный в настройке 'FILE_PATHS.content_output_path' (обычно 'generated_content.json'),
+    в локальное хранилище для отладки.
+
+    На Windows копирует в C:\Users\boyar\b2\generated_content.json,
+    на других ОС — сохраняет в текущей рабочей директории под именем generated_content_debug.json.
+    """
+    # Определение целевого пути в зависимости от операционной системы
+    if os.name == "nt":
         local_debug_path = r"C:\Users\boyar\b2\generated_content.json"
     else:
-        # Например, для Linux используем текущую рабочую директорию + имя файла
         local_debug_path = os.path.join(os.getcwd(), "generated_content_debug.json")
 
-    # Получаем путь исходного файла (относительный, из конфига)
+    # Получение пути исходного файла из конфигурации
     source_file = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
-    # Проверяем, существует ли исходный файл
+    # Проверка существования исходного файла
     if not os.path.exists(source_file):
         logger.error(f"Исходный файл не найден: {source_file}")
         return
@@ -640,7 +646,8 @@ class ContentGenerator:
 
             # Сохранение окончательного (исправленного) текста под ключом "content"
             final_text = text_initial.strip()
-            self.save_to_generated_content("content", {"content": final_text})
+            self.logger.info(f"Тип финального текста: {type(final_text)}; Содержимое: {final_text[:100]}...")
+            self.save_to_generated_content("content", final_text)
 
             target_folder = empty_folders[0]
 
