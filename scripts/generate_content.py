@@ -58,7 +58,7 @@ def duplicate_generated_content():
     Дублирует файл, указанный в настройке 'FILE_PATHS.content_output_path' (обычно 'generated_content.json'),
     в локальное хранилище для отладки.
 
-    
+
     на других ОС — сохраняет в текущей рабочей директории под именем generated_content_debug.json.
     """
     # Определение целевого пути в зависимости от операционной системы

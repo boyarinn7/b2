@@ -140,10 +140,14 @@ def generate_video_scenario(post_text):
             max_tokens=VIDEO_MAX_TOKENS,
             temperature=VIDEO_TEMPERATURE,
         )
-        content = response['choices'][0]['message']['content'].strip()
-        logger.info(f"📄 Ответ видео-сценария: {content}")
-        scenario_dict = json.loads(content)
-        return scenario_dict
+        response_text = response['choices'][0]['message']['content'].strip()
+        logger.info(f"Сырой ответ OpenAI для видео-сценария: {response_text}")
+        try:
+            scenario_dict = json.loads(response_text)
+            return scenario_dict
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Ошибка генерации видео-сценария: {e}. Сырой ответ: {response_text}")
+            return None
     except Exception as e:
         logger.error(f"❌ Ошибка генерации видео-сценария: {e}")
         return None
