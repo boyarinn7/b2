@@ -52,7 +52,7 @@
     "video_temperature": 0.7,
     "first_frame_max_tokens": 100,
     "first_frame_temperature": 0.7,
-    "image_size": "1024x1024"
+    "image_size": "1024x763"
     },
     "OTHER": {
         "file_extensions": [
@@ -183,7 +183,9 @@
         "max_workers": 5,
         "self_tuning_interval": "daily"
     },
-    "PROMPTS": {},
+    "PROMPTS": {
+        "user_prompt_combined": "Write a detailed script for a single scene of a video on the topic '{topic}'. The scene must be original, brilliant, and memorable, featuring an unexpected twist, a unique idea, or an unconventional approach. Ensure that the scene is suitable for generation in Runway, considering the capabilities of text-to-video generation. **The result must be in English.** Include the following elements:\n\n1. **Action and Plot Description**:\n   - What happens in the scene? What events unfold?\n   - Who is involved (characters, objects, animals)? Describe their appearance, emotions, and movements.\n   - Specify the sequence of actions using transition words (e.g., 'then,' 'suddenly,' 'slowly').\n\n2. **Visual Details and Environment**:\n   - Describe the setting: location, background, textures, colors, and small details (e.g., dust in the air, light reflections).\n   - Indicate the style of the scene (e.g., realistic, surreal, retro, cyberpunk) and its atmosphere (e.g., mysterious, joyful, tense).\n\n3. **Camera and Movement**:\n   - Specify the type of shot (e.g., close-up, wide shot, overhead view).\n   - Describe the camera angle and any movement (e.g., panning left to right, zooming in on an object, static shot).\n\n4. **Lighting and Mood**:\n   - Describe the type of lighting (e.g., soft natural, harsh contrast, flickering neon).\n   - Explain how the lighting influences the scene’s mood and the viewer’s emotions.\n\n5. **Additional Elements for Uniqueness**:\n   - Add an unexpected twist, a unique visual element, or a creative idea that makes the scene unforgettable.\n   - Specify the desired emotional reaction from the audience (e.g., surprise, awe, contemplation).\n   - The script must not exceed 950 characters.\n\nThen, highlight the description of the first frame of the scene, starting with 'First Frame Description:' and ending with 'End of Description.' **The first frame description must be in English.** It should be highly detailed and include:\n   - What is visible on the screen (characters, objects, background).\n   - Placement of all elements in the frame (e.g., character in the center, object on the left).\n   - Colors, textures, lighting, shadows.\n   - Mood and atmosphere of the frame.\n   - Type of shot and camera angle.\n\n**Ensure that the entire result is provided in English.** The first frame description should be suitable for image generation in Runway, not exceed 950 characters, and avoid vague formulations. The script and first frame description should be clear, visually rich, and ready for use in video generation."
+    },
     "GENERATE": {
         "topic_threshold": 7,
         "text_threshold": 8,
@@ -203,6 +205,16 @@
             "enabled": true,
             "tool": "spacy",
             "model": "ru_core_news_md"
-        }
+        },
+     "VISUAL_ANALYSIS": { 
+        "min_script_length": 200
+    },
+    "IMAGE_GENERATION": {  
+        "image_size": "1280:768",
+        "num_images": 1
+    },
+    "PATHS": { 
+        "output_image_format": "png"
+    }
     }
 }

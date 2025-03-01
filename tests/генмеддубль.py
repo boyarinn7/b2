@@ -1,114 +1,281 @@
-# core/scripts/generate_media.py
-
 import os
-import time
-import random
-from modules.api_clients import get_runwayml_client
+import json
+import boto3
+import botocore
+import sys
+import subprocess
+import openai
+import requests
+
+from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
 from modules.error_handler import handle_error
-from modules.utils import ensure_directory_exists, encode_image_to_base64
 from modules.config_manager import ConfigManager
 
-# === Инициализация ===
+# === Инициализация конфигурации и логгера ===
+
 config = ConfigManager()
 logger = get_logger("generate_media")
 
-# === Константы из конфигурации ===
-DEFAULT_IMAGE_PATH = config.get('FILE_PATHS.default_image_path', 'core/media/input_image.jpg')
-DEFAULT_VIDEO_PATH = config.get('FILE_PATHS.default_video_path', 'core/media/output_video.mp4')
-RUNWAY_MODEL = config.get('API_KEYS.RUNWAYML.model', 'gen3a_turbo')
-RUNWAY_DURATION = config.get('API_KEYS.RUNWAYML.duration', 5)
-RUNWAY_RATIO = config.get('API_KEYS.RUNWAYML.ratio', '1280:768')
-RUNWAY_SCENARIO = config.get('API_KEYS.RUNWAYML.default_scenario', "Атмосферная сцена с тёмной комнатой и старой картой.")
-USE_MOCK_API = config.get('OTHER.use_mock_api', True)
+# === Загрузка всех настроек из конфига ===
 
-# === Проверка API-ключа ===
-RUNWAY_API_KEY = config.get('API_KEYS.RUNWAYML.api_key')
-if not RUNWAY_API_KEY:
-    logger.error("❌ API-ключ для RunwayML отсутствует в конфигурации.")
-    raise ValueError("API-ключ для RunwayML отсутствует. Проверьте конфигурацию.")
+B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
+B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
+B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
+B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
+
+# Пути к файлам (вынимаются из конфигурации)
+CONFIG_GEN_PATH = os.path.abspath(config.get("FILE_PATHS.config_gen", "config/config_gen.json"))
+CONFIG_PUBLIC_REMOTE_PATH = config.get("FILE_PATHS.config_public", "config/config_public.json")
+CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath(config.get("FILE_PATHS.config_public_local", "config_public.json"))
+CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")
+SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+
+# Настройки генерации видео-сценария и изображения из раздела MEDIA конфига
+VIDEO_SCENARIO_PROMPT = config.get("MEDIA.video_scenario_prompt")
+VIDEO_MAX_TOKENS = config.get("MEDIA.video_max_tokens", 300)
+VIDEO_TEMPERATURE = config.get("MEDIA.video_temperature", 0.7)
+IMAGE_SIZE = config.get("MEDIA.image_size", "1024x768")
+
+# Новые настройки для описания картинки (первого кадра)
+FIRST_FRAME_MAX_TOKENS = config.get("MEDIA.first_frame_max_tokens", 100)
+FIRST_FRAME_TEMPERATURE = config.get("MEDIA.first_frame_temperature", 0.7)
+
+# Путь к скрипту b2_storage_manager.py (вынимается из конфига)
+B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
 
 
-# === Генерация видео через RunwayML ===
-def generate_video_with_image_and_prompt(prompt, image_path):
-    """
-    Генерация видео с использованием RunwayML API
-    """
+# === Функции работы с Backblaze B2 ===
+
+def get_b2_client():
+    """Создаёт и возвращает клиент B2 (S3) на основе настроек из конфига."""
     try:
-        if USE_MOCK_API:
-            logger.warning("⚠️ Используется заглушка для генерации видео (Runway API Mock).")
-            mock_video_url = f"https://mock.runwayml.com/video_{random.randint(1000, 9999)}.mp4"
-            time.sleep(2)  # Имитация задержки запроса
-            logger.info(f"✅ Видео успешно сгенерировано (заглушка). Ссылка: {mock_video_url}")
-            return mock_video_url
-
-        base64_image = encode_image_to_base64(image_path)
-        if not base64_image:
-            handle_error("Image Encoding Error", f"Не удалось преобразовать изображение: {image_path}")
-
-        logger.info("🔄 Создаю задачу на генерацию видео через Runway...")
-        client = get_runwayml_client(api_key=RUNWAY_API_KEY)
-        task = client.image_to_video.create(
-            model=RUNWAY_MODEL,
-            prompt_image=f"data:image/jpeg;base64,{base64_image}",
-            prompt_text=prompt,
-            duration=RUNWAY_DURATION,
-            ratio=RUNWAY_RATIO
+        client = boto3.client(
+            's3',
+            endpoint_url=B2_ENDPOINT,
+            aws_access_key_id=B2_ACCESS_KEY,
+            aws_secret_access_key=B2_SECRET_KEY
         )
-        logger.info(f"✅ Задача успешно создана! ID задачи: {task.id}")
-
-        # Ожидание завершения задачи
-        while True:
-            task_status = client.tasks.retrieve(task.id)
-            logger.info(f"🔍 Текущий статус задачи: {task_status.status}")
-            if task_status.status in ["SUCCEEDED", "FAILED"]:
-                break
-            time.sleep(5)  # Ждём 5 секунд перед проверкой статуса
-
-        if task_status.status == "SUCCEEDED":
-            video_url = task_status.output[0]
-            logger.info(f"🏁 Видео успешно сгенерировано! Ссылка: {video_url}")
-            save_video(video_url)
-            return video_url
-        else:
-            handle_error("Runway Video Generation Error", "Задача завершилась с ошибкой.")
-
+        return client
     except Exception as e:
-        handle_error("RunwayML Video Generation Error", str(e))
+        handle_error(logger, f"B2 Client Initialization Error: {e}")
 
+def download_file_from_b2(client, remote_path, local_path):
+    """Загружает файл из B2 (S3) в локальное хранилище."""
+    try:
+        logger.info(f"🔄 Загрузка файла из B2: {remote_path} -> {local_path}")
+        ensure_directory_exists(os.path.dirname(local_path))
+        if not hasattr(client, 'download_file'):
+            raise TypeError("❌ Ошибка: client не является объектом S3-клиента!")
+        client.download_file(B2_BUCKET_NAME, remote_path, local_path)
+        logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки {remote_path}: {e}")
+        handle_error(logger, f"B2 Download Error: {e}")
 
-def save_video(video_url):
+def upload_to_b2(client, folder, file_path):
+    """Загружает локальный файл в указанную папку B2 и удаляет локальную копию."""
+    try:
+        file_name = os.path.basename(file_path)
+        if not folder.endswith('/'):
+            folder += '/'
+        s3_key = f"{folder}{file_name}"
+        logger.info(f"🔄 Загрузка файла в B2: {file_path} -> {s3_key}")
+        client.upload_file(file_path, B2_BUCKET_NAME, s3_key)
+        logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
+        os.remove(file_path)
+        logger.info(f"🗑️ Локальный файл {file_path} удалён после загрузки.")
+    except Exception as e:
+        handle_error(logger, f"B2 Upload Error: {e}")
+
+def update_config_public(client, folder):
     """
-    Сохранение видео по указанному URL
+    Обновляет config_public.json: удаляет указанную папку из списка 'empty'.
+    После загрузки медиафайла папка считается заполненной.
     """
     try:
-        import requests
-        response = requests.get(video_url, timeout=30)
-        response.raise_for_status()
-        ensure_directory_exists(os.path.dirname(DEFAULT_VIDEO_PATH))
-        with open(DEFAULT_VIDEO_PATH, 'wb') as file:
-            file.write(response.content)
-        logger.info(f"✅ Видео сохранено в {DEFAULT_VIDEO_PATH}")
+        logger.info(f"🔄 Обновление config_public.json: удаление {folder} из списка 'empty'")
+        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+        if "empty" in config_public and folder in config_public["empty"]:
+            config_public["empty"].remove(folder)
+            logger.info(f"✅ Папка {folder} удалена из 'empty'. Текущее содержимое: {config_public}")
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(config_public, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        logger.info("✅ config_public.json обновлён и загружен обратно в B2.")
+        os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
-        handle_error("Video Save Error", str(e))
+        handle_error(logger, f"Config Public Update Error: {e}")
 
+def reset_processing_lock(client):
+    """
+    Сбрасывает флаг блокировки processing_lock в config_public.json, устанавливая его в false.
+    """
+    try:
+        logger.info("🔄 Сброс processing_lock в config_public.json")
+        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+        if config_public.get("processing_lock", False):
+            config_public["processing_lock"] = False
+            logger.info("✅ Флаг processing_lock сброшен.")
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(config_public, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        os.remove(CONFIG_PUBLIC_LOCAL_PATH)
+    except Exception as e:
+        handle_error(logger, f"Processing Lock Reset Error: {e}")
+
+def generate_image_with_dalle(prompt, generation_id):
+    """
+    Генерирует изображение первого кадра с помощью DALL‑E 3 по заданному промпту.
+    Использует размер изображения из конфига. Скачивает изображение и сохраняет его локально с именем на основе generation_id.
+    """
+    try:
+        logger.info(f"🔎 Генерация изображения через DALL‑E 3 с промптом: {prompt}")
+        response = openai.Image.create(
+            prompt=prompt,
+            n=1,
+            size=IMAGE_SIZE
+        )
+        image_url = response['data'][0]['url']
+        logger.info(f"📤 Получен URL изображения: {image_url}")
+        image_response = requests.get(image_url)
+        if image_response.status_code == 200:
+            image_path = f"{generation_id}.png"
+            with open(image_path, "wb") as f:
+                f.write(image_response.content)
+            logger.info(f"✅ Изображение сохранено локально: {image_path}")
+            return image_path
+        else:
+            logger.error("❌ Ошибка загрузки изображения с DALL‑E 3")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка генерации изображения DALL‑E 3: {e}")
+        return None
+
+def get_video_scenario_text(post_text):
+    """
+    Генерирует детальный сценарий для 10-секундного видео, подставляя значение {text} из поля "content".
+    Используется готовый промпт из конфига MEDIA.video_scenario_prompt.
+    """
+    prompt = VIDEO_SCENARIO_PROMPT.format(text=post_text)
+    logger.info(f"🔎 Отправка запроса для генерации видео-сценария с prompt: {prompt}")
+    response = openai.ChatCompletion.create(
+        model=config.get("API_KEYS.openai.model", "gpt-4"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=VIDEO_MAX_TOKENS,
+        temperature=VIDEO_TEMPERATURE,
+    )
+    video_scenario = response['choices'][0]['message']['content'].strip()
+    logger.info(f"✅ Сгенерирован видео-сценарий (первые 100 символов): {video_scenario[:100]}...")
+    return video_scenario
+
+def get_first_frame_prompt_text(video_scenario):
+    """
+    На основе готового видео-сценария генерирует краткое и ёмкое описание для первого кадра,
+    используя шаблон из конфига MEDIA.first_frame_prompt_template.
+    """
+    template = config.get("MEDIA.first_frame_prompt_template")
+    if not template:
+        raise ValueError("❌ Ошибка: Шаблон промпта для первого кадра не задан в конфиге (MEDIA.first_frame_prompt_template)")
+    prompt = template.format(text=video_scenario)
+    logger.info(f"🔎 Отправка запроса для генерации промпта первого кадра с prompt: {prompt}")
+    response = openai.ChatCompletion.create(
+        model=config.get("API_KEYS.openai.model", "gpt-4"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=FIRST_FRAME_MAX_TOKENS,
+        temperature=FIRST_FRAME_TEMPERATURE,
+    )
+    first_frame_prompt = response['choices'][0]['message']['content'].strip()
+    logger.info(f"✅ Сгенерирован промпт первого кадра (первые 100 символов): {first_frame_prompt[:100]}...")
+    return first_frame_prompt
+
+def create_structured_result(post_text):
+    """
+    Объединяет два результата: видео-сценарий и описание для первого кадра,
+    возвращая JSON-объект с ключами "video_scenario" и "first_frame_prompt".
+    """
+    video_scenario = get_video_scenario_text(post_text)
+    first_frame_prompt = get_first_frame_prompt_text(video_scenario)
+    return {
+        "video_scenario": video_scenario,
+        "first_frame_prompt": first_frame_prompt
+    }
 
 def main():
-    """
-    Основной процесс генерации медиа-контента
-    """
-    logger.info("🔄 Начинаем генерацию медиа-контента...")
-    video_url = generate_video_with_image_and_prompt(RUNWAY_SCENARIO, DEFAULT_IMAGE_PATH)
+    logger.info("🔄 Начало процесса генерации медиа...")
+    try:
+        # Чтение config_gen.json для получения уникального идентификатора генерации
+        logger.info(f"📄 Чтение файла: {CONFIG_GEN_PATH}")
+        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
+            config_gen = json.load(file)
+        file_id = os.path.splitext(config_gen["generation_id"])[0]
+        logger.info(f"📂 ID генерации: {file_id}")
 
-    if video_url:
-        logger.info(f"🏁 Медиа-контент успешно сгенерирован. Ссылка: {video_url}")
-    else:
-        handle_error("Runway Media Generation Error", "Генерация медиа-контента не удалась.")
+        # Создание клиента B2
+        b2_client = get_b2_client()
 
+        # Загрузка config_public.json из B2
+        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+        logger.info(f"📄 Загруженный config_public.json: {config_public}")
 
-# === Точка входа ===
+        # Выбор целевой папки из списка 'empty'
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]
+            logger.info(f"🎯 Выбрана папка для загрузки: {target_folder}")
+        else:
+            raise ValueError("❌ Ошибка: Список 'empty' пуст или отсутствует в config_public.json")
+
+        # Загрузка сгенерированного контента (текста поста)
+        logger.info(f"📄 Чтение сгенерированного контента из: {CONTENT_OUTPUT_PATH}")
+        with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
+            generated_content = json.load(f)
+        post_text = generated_content.get("content", "")
+        if not post_text:
+            raise ValueError("❌ Ошибка: Текст поста пуст!")
+        logger.info(f"📝 Текст поста (первые 100 символов): {post_text[:100]}...")
+
+        # Генерация видео-сценария и промпта для первого кадра через объединяющую функцию
+        structured_result = create_structured_result(post_text)
+        video_scenario = structured_result["video_scenario"]
+        first_frame_prompt = structured_result["first_frame_prompt"]
+        logger.info(f"🎬 Видео-сценарий (первые 100 символов): {video_scenario[:100]}...")
+        logger.info(f"🖼️ Промпт для первого кадра (первые 100 символов): {first_frame_prompt[:100]}...")
+
+        # Сохранение видео-сценария в оригинальный JSON-файл
+        generated_content["video_scenario"] = video_scenario
+        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+            json.dump(generated_content, f, ensure_ascii=False, indent=4)
+        logger.info(f"✅ Видео-сценарий сохранён в оригинальный JSON-файл: {CONTENT_OUTPUT_PATH}")
+
+        # Генерация изображения первого кадра с помощью DALL‑E 3
+        image_path = generate_image_with_dalle(first_frame_prompt, file_id)
+        if image_path is None:
+            raise ValueError("❌ Ошибка: Генерация изображения DALL‑E 3 не удалась!")
+
+        # Загрузка сгенерированного изображения в B2
+        upload_to_b2(b2_client, target_folder, image_path)
+
+        # Обновление config_public.json: удаление заполненной папки и сброс блокировки
+        update_config_public(b2_client, target_folder)
+        reset_processing_lock(b2_client)
+
+        # Запуск скрипта b2_storage_manager.py для дальнейшей обработки
+        logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
+        subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в процессе генерации медиа: {e}")
+        handle_error(logger, "Ошибка в процессе генерации медиа", e)
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         logger.info("🛑 Программа остановлена пользователем.")
+
