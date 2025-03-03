@@ -491,7 +491,7 @@ def run_generate_media():
         handle_error(logger, "File Not Found Error", e)
     except Exception as e:
         handle_error(logger, "Unknown Error", e)
-        
+
 if __name__ == "__main__":
     generator = ContentGenerator()
     generator.run()

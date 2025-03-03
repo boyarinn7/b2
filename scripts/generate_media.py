@@ -262,7 +262,11 @@ def main():
         # Загрузка темы из generated_content.json
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
-        topic = generated_content.get("topic", "") or generated_content.get("content", "")
+        topic_data = generated_content.get("topic", "")
+        if isinstance(topic_data, dict):
+            topic = topic_data.get("topic", "")  # Извлекаем строку из {"topic": "..."}
+        else:
+            topic = topic_data or generated_content.get("content", "")
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
         logger.info(f"📝 Тема: {topic[:100]}...")  # Срез применён к строке
