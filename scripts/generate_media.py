@@ -29,11 +29,11 @@ B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
 CONFIG_GEN_PATH = os.path.abspath(config.get("FILE_PATHS.config_gen", "config/config_gen.json"))
 CONFIG_PUBLIC_REMOTE_PATH = config.get("FILE_PATHS.config_public", "config/config_public.json")
 CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath(config.get("FILE_PATHS.config_public_local", "config_public.json"))
-CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")  # Фиксированный путь к JSON
+CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")
 SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
 
-# Настройки генерации из конфига
-USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
+# Настройки генерации из конфига (с значениями по умолчанию)
+USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined", "Write a detailed script for a video on '{topic}'...")
 OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4-turbo")
 OPENAI_MAX_TOKENS = config.get("OPENAI_SETTINGS.max_tokens", 1000)
 OPENAI_TEMPERATURE = config.get("OPENAI_SETTINGS.temperature", 0.7)
@@ -44,6 +44,9 @@ OUTPUT_IMAGE_FORMAT = config.get("PATHS.output_image_format", "png")
 
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
 
+# Установка API-ключа OpenAI
+openai.api_key = config.get("API_KEYS.openai")
+
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
     """Создаёт и возвращает клиент B2 (S3) на основе настроек из конфига."""
@@ -52,11 +55,12 @@ def get_b2_client():
             's3',
             endpoint_url=B2_ENDPOINT,
             aws_access_key_id=B2_ACCESS_KEY,
-            aws_secret_key_id=B2_SECRET_KEY
+            aws_secret_access_key=B2_SECRET_KEY  # Исправлено на правильный ключ
         )
         return client
     except Exception as e:
-        handle_error(logger, f"B2 Client Initialization Error: {e}")
+        handle_error(logger, "B2 Client Initialization Error", e)
+        return None
 
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3) в локальное хранилище."""
@@ -66,7 +70,7 @@ def download_file_from_b2(client, remote_path, local_path):
         client.download_file(B2_BUCKET_NAME, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
     except Exception as e:
-        handle_error(logger, f"B2 Download Error: {e}")
+        handle_error(logger, "B2 Download Error", e)
 
 def upload_to_b2(client, folder, file_path):
     """Загружает локальный файл в указанную папку B2 и удаляет локальную копию."""
@@ -81,7 +85,7 @@ def upload_to_b2(client, folder, file_path):
         os.remove(file_path)
         logger.info(f"🗑️ Локальный файл {file_path} удалён после загрузки.")
     except Exception as e:
-        handle_error(logger, f"B2 Upload Error: {e}")
+        handle_error(logger, "B2 Upload Error", e)
 
 def update_config_public(client, folder):
     """Обновляет config_public.json: удаляет папку из списка 'empty'."""
@@ -98,7 +102,7 @@ def update_config_public(client, folder):
         logger.info("✅ config_public.json обновлён и загружен обратно в B2.")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
-        handle_error(logger, f"Config Public Update Error: {e}")
+        handle_error(logger, "Config Public Update Error", e)
 
 def reset_processing_lock(client):
     """Сбрасывает флаг processing_lock в config_public.json."""
@@ -114,29 +118,35 @@ def reset_processing_lock(client):
         client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
-        handle_error(logger, f"Processing Lock Reset Error: {e}")
+        handle_error(logger, "Processing Lock Reset Error", e)
 
 # === Функции генерации сценария и видео ===
 def generate_script_and_frame(topic):
     """Генерирует сценарий и описание первого кадра для видео."""
-    combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
-    logger.info(f"🔎 Отправка запроса для генерации сценария и описания: {combined_prompt[:100]}...")
-    response = openai.ChatCompletion.create(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": combined_prompt}],
-        max_tokens=OPENAI_MAX_TOKENS,
-        temperature=OPENAI_TEMPERATURE,
-    )
-    combined_response = response['choices'][0]['message']['content'].strip()
-    if len(combined_response) < MIN_SCRIPT_LENGTH:
-        logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
+    try:
+        combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
+        logger.info(f"🔎 Отправка запроса для генерации сценария и описания: {combined_prompt[:100]}...")
+        response = openai.ChatCompletion.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": combined_prompt}],
+            max_tokens=OPENAI_MAX_TOKENS,
+            temperature=OPENAI_TEMPERATURE,
+        )
+        combined_response = response['choices'][0]['message']['content'].strip()
+        if len(combined_response) < MIN_SCRIPT_LENGTH:
+            logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
+            return None, None
+        if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+            logger.error("❌ Маркеры кадра не найдены в ответе!")
+            return None, None
+        script_text = combined_response.split("First Frame Description:")[0].strip()
+        first_frame_description = combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+        logger.info(f"🎬 Сценарий: {script_text[:100]}...")
+        logger.info(f"🖼️ Описание первого кадра: {first_frame_description[:100]}...")
+        return script_text, first_frame_description
+    except Exception as e:
+        handle_error(logger, "Script and Frame Generation Error", e)
         return None, None
-    if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-        logger.error("❌ Маркеры кадра не найдены в ответе!")
-        return None, None
-    script_text = combined_response.split("First Frame Description:")[0].strip()
-    first_frame_description = combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-    return script_text, first_frame_description
 
 def generate_image_with_dalle(prompt, generation_id):
     """Генерирует изображение первого кадра с помощью DALL-E 3."""
@@ -150,13 +160,13 @@ def generate_image_with_dalle(prompt, generation_id):
             response_format="b64_json"
         )
         image_data = response["data"][0]["b64_json"]
-        image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+        image_path = f"{generation_id}.png"  # Имя файла как в старом коде
         with open(image_path, "wb") as f:
             f.write(base64.b64decode(image_data))
         logger.info(f"✅ Изображение сохранено: {image_path}")
         return image_path
     except Exception as e:
-        logger.error(f"❌ Ошибка генерации изображения: {e}")
+        handle_error(logger, "Image Generation Error", e)
         return None
 
 def resize_existing_image(image_path):
@@ -168,7 +178,7 @@ def resize_existing_image(image_path):
         logger.info(f"✅ Размер изображения изменен: {image_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка изменения размера: {e}")
+        handle_error(logger, "Image Resize Error", e)
         return False
 
 def clean_script_text(text):
@@ -205,7 +215,7 @@ def generate_runway_video(image_path, script_text):
                 return None
             time.sleep(5)
     except Exception as e:
-        logger.error(f"❌ Ошибка Runway: {e}")
+        handle_error(logger, "Runway Video Generation Error", e)
         return None
 
 def download_video(url, output_path):
@@ -219,7 +229,7 @@ def download_video(url, output_path):
         logger.info(f"✅ Видео сохранено: {output_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка загрузки видео: {e}")
+        handle_error(logger, "Video Download Error", e)
         return False
 
 # === Основная функция ===
@@ -229,10 +239,13 @@ def main():
         # Чтение config_gen.json для получения ID генерации
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
-        generation_id = config_gen["generation_id"].split('.')[0]  # Получаем ID без расширения
+        generation_id = config_gen["generation_id"].split('.')[0]  # Убираем расширение, если есть
+        logger.info(f"📂 ID генерации: {generation_id}")
 
         # Создание клиента B2
         b2_client = get_b2_client()
+        if not b2_client:
+            raise Exception("Не удалось создать клиент B2")
 
         # Загрузка config_public.json
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
@@ -258,10 +271,8 @@ def main():
         script_text, first_frame_description = generate_script_and_frame(topic)
         if not script_text or not first_frame_description:
             raise ValueError("❌ Не удалось сгенерировать сценарий или описание")
-        logger.info(f"🎬 Сценарий: {script_text[:100]}...")
-        logger.info(f"🖼️ Описание первого кадра: {first_frame_description[:100]}...")
 
-        # Сохранение в JSON (как в старом коде — в CONTENT_OUTPUT_PATH)
+        # Сохранение в JSON (как в старом коде)
         generated_content["script"] = script_text
         generated_content["first_frame_description"] = first_frame_description
         with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
@@ -280,18 +291,17 @@ def main():
         # Генерация видео
         cleaned_script = clean_script_text(script_text)
         video_url = generate_runway_video(image_path, cleaned_script)
+        video_path = None
         if video_url:
             video_path = f"{generation_id}.mp4"
-            if download_video(video_url, video_path):
-                logger.info(f"✅ Видео сохранено: {video_path}")
-            else:
+            if not download_video(video_url, video_path):
                 logger.warning("❌ Не удалось скачать видео")
         else:
             logger.warning("❌ Не удалось сгенерировать видео")
 
-        # Загрузка файлов в B2 (только .png и .mp4, как в старом коде)
+        # Загрузка файлов в B2 (как в старом коде: только .png и .mp4)
         upload_to_b2(b2_client, target_folder, image_path)
-        if os.path.exists(video_path):
+        if video_path and os.path.exists(video_path):
             upload_to_b2(b2_client, target_folder, video_path)
 
         # Обновление конфигурации
@@ -303,11 +313,13 @@ def main():
         subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
         handle_error(logger, "Ошибка в процессе генерации", e)
+        raise  # Повторно выбрасываем исключение для корректного завершения
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         logger.info("🛑 Программа остановлена пользователем.")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
