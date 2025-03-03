@@ -44,8 +44,10 @@ OUTPUT_IMAGE_FORMAT = config.get("PATHS.output_image_format", "png")
 
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
 
-# Установка API-ключа OpenAI
-openai.api_key = config.get("API_KEYS.openai")
+# Установка API-ключа OpenAI из переменной окружения (секреты GitHub)
+openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    raise ValueError("API-ключ OpenAI не найден в переменной окружения OPENAI_API_KEY")
 
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
