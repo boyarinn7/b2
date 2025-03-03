@@ -19,6 +19,7 @@ on:
 jobs:
   run-b2-storage-manager:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Установлен таймаут 30 минут
 
     steps:
     - name: Checkout code
@@ -43,6 +44,7 @@ jobs:
         echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
         echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> $GITHUB_ENV
         echo "OPENAI_TEMPERATURE=${{ secrets.OPENAI_TEMPERATURE }}" >> $GITHUB_ENV
+        echo "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}" >> $GITHUB_ENV
         echo "CONFIG_PUBLIC_PATH=${{ secrets.CONFIG_PUBLIC_PATH }}" >> $GITHUB_ENV
         echo "CONFIG_GEN_PATH=${{ secrets.CONFIG_GEN_PATH }}" >> $GITHUB_ENV
         echo "ARCHIVE_FOLDER=${{ secrets.ARCHIVE_FOLDER }}" >> $GITHUB_ENV
@@ -52,6 +54,13 @@ jobs:
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
 
     - name: Run B2 Storage Manager
+      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'b2_storage_manager' }}
       run: python scripts/b2_storage_manager.py
 
-    
+    - name: Run Generate Content
+      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'generate_content' }}
+      run: python scripts/generate_content.py
+
+    - name: Run Generate Media
+      if: ${{ github.event.inputs.stage == 'all' || github.event.inputs.stage == 'generate_media' }}
+      run: python scripts/generate_media.py
