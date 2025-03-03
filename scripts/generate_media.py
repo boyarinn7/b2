@@ -265,7 +265,7 @@ def main():
         topic = generated_content.get("topic", "") or generated_content.get("content", "")
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
-        logger.info(f"📝 Тема: {topic[:100]}...")  # Срез применён к строке, а не к .get()
+        logger.info(f"📝 Тема: {topic[:100]}...")  # Срез применён к строке
 
         # Генерация сценария и описания первого кадра
         script_text, first_frame_description = generate_script_and_frame(topic)
