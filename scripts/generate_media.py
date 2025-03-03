@@ -151,25 +151,20 @@ def generate_script_and_frame(topic):
         return None, None
 
 def generate_image_with_dalle(prompt, generation_id):
-    """Генерирует изображение первого кадра с помощью DALL-E 3."""
-    try:
-        logger.info(f"🔎 Генерация изображения через DALL-E 3: {prompt[:100]}...")
-        response = openai.Image.create(
-            prompt=prompt,
-            n=NUM_IMAGES,
-            size=IMAGE_SIZE_DALLE,
-            model="dall-e-3",
-            response_format="b64_json"
-        )
-        image_data = response["data"][0]["b64_json"]
-        image_path = f"{generation_id}.png"
-        with open(image_path, "wb") as f:
-            f.write(base64.b64decode(image_data))
-        logger.info(f"✅ Изображение сохранено: {image_path}")
-        return image_path
-    except Exception as e:
-        handle_error(logger, "Image Generation Error", e)
-        return None
+    response = openai.Image.create(
+        prompt=prompt,
+        n=NUM_IMAGES,
+        size=IMAGE_SIZE_DALLE,
+        model="dall-e-3",
+        response_format="b64_json"
+    )
+    image_data = response["data"][0]["b64_json"]
+    image_path = f"{generation_id}.png"
+    with open(image_path, "wb") as f:
+        f.write(base64.b64decode(image_data))
+    with Image.open(image_path) as img:
+        logger.info(f"✅ Сгенерировано изображение размером: {img.size}")
+    return image_path
 
 def resize_existing_image(image_path):
     """Изменяет размер изображения до 1280x768."""
