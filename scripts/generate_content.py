@@ -486,13 +486,12 @@ def run_generate_media():
         subprocess.run(["python", script_path], check=True)
         logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
     except subprocess.CalledProcessError as e:
-        handle_error("Script Execution Error", f"Ошибка при выполнении скрипта {script_path}: {e}")
+        handle_error(logger, "Script Execution Error", e)  # Исправленный вызов
     except FileNotFoundError as e:
-        handle_error("File Not Found Error", str(e))
+        handle_error(logger, "File Not Found Error", e)
     except Exception as e:
-        handle_error("Unknown Error", f"Ошибка при запуске скрипта {script_path}: {e}")
-
-
+        handle_error(logger, "Unknown Error", e)
+        
 if __name__ == "__main__":
     generator = ContentGenerator()
     generator.run()
