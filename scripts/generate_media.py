@@ -55,7 +55,7 @@ def get_b2_client():
             's3',
             endpoint_url=B2_ENDPOINT,
             aws_access_key_id=B2_ACCESS_KEY,
-            aws_secret_access_key=B2_SECRET_KEY  # Исправлено на правильный ключ
+            aws_secret_access_key=B2_SECRET_KEY
         )
         return client
     except Exception as e:
@@ -160,7 +160,7 @@ def generate_image_with_dalle(prompt, generation_id):
             response_format="b64_json"
         )
         image_data = response["data"][0]["b64_json"]
-        image_path = f"{generation_id}.png"  # Имя файла как в старом коде
+        image_path = f"{generation_id}.png"
         with open(image_path, "wb") as f:
             f.write(base64.b64decode(image_data))
         logger.info(f"✅ Изображение сохранено: {image_path}")
@@ -239,7 +239,7 @@ def main():
         # Чтение config_gen.json для получения ID генерации
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
-        generation_id = config_gen["generation_id"].split('.')[0]  # Убираем расширение, если есть
+        generation_id = config_gen["generation_id"].split('.')[0]  # Убираем расширение .json
         logger.info(f"📂 ID генерации: {generation_id}")
 
         # Создание клиента B2
@@ -257,22 +257,22 @@ def main():
             target_folder = config_public["empty"][0]
             logger.info(f"🎯 Выбрана папка: {target_folder}")
         else:
-            raise ValueError("❌ Список 'empty' пуст или отсутствует")
+            raise ValueError("Список 'empty' пуст или отсутствует")
 
         # Загрузка темы из generated_content.json
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
         topic = generated_content.get("topic", "") or generated_content.get("content", "")
         if not topic:
-            raise ValueError("❌ Тема или текст поста пусты!")
-        logger.info(f"📝 Тема: {topic[:100]}...")
+            raise ValueError("Тема или текст поста пусты!")
+        logger.info(f"📝 Тема: {topic[:100]}...")  # Срез применён к строке, а не к .get()
 
         # Генерация сценария и описания первого кадра
         script_text, first_frame_description = generate_script_and_frame(topic)
         if not script_text or not first_frame_description:
-            raise ValueError("❌ Не удалось сгенерировать сценарий или описание")
+            raise ValueError("Не удалось сгенерировать сценарий или описание")
 
-        # Сохранение в JSON (как в старом коде)
+        # Сохранение в JSON
         generated_content["script"] = script_text
         generated_content["first_frame_description"] = first_frame_description
         with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
@@ -282,11 +282,11 @@ def main():
         # Генерация изображения
         image_path = generate_image_with_dalle(first_frame_description, generation_id)
         if not image_path:
-            raise ValueError("❌ Не удалось сгенерировать изображение")
+            raise ValueError("Не удалось сгенерировать изображение")
 
         # Изменение размера изображения
         if not resize_existing_image(image_path):
-            raise ValueError("❌ Не удалось изменить размер изображения")
+            raise ValueError("Не удалось изменить размер изображения")
 
         # Генерация видео
         cleaned_script = clean_script_text(script_text)
@@ -299,7 +299,7 @@ def main():
         else:
             logger.warning("❌ Не удалось сгенерировать видео")
 
-        # Загрузка файлов в B2 (как в старом коде: только .png и .mp4)
+        # Загрузка файлов в B2 (только .png и .mp4, как в старом коде)
         upload_to_b2(b2_client, target_folder, image_path)
         if video_path and os.path.exists(video_path):
             upload_to_b2(b2_client, target_folder, video_path)
@@ -314,7 +314,7 @@ def main():
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
-        raise  # Повторно выбрасываем исключение для корректного завершения
+        raise
 
 if __name__ == "__main__":
     try:
@@ -323,3 +323,4 @@ if __name__ == "__main__":
         logger.info("🛑 Программа остановлена пользователем.")
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
+        sys.exit(1)
