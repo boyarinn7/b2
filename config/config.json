@@ -2,21 +2,12 @@
     "API_KEYS": {
         "b2": {
             "endpoint": "https://s3.us-east-005.backblazeb2.com",
-            "bucket_name": "boyarinnbotbucket",
-            "access_key": "00577030c4f964a0000000001",
-            "secret_key": "K005jbqS4BAIdtXF9vE5nXJgsV4NHVI"
+            "bucket_name": "boyarinnbotbucket"
         },
         "openai": {
             "max_tokens_topic": 50,
             "max_tokens_text": 750,
             "model": "gpt-4"
-        },
-        "RUNWAYML": {
-            "api_key": "key_12b20131e2d83eb4ba51774973f5650e5c4883e481d902c57f5c0ff1affd56d41ba3898c585c9f3eaec3a4bf9a94a060f8eb779b2ab0e961b38a3a7dd20424c6",
-            "model": "gen3a_turbo",
-            "duration": 5,
-            "ratio": "1280:768",
-            "default_scenario": "Закат на побережье с парусными кораблями."
         }
     },
     "FILE_PATHS": {
@@ -24,72 +15,96 @@
         "scripts_folder": "scripts",
         "config_public": "config/config_public.json",
         "config_gen": "config/config_gen.json",
-        "config_public_local": "config_public.json",
-        "focus_tracker": "data/focus_tracker.json",
-        "archive_folder": "data/archive/",
-        "folder_444": "444/",
-        "folder_555": "555/",
-        "folder_666": "666/",
-        "log_folder": "logs/",
-        "backup_folder": "data/backup/",
         "content_output_path": "generated_content.json",
         "final_content_path": "final_content.json",
         "feedback_file": "data/feedback.json",
-        "feedback_report": "data/feedback_report.json",
-        "dynamic_config": "config/config_dynamic.json",
-        "archive_config": "config/config_archive.json",
-        "core_config": "config/config_core.json",
-        "default_image_path": "media/input_image.jpg",
-        "default_video_path": "media/output_video.mp4",
         "before_critique_path": "before_critique.json",
-        "topics_tracker": "data/topics_tracker.json",
         "after_critique_path": "after_critique.json"
     },
-    "MEDIA": {
-    "video_scenario_prompt": "Ты профессиональный сценарист и режиссер коротких видеороликов, специализирующийся на создании по-настоящему гениальных и эффектных роликов. На основе предоставленного текста {text} создай детальный сценарий для 10-секундного видео, разбитого на временные сегменты (например, 0-2 сек, 2-4 сек, 4-6 сек, 6-8 сек, 8-10 сек). Обязательно опиши следующие элементы:\n- Ключевые визуальные образы и символику, отражающие основную идею поста.\n- Специальные эффекты (например, световые эффекты, фильтры, переходы).\n- Движение камеры (панорамирование, зум, следящие кадры) для усиления динамики ролика.\n- Элементы композиции, которые подчеркнут атмосферу и эмоциональное содержание. не используй в тексте двойные кавычки, косой слэш",
-    "video_max_tokens": 300,
-    "first_frame_prompt_template": "На основе следующего видео-сценария создай краткое и ёмкое описание для первого кадра ролика:\n\n{text}\n\nНе используй косой слэш и двойные кавычки.",
-    "video_temperature": 0.7,
-    "first_frame_max_tokens": 100,
-    "first_frame_temperature": 0.7,
-    "image_size": "1024x763"
+    "prompts": {
+        "user_prompt_combined": "Write a 10-second video scene for '{topic}'. First, determine the mood (e.g., tragic, joyful, mysterious). Then, choose one creative approach from 'creative_prompts' in config. Create a script (up to 500 characters) matching the mood, including: Action: An object tied to the topic moves or changes uniquely. Camera: Use motion like 'zoom', 'spin', 'tilt', or 'shift'. Rhythm: Split 10s creatively (e.g., 3-5-2). Apply restriction: '{restriction}'. Then, add 'First Frame Description:' (up to 500 characters) as a visual metaphor or key image for the script, focusing on composition, colors, lighting, and camera angle to convey the mood, ending with 'End of Description'. Total under 1000 characters. English, Runway-ready.",
+        "second_request_prompt": "Take this script: '{script_text}'. Add an unexpected twist to enhance its creativity, keeping it under 500 characters and matching the mood of '{topic}'. English, Runway-ready."
     },
-    "OTHER": {
-        "file_extensions": [
-            "-metadata.json",
-            "-image.png",
-            "-video.mp4"
-        ],
-        "retry_attempts": 3,
-        "timeout_seconds": 90,
-        "monitoring_interval_seconds": 60,
-        "use_mock_api": false
-    },
-    "LOGGING": {
-        "level": "INFO",
-        "log_file": "logs/app.log",
-        "config_manager_log": "logs/config_manager.log",
-        "feedback_log": "logs/feedback_analyzer.log",
-        "b2_storage_log": "logs/b2_storage_manager.log"
-    },
-    "METRICS": {
-        "flesch_threshold": 73,
-        "keyword_coverage_min": 0.8,
-        "success_threshold": 8,
-        "delete_threshold": 3,
-        "rating_coefficients": {
-            "topic": 0.2,
-            "text": 0.3,
-            "engagement": 0.2,
-            "media_weight": 0.1,
-            "ocp": 0.1,
-            "seo": 0.1
-        }
-    },
+    "creative_prompts": [
+        "Describe the scene from the perspective of an object or animal tied to the topic.",
+        "Use reverse narrative, starting from the end and moving backward.",
+        "Blend two contrasting genres (e.g., horror and romance, sci-fi and history).",
+        "Imagine the scene as a dream or hallucination.",
+        "Start with an abstract idea and tie it to the topic.",
+        "Make the main object alive with emotions.",
+        "Set the scene in an impossible location or time.",
+        "Use a metaphor as the core of the scene.",
+        "Make all actions defy logic (e.g., sun rises in the west).",
+        "Focus on a single emotion (e.g., fear, hope).",
+        "Use a surreal style where reality bends.",
+        "Move the camera as if it’s a living creature.",
+        "Base the rhythm on a heartbeat or breath.",
+        "Slow down all actions dramatically.",
+        "Use only warm or cold colors.",
+        "Make the topic object the protagonist.",
+        "Shroud the scene in mystery.",
+        "Show two timelines at once.",
+        "Use an impressionistic style, blurry and emotional.",
+        "Make the camera mimic a bird’s flight.",
+        "Set it in near-darkness with flashes of light.",
+        "Blend cyberpunk with nature.",
+        "Make the topic object the only color in a monochrome world.",
+        "Base the rhythm on a musical genre (e.g., waltz).",
+        "Speed up all actions unnaturally.",
+        "Use a horror style with creeping dread.",
+        "Make the camera drift like a ghost.",
+        "Limit light to one source (e.g., a candle).",
+        "Set the scene underwater.",
+        "Make the topic object not what it seems.",
+        "Set the scene in a confined space.",
+        "Use a romantic style full of longing.",
+        "Blend technology and nature in a cyberpunk style.",
+        "Make the topic object the only moving element.",
+        "Use a surreal style where everything is odd.",
+        "Move the camera as a living being.",
+        "Set it in total darkness with brief flashes.",
+        "Use a sci-fi style with future tech.",
+        "Make objects float without reason.",
+        "Turn the camera upside down.",
+        "Avoid modern technology.",
+        "Make everything dissolve or fade."
+    ],
+    "restrictions": [
+        "Use only warm colors (red, orange, yellow).",
+        "Use only cold colors (blue, green, purple).",
+        "Scene in complete silence.",
+        "No living creatures allowed.",
+        "Only one source of light.",
+        "Set the scene underwater.",
+        "Use a monochrome palette.",
+        "Camera moves in slow motion.",
+        "No dialogue or sound.",
+        "Scene in dense fog.",
+        "Actions happen twice as fast.",
+        "Only natural elements (wind, water).",
+        "Set in total darkness with brief flashes.",
+        "Camera stays static.",
+        "Use only metallic textures.",
+        "Scene in zero gravity.",
+        "No straight lines—everything curved.",
+        "Limit to three colors.",
+        "Set in a confined space.",
+        "Actions in reverse order.",
+        "Use only shadows, no objects.",
+        "Scene in pouring rain.",
+        "Camera shakes constantly.",
+        "No visible ground or floor.",
+        "Use a single repeating sound.",
+        "Scene in extreme heat or cold.",
+        "Objects float without reason.",
+        "Camera moves upside down.",
+        "No modern technology allowed.",
+        "Everything dissolves or fades."
+    ],
     "CONTENT": {
         "topic": {
+            "enabled": true,
             "max_length": 200,
-            "max_words": 12,
             "focus_areas": [
                 "Исторические факты",
                 "Исторические личности",
@@ -115,36 +130,31 @@
                 "Религии и верования",
                 "Архитектурные чудеса",
                 "История в искусстве",
-                "Экономические кризисы и взлеты"
+                "Экономические кризисы и взлеты",
+                "История технологий",
+                "Исторические конфликты и их разрешение",
+                "Женщины в истории",
+                "История науки",
+                "Исторические кулинарные традиции",
+                "История моды",
+                "Исторические спортивные события",
+                "История образования",
+                "Исторические эпидемии и пандемии",
+                "История окружающей среды"
             ],
-            "prompt_template": "Ты профессиональный историк и копирайтер с глубокими знаниями. Ваша задача — создать уникальную, эмоционально цепляющую и интригующую тему для исторического Telegram-канала. Сфокусируйтесь на одной из следующих тем: {focus_areas}. \n\n📌 **Требования:**\n- Краткость: до 12 слов.\n- Стиль: уважительный, академичный, но доступный широкой аудитории.\n- Эмоциональный акцент: захвати внимание читателя с первых слов.\n- Уникальность: избегай общих фраз и шаблонов.\n\n🎯 Пример идеальной темы: 'Как Пётр I спас Россию от разорения за одну ночь'.",
-            "prompt_template_with_short": "Ты профессиональный историк и копирайтер. Твоя задача — создать уникальную, эмоционально цепляющую и интригующую тему для исторического Telegram-канала, используя один из следующих фокусов: {focus_areas}.\nТема должна состоять не более чем из 12 слов. Эмоциональный акцент: захвати внимание читателя с первых слов. Уникальность: избегай общих фраз и шаблонов. Пример идеальной темы: 'Как Пётр I спас Россию от разорения за одну ночь'. После этого придумай краткий ярлык (не более чем из 2 слов), который суммирует суть темы. темы со следующими ярлыками исключи из генерации:\n- {exclusions}\n\nОбязательно выведи результат строго в формате JSON, без дополнительных комментариев с ключами \"full_topic\" и \"short_topic\"."
+            "prompt_template": "Ты профессиональный историк и копирайтер. Твоя задача — создать уникальную, эмоционально цепляющую и интригующую тему для исторического Telegram-канала, используя один из следующих фокусов: {focus_areas}. Тема должна состоять не более чем из 12 слов. Эмоциональный акцент: захвати внимание читателя с первых слов. Уникальность: избегай общих фраз и шаблонов. Пример идеальной темы: 'Как Екатерина II случайно изобрела русскую бюрократию'. После этого придумай краткий ярлык (не более чем из 2 слов), который суммирует суть темы. Темы со следующими ярлыками исключи из генерации: {exclusions}. Обязательно выведи результат строго в формате JSON с ключами \"full_topic\" и \"short_topic\"."
         },
         "text": {
-            "max_length": 2000,
-            "flesch_threshold": 73,
-            "structure": [
-                "Вступление",
-                "Основная часть",
-                "Интересный факт",
-                "Юмористическая рубрика",
-                "Заключение"
-            ],
-            "focus": [
-                "Эмоциональный отклик",
-                "Историческая точность",
-                "Интерактивность",
-                "Юмор"
-            ],
-            "prompt_template": "Ты опытный писатель и историк. Напиши захватывающий и познавательный текст для Telegram-канала на тему: '{topic}'. Структура: Вступление (зацепи читателя), Основная часть (конкретные факты, детали), Интересный факт (яркая деталь), Заключение (краткий вывод). Стиль: уважительный, эмоциональный, с глубоким пониманием темы. Убедись, что текст легко читается (индекс читабельности выше 73)."
+            "enabled": true,
+            "max_length": 800,
+            "prompt_template": "Ты опытный писатель и историк. Напиши захватывающий и познавательный текст для Telegram-канала на тему: '{topic}'. Структура: Вступление (зацепи читателя), Основная часть (конкретные факты, детали), Интересный факт (яркая деталь), Заключение (краткий вывод). Стиль: уважительный, эмоциональный, с глубоким пониманием темы. Убедись, что текст легко читается (индекс читабельности выше 73).",
+            "temperature": 0.7
         },
-        "critique": {
-            "prompt_template": "Ты профессиональный редактор и историк. Твоя задача — провести анализ следующего текста:\n\n{content}\n\n📚 **Требования к критике:**\n1. Оцени читабельность и плавность повествования.\n2. Укажи, если в тексте есть логические ошибки.\n3. Проверь, насколько текст соответствует заявленной теме.\n4. Укажи, если информация требует уточнений.\n5. Если последнее предложение текста резко обрывается , закончи его плавно по смыслу .\n\n⚙️ Формат ответа:\n- Сильные стороны текста.\n- Слабые стороны текста.\n- Рекомендации по улучшению.",
-            "max_tokens": 300
-        },
-        "improve": {
-            "prompt_template": "Улучшите следующий текст с учётом этих рекомендаций:\n\n{critique}\n\n📊 **Дополнительные данные:**\n- Читабельность: {readability_results}\n- Семантический анализ: {semantic_results}\n\n**Текст:**\n{content}\n\n🎯 Важно: Сохраняйте основной фокус на теме. Не отклоняйтесь от основной идеи текста.",
-            "max_tokens": 400
+        "tragic_text": {
+            "enabled": true,
+            "max_length": 800,
+            "prompt_template": "Ты гениальный историк и мастер сторителлинга, создающий посты для исторического Telegram-канала. Напиши текст на тему: '{topic}'. Длина: 80-100 слов, 2-3 абзаца. Следуй структуре:\n\n1. **Взрывной старт (1 предложение)**: Задай дерзкий вопрос (например, 'Выстояли бы вы под Брестом?') или брось шокирующий факт (например, 'В 1941 году Зоя погибла за правду').\n2. **Живой факт (1-2 предложения)**: Расскажи реальное событие Второй мировой войны с датой, местом или именем и яркой деталью (например, 'В 1941 году в Петрищево Зоя подожгла дома'), используй ТОЛЬКО проверенные факты, без вымысла.\n3. **Гениальный твист (1-2 предложения)**: Удиви реальным фактом с цифрой, именем или деталью (например, 'Её тело висело месяц перед врагом'), добавь лёгкую улыбку (например, 'а дух остался непобеждённым!'), только правда.\n4. **Крючок (1 предложение)**: Дай интригу о следующем посте без вопросов (например, 'Завтра — про подвиг в Бресте').\n\n**Стиль и тон**:\n- Дерзкий, живой, разговорный, с лёгким улыбчивым настроением.\n- Пиши как друг, без заумностей.\n- Эмодзи: ровно 3 (в старте, факте, твисте), крючок без эмодзи.\n\n**Цель**: Удивить, вызвать улыбку и желание переслать пост, сохраняя доверие к исторической правде. Используй ТОЛЬКО реальные факты Второй мировой войны, без выдуманных событий или деталей.",
+            "temperature": 0.5
         }
     },
     "SARCASM": {
@@ -152,39 +162,14 @@
         "max_tokens_comment": 150,
         "max_tokens_poll": 250,
         "character_name": "Барон Сарказм",
-        "comment_prompt": "Вы — Барон Сарказм, остроумный ироничный персонаж с тонким чувством юмора. Придумайте саркастический комментарий к следующему тексту: '{text}'. Комментарий должен быть кратким в пределах 20 слов , язвительным и в духе интеллигентного джентльмена. Начните со слов: 'Мой юный друг...'.",
-        "question_prompt": "Вы — Барон Сарказм, остроумный ироничный персонаж с тонким чувством юмора. Придумайте интерактивный вопрос на основе следующего текста: '{text}'. Вопрос должен быть кратким (до 30 слов), язвительным и в духе интеллигентного историка. Ответы должны быть короткими, саркастическими, вызывающими улыбку и доводящими аудиторию до слёз от смеха. Ответ в формате:\\n1.- Саркастический вопрос\\n2.- Вариант ответа 1\\n3.- Вариант ответа 2\\n4.- Вариант ответа 3\\nНикакого лишнего текста, только этот формат."
-    },
-    "BACKUP": {
-        "enabled": true,
-        "path": "backup/config_backup_{timestamp}.json"
-    },
-    "LEARNING": {
-        "success_threshold": 8,
-        "delete_threshold": 3,
-        "rating_coefficients": {
-            "topic": {
-                "flesch_score": 0.2,
-                "keyword_coverage": 0.2,
-                "length_compliance": 0.1,
-                "structure": 0.2,
-                "focus_compliance": 0.2,
-                "originality": 0.1
-            },
-            "text": {
-                "flesch_score": 0.2,
-                "keyword_coverage": 0.2,
-                "length_compliance": 0.1,
-                "structure": 0.2,
-                "focus_compliance": 0.2,
-                "originality": 0.1
-            }
-        },
-        "max_workers": 5,
-        "self_tuning_interval": "daily"
-    },
-    "PROMPTS": {
-        "user_prompt_combined": "Write a detailed script for a single scene of a video on the topic '{topic}'. The scene must be original, brilliant, and memorable, featuring an unexpected twist, a unique idea, or an unconventional approach. Ensure that the scene is suitable for generation in Runway, considering the capabilities of text-to-video generation. **The result must be in English.** Include the following elements:\n\n1. **Action and Plot Description**:\n   - What happens in the scene? What events unfold?\n   - Who is involved (characters, objects, animals)? Describe their appearance, emotions, and movements.\n   - Specify the sequence of actions using transition words (e.g., 'then,' 'suddenly,' 'slowly').\n\n2. **Visual Details and Environment**:\n   - Describe the setting: location, background, textures, colors, and small details (e.g., dust in the air, light reflections).\n   - Indicate the style of the scene (e.g., realistic, surreal, retro, cyberpunk) and its atmosphere (e.g., mysterious, joyful, tense).\n\n3. **Camera and Movement**:\n   - Specify the type of shot (e.g., close-up, wide shot, overhead view).\n   - Describe the camera angle and any movement (e.g., panning left to right, zooming in on an object, static shot).\n\n4. **Lighting and Mood**:\n   - Describe the type of lighting (e.g., soft natural, harsh contrast, flickering neon).\n   - Explain how the lighting influences the scene’s mood and the viewer’s emotions.\n\n5. **Additional Elements for Uniqueness**:\n   - Add an unexpected twist, a unique visual element, or a creative idea that makes the scene unforgettable.\n   - Specify the desired emotional reaction from the audience (e.g., surprise, awe, contemplation).\n   - The script must not exceed 950 characters.\n\nThen, highlight the description of the first frame of the scene, starting with 'First Frame Description:' and ending with 'End of Description.' **The first frame description must be in English.** It should be highly detailed and include:\n   - What is visible on the screen (characters, objects, background).\n   - Placement of all elements in the frame (e.g., character in the center, object on the left).\n   - Colors, textures, lighting, shadows.\n   - Mood and atmosphere of the frame.\n   - Type of shot and camera angle.\n\n**Ensure that the entire result is provided in English.** The first frame description should be suitable for image generation in Runway, not exceed 950 characters, and avoid vague formulations. The script and first frame description should be clear, visually rich, and ready for use in video generation."
+        "comment_prompt": "Ты — Барон Сарказм, остроумный и ироничный персонаж с тонким чувством юмора. Придумайте саркастический комментарий к следующему тексту: '{text}'. Комментарий должен быть кратким в пределах 20 слов , язвительным и в духе интеллигентного джентльмена. Начните со слов: 'Мой юный друг...'.",
+        "comment_temperature": 0.8,
+        "tragic_comment_prompt": "Ты — Барон Сарказм, мудрый и сдержанный персонаж, комментирующий посты в Telegram-канале. Напиши комментарий к тексту: '{text}'. До 15 слов, с лёгкой торжественной иронией, без шуток, сарказма или цинизма, подчёркивая величие подвига, а не жертвы, в духе джентльмена, гордящегося историей. Обязательно укажи конкретный факт из текста. Начни с 'Мой юный друг...'. Пример: 'Мой юный друг, Матросов показал, что герои сильнее стали.'",
+        "tragic_comment_temperature": 0.6,
+        "question_prompt": "Ты — Барон Сарказм, остроумный и ироничный персонаж с тонким чувством юмора. Придумайте интерактивный вопрос на основе следующего текста: '{text}'. Вопрос должен быть кратким (до 30 слов), язвительным и в духе интеллигентного историка. Ответы должны быть короткими, саркастическими, вызывающими улыбку и доводящими аудиторию до слёз от смеха. Ответ в формате:\\n1.- Саркастический вопрос\\n2.- Вариант ответа 1\\n3.- Вариант ответа 2\\n4.- Вариант ответа 3\\nНикакого лишнего текста, только этот формат.",
+        "poll_temperature": 0.9,
+        "tragic_question_prompt": "Ты — Барон Сарказм, мудрый и сдержанный персонаж, создающий опросы для Telegram-канала. Придумай опрос по тексту: '{text}'. Вопрос до 10 слов, 3 варианта строго по 3-5 слов, с лёгкой торжественной иронией, без шуток, сарказма, легкомыслия или негативных эмоций (например, 'ужас', 'страх'), подчёркивая величие подвигов, а не жертвы, вовлекая читателя в размышление. Обязательно используй конкретные факты из текста. Возвращай результат ТОЛЬКО в формате: [QUESTION]: Вопрос [OPTION1]: Вариант 1 [OPTION2]: Вариант 2 [OPTION3]: Вариант 3 — без смайлов, без '[ Опрос : 🎭 ... ]', без тире, строго следуй этому шаблону. Пример: [QUESTION]: Чей подвиг весил больше? [OPTION1]: Матвеев с медальоном [OPTION2]: Солдаты в окопах [OPTION3]: Ленинград под блокадой",
+        "tragic_poll_temperature": 0.6
     },
     "GENERATE": {
         "topic_threshold": 7,
@@ -196,25 +181,5 @@
             "historical_detail": 0.8,
             "humor_ratio": 0.5
         }
-    },
-    "EXTERNAL_TOOLS": {
-        "readability": {
-            "enabled": true
-        },
-        "semantic_analysis": {
-            "enabled": true,
-            "tool": "spacy",
-            "model": "ru_core_news_md"
-        },
-     "VISUAL_ANALYSIS": { 
-        "min_script_length": 200
-    },
-    "IMAGE_GENERATION": {  
-        "image_size": "1280:768",
-        "num_images": 1
-    },
-    "PATHS": { 
-        "output_image_format": "png"
-    }
     }
 }

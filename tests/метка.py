@@ -1,5 +1,4 @@
 import os
-import json
 import boto3
 
 # Константы
@@ -7,7 +6,8 @@ B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
-CONFIG_FILE_PATH = "config/config_public.json"
+LOCAL_GROUP_PATH = r"C:\Users\boyar\777\555\55"
+REMOTE_FOLDER = "444/"
 
 # Проверяем переменные окружения
 if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
@@ -23,32 +23,20 @@ s3 = boto3.client(
 )
 
 
-def update_config():
-    """Загружает, обновляет и загружает обратно config_public.json."""
+def upload_group_files():
+    """Загружает файлы группы (JSON, PNG, MP4) в B2."""
     try:
-        print(f"🔄 Загружаем {CONFIG_FILE_PATH} из B2...")
-        response = s3.get_object(Bucket=B2_BUCKET_NAME, Key=CONFIG_FILE_PATH)
-        config_data = json.loads(response['Body'].read().decode('utf-8'))
+        for filename in os.listdir(LOCAL_GROUP_PATH):
+            local_file = os.path.join(LOCAL_GROUP_PATH, filename)
+            remote_file = REMOTE_FOLDER + filename
 
-        # Обновляем ключ 'empty'
-        if "empty" in config_data:
-            config_data["empty"] = []
-
-        # Сохраняем обновлённый конфиг локально
-        local_filename = "updated_config.json"
-        with open(local_filename, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=4, ensure_ascii=False)
-
-        # Загружаем обратно в B2
-        print(f"🔼 Загружаем обновленный {CONFIG_FILE_PATH} в B2...")
-        s3.upload_file(local_filename, B2_BUCKET_NAME, CONFIG_FILE_PATH)
-        print("✅ Конфиг успешно обновлён.")
-
-        # Удаляем локальный файл
-        os.remove(local_filename)
+            if os.path.isfile(local_file) and any(filename.endswith(ext) for ext in [".json", ".png", ".mp4"]):
+                print(f"🔄 Загружаем {local_file} -> {remote_file}")
+                s3.upload_file(local_file, B2_BUCKET_NAME, remote_file)
+                print(f"✅ {filename} загружен в {remote_file}")
     except Exception as e:
-        print(f"❌ Ошибка при обновлении {CONFIG_FILE_PATH}: {e}")
+        print(f"❌ Ошибка при загрузке файлов группы: {e}")
 
 
 if __name__ == "__main__":
-    update_config()
+    upload_group_files()
