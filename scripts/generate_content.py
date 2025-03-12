@@ -99,7 +99,7 @@ def download_config_public():
         handle_error("Download Config Public Error", str(ve))
     except Exception as e:
         handle_error("Download Config Public Error", str(e))
-        
+
 def generate_file_id():
     """Генерирует уникальный ID файла на основе текущей даты и времени."""
     try:
