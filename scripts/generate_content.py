@@ -29,7 +29,6 @@ config = ConfigManager()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def create_and_upload_image(folder, generation_id):
     """Создаёт изображение и загружает его в B2."""
     if not folder or not isinstance(folder, str):
@@ -58,17 +57,14 @@ def create_and_upload_image(folder, generation_id):
     except Exception as e:
         handle_error("Image Upload Error", str(e))
 
-
 def get_b2_client():
     """Инициализирует клиент B2 с использованием ключей из конфигурации или переменных окружения."""
     endpoint = config.get("API_KEYS.b2.endpoint")
     access_key = config.get("API_KEYS.b2.access_key")
     secret_key = config.get("API_KEYS.b2.secret_key")
-    bucket_name = config.get("API_KEYS.b2.bucket_name")  # Добавляем для отладки и использования в других функциях
+    bucket_name = config.get("API_KEYS.b2.bucket_name")
 
-    # Отладочные логи для проверки значений
-    logger.debug(
-        f"B2 Config: endpoint={endpoint}, access_key={access_key[:4]}..., secret_key={secret_key[:4]}..., bucket_name={bucket_name}")
+    logger.debug(f"B2 Config: endpoint={endpoint}, access_key={access_key[:4]}..., secret_key={secret_key[:4]}..., bucket_name={bucket_name}")
 
     if not all([endpoint, access_key, secret_key, bucket_name]):
         raise ValueError("Отсутствуют обязательные ключи для B2: endpoint, access_key, secret_key или bucket_name")
@@ -83,7 +79,6 @@ def get_b2_client():
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e))
         raise
-
 
 def download_config_public():
     """Скачивает публичный конфиг из B2."""
@@ -103,7 +98,6 @@ def download_config_public():
     except Exception as e:
         handle_error("Download Config Public Error", str(e))
 
-
 def generate_file_id():
     """Генерирует уникальный ID файла на основе текущей даты и времени."""
     try:
@@ -114,7 +108,6 @@ def generate_file_id():
     except Exception as e:
         handle_error("Generate File ID Error", str(e))
         raise
-
 
 def save_generation_id_to_config(file_id):
     """Сохраняет ID генерации в config_gen.json."""
@@ -128,7 +121,6 @@ def save_generation_id_to_config(file_id):
         logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
     except Exception as e:
         handle_error("Save Generation ID Error", str(e))
-
 
 def save_to_b2(folder, content):
     """Сохраняет контент в B2."""
@@ -154,6 +146,22 @@ def save_to_b2(folder, content):
     except Exception as e:
         handle_error("B2 Upload Error", str(e))
 
+def run_generate_media():
+    """Запускает скрипт generate_media.py."""
+    try:
+        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
+        script_path = os.path.join(scripts_folder, "generate_media.py")
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
+        logger.info(f"🔄 Запуск скрипта: {script_path}")
+        subprocess.run(["python", script_path], check=True)
+        logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
+    except FileNotFoundError as e:
+        handle_error("Script Execution Error", str(e))
+    except subprocess.CalledProcessError as e:
+        handle_error("Script Execution Error", str(e))
+    except Exception as e:
+        handle_error("Script Execution Error", str(e))
 
 class ContentGenerator:
     def __init__(self):
@@ -222,7 +230,7 @@ class ContentGenerator:
             topic_data = json.loads(result)
             return topic_data
         except Exception as e:
-            handle_error(logger, "Topic Generation Error", e)
+            handle_error("Topic Generation Error", str(e))
             return None
 
     def request_openai(self, prompt, max_tokens, temperature):
@@ -290,263 +298,246 @@ class ContentGenerator:
             temperature = self.config['SARCASM'].get('tragic_comment_temperature', 0.8)
         else:
             prompt_template = self.config['SARCASM']['comment_prompt']
-            temperature = self.config['SARCASM56']['comment_temperature', 0.8]
+            temperature = self.config['SARCASM'].get('comment_temperature', 0.8)
 
-            prompt = prompt_template.format(text=text)
-            comment = self.request_openai(prompt, self.config['SARCASM']['max_tokens_comment'], temperature)
-            if comment:
-                self.logger.info(f"✅ Саркастический комментарий: {comment}")
-                return comment
+        prompt = prompt_template.format(text=text)
+        comment = self.request_openai(prompt, self.config['SARCASM']['max_tokens_comment'], temperature)
+        if comment:
+            self.logger.info(f"✅ Саркастический комментарий: {comment}")
+            return comment
+        else:
+            self.logger.warning("⚠️ OpenAI вернул пустой ответ для комментария.")
+            return ""
+
+    def generate_interactive_poll(self, text, content_data):
+        """Генерирует интерактивный опрос."""
+        if not self.config['SARCASM']['enabled']:
+            self.logger.info("🔕 Саркастический опрос отключён в конфигурации.")
+            return {}
+        if not text or not isinstance(text, str):
+            raise ValueError("text должен быть непустой строкой")
+        if not isinstance(content_data, dict):
+            raise ValueError("content_data должен быть словарем")
+
+        if "theme" in content_data and content_data["theme"] == "tragic":
+            prompt_template = self.config['SARCASM'].get('tragic_question_prompt',
+                                                         self.config['SARCASM']['question_prompt'])
+            temperature = self.config['SARCASM'].get('tragic_poll_temperature', 0.9)
+        else:
+            prompt_template = self.config['SARCASM']['question_prompt']
+            temperature = self.config['SARCASM'].get('poll_temperature', 0.9)
+
+        prompt = prompt_template.format(text=text)
+        poll_text = self.request_openai(prompt, self.config['SARCASM']['max_tokens_poll'], temperature)
+        self.logger.info(f"🛑 Ответ OpenAI для опроса: {poll_text}")
+        try:
+            question_match = re.search(r"\[QUESTION\]:\s*(.+)", poll_text)
+            option1_match = re.search(r"\[OPTION1\]:\s*(.+)", poll_text)
+            option2_match = re.search(r"\[OPTION2\]:\s*(.+)", poll_text)
+            option3_match = re.search(r"\[OPTION3\]:\s*(.+)", poll_text)
+            if all([question_match, option1_match, option2_match, option3_match]):
+                poll_data = {
+                    "question": question_match.group(1).strip(),
+                    "options": [
+                        option1_match.group(1).strip(),
+                        option2_match.group(1).strip(),
+                        option3_match.group(1).strip()
+                    ]
+                }
+                self.logger.info(f"✅ Опрос сгенерирован: {poll_data}")
+                return poll_data
             else:
-                self.logger.warning("⚠️ OpenAI вернул пустой ответ для комментария.")
-                return ""
-
-        def generate_interactive_poll(self, text, content_data):
-            """Генерирует интерактивный опрос."""
-            if not self.config['SARCASM']['enabled']:
-                self.logger.info("🔕 Саркастический опрос отключён в конфигурации.")
+                self.logger.error("❌ Неверный формат опроса от OpenAI.")
                 return {}
-            if not text or not isinstance(text, str):
-                raise ValueError("text должен быть непустой строкой")
-            if not isinstance(content_data, dict):
-                raise ValueError("content_data должен быть словарем")
+        except Exception as e:
+            handle_error("Sarcasm Poll Generation Error", str(e))
+            return {}
 
-            if "theme" in content_data and content_data["theme"] == "tragic":
-                prompt_template = self.config['SARCASM'].get('tragic_question_prompt',
-                                                             self.config['SARCASM']['question_prompt'])
-                temperature = self.config['SARCASM'].get('tragic_poll_temperature', 0.9)
+    def save_to_generated_content(self, stage, data):
+        """Сохраняет данные в файл сгенерированного контента."""
+        if not stage or not isinstance(stage, str):
+            raise ValueError("stage должен быть непустой строкой")
+        if not isinstance(data, dict):
+            raise ValueError("data должен быть словарем")
+
+        try:
+            folder = os.path.dirname(self.content_output_path) or "."
+            if not os.path.exists(folder):
+                os.makedirs(folder)
+                self.logger.info(f"📁 Папка создана: {folder}")
+            if os.path.exists(self.content_output_path):
+                with open(self.content_output_path, 'r', encoding='utf-8') as file:
+                    result_data = json.load(file)
             else:
-                prompt_template = self.config['SARCASM']['question_prompt']
-                temperature = self.config['SARCASM']['poll_temperature', 0.9]
+                result_data = {}
+            result_data["timestamp"] = datetime.utcnow().isoformat()
+            result_data[stage] = data
+            with open(self.content_output_path, 'w', encoding='utf-8') as file:
+                json.dump(result_data, file, ensure_ascii=False, indent=4)
+            self.logger.info(f"✅ Данные сохранены на этапе {stage}")
+        except Exception as e:
+            handle_error("Save to Generated Content Error", str(e))
 
-                prompt = prompt_template.format(text=text)
-                poll_text = self.request_openai(prompt, self.config['SARCASM']['max_tokens_poll'], temperature)
-                self.logger.info(f"🛑 Ответ OpenAI для опроса: {poll_text}")
-                try:
-                    question_match = re.search(r"\[QUESTION\]:\s*(.+)", poll_text)
-                    option1_match = re.search(r"\[OPTION1\]:\s*(.+)", poll_text)
-                    option2_match = re.search(r"\[OPTION2\]:\s*(.+)", poll_text)
-                    option3_match = re.search(r"\[OPTION3\]:\s*(.+)", poll_text)
-                    if all([question_match, option1_match, option2_match, option3_match]):
-                        poll_data = {
-                            "question": question_match.group(1).strip(),
-                            "options": [
-                                option1_match.group(1).strip(),
-                                option2_match.group(1).strip(),
-                                option3_match.group(1).strip()
-                            ]
-                        }
-                        self.logger.info(f"✅ Опрос сгенерирован: {poll_data}")
-                        return poll_data
-                    else:
-                        self.logger.error("❌ Неверный формат опроса от OpenAI.")
-                        return {}
-                except Exception as e:
-                    handle_error("Sarcasm Poll Generation Error", str(e))
-                    return {}
+    def critique_content(self, content):
+        """Критикует контент с помощью OpenAI."""
+        if not content or not isinstance(content, str):
+            raise ValueError("content должен быть непустой строкой")
+        try:
+            prompt_template = self.config.get('CONTENT.critique.prompt_template')
+            if not prompt_template:
+                raise ValueError("prompt_template для критики не указан")
+            prompt = prompt_template.format(content=content)
+            critique = self.request_openai(prompt, self.config.get('CONTENT.critique.max_tokens', 200),
+                                          self.temperature)
+            self.logger.info("✅ Критика успешно завершена.")
+            return critique
+        except ValueError as ve:
+            handle_error("Critique Error", str(ve))
+        except Exception as e:
+            handle_error("Critique Error", str(e))
+        return "Критика текста завершилась ошибкой."
 
-            def save_to_generated_content(self, stage, data):
-                """Сохраняет данные в файл сгенерированного контента."""
-                if not stage or not isinstance(stage, str):
-                    raise ValueError("stage должен быть непустой строкой")
-                if not isinstance(data, dict):
-                    raise ValueError("data должен быть словарем")
+    def analyze_topic_generation(self):
+        """Анализирует темы из архива и обратной связи."""
+        try:
+            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
+            positive_feedback_topics = []
+            if os.path.exists(feedback_path):
+                with open(feedback_path, 'r', encoding='utf-8') as file:
+                    feedback_data = json.load(file)
+                    positive_feedback_topics = [
+                        entry['topic'] for entry in feedback_data if
+                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
+                    ]
+                self.logger.info(f"✅ Загрузили {len(positive_feedback_topics)} успешных тем из обратной связи.")
+            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
+            successful_topics = []
+            if os.path.exists(archive_folder):
+                for filename in os.listdir(archive_folder):
+                    if filename.endswith('.json'):
+                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
+                            archive_data = json.load(file)
+                            if archive_data.get('success', False):
+                                successful_topics.append(archive_data.get('topic', ''))
+                self.logger.info(f"✅ Загрузили {len(successful_topics)} успешных тем из архива.")
+            valid_focus_areas = self.get_valid_focus_areas()
+            combined_topics = list(set(positive_feedback_topics + successful_topics + valid_focus_areas))
+            self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
+            return combined_topics
+        except Exception as e:
+            handle_error("Topic Analysis Error", str(e))
+            return []
 
-                try:
-                    folder = os.path.dirname(self.content_output_path) or "."
-                    if not os.path.exists(folder):
-                        os.makedirs(folder)
-                        self.logger.info(f"📁 Папка создана: {folder}")
-                    if os.path.exists(self.content_output_path):
-                        with open(self.content_output_path, 'r', encoding='utf-8') as file:
-                            result_data = json.load(file)
-                    else:
-                        result_data = {}
-                    result_data["timestamp"] = datetime.utcnow().isoformat()
-                    result_data[stage] = data
-                    with open(self.content_output_path, 'w', encoding='utf-8') as file:
-                        json.dump(result_data, file, ensure_ascii=False, indent=4)
-                    self.logger.info(f"✅ Данные сохранены на этапе {stage}")
-                except Exception as e:
-                    handle_error("Save to Generated Content Error", str(e))
+    def get_valid_focus_areas(self):
+        """Получает доступные фокусные области."""
+        try:
+            tracker_file = self.config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
+            focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
+            if not isinstance(focus_areas, list):
+                raise ValueError("focus_areas должен быть списком")
+            if os.path.exists(tracker_file):
+                with open(tracker_file, 'r', encoding='utf-8') as file:
+                    focus_tracker = json.load(file)
+                excluded_foci = focus_tracker[:10]
+            else:
+                excluded_foci = []
+            valid_focus_areas = [focus for focus in focus_areas if focus not in excluded_foci]
+            self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
+            return valid_focus_areas
+        except ValueError as ve:
+            handle_error("Focus Area Filtering Error", str(ve))
+        except Exception as e:
+            handle_error("Focus Area Filtering Error", str(e))
+        return []
 
-            def critique_content(self, content):
-                """Критикует контент с помощью OpenAI."""
-                if not content or not isinstance(content, str):
-                    raise ValueError("content должен быть непустой строкой")
-                try:
-                    prompt_template = self.config.get('CONTENT.critique.prompt_template')
-                    if not prompt_template:
-                        raise ValueError("prompt_template для критики не указан")
-                    prompt = prompt_template.format(content=content)
-                    critique = self.request_openai(prompt, self.config.get('CONTENT.critique.max_tokens', 200),
-                                                   self.temperature)
-                    self.logger.info("✅ Критика успешно завершена.")
-                    return critique
-                except ValueError as ve:
-                    handle_error("Critique Error", str(ve))
-                except Exception as e:
-                    handle_error("Critique Error", str(e))
-                return "Критика текста завершилась ошибкой."
+    def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
+        """Приоритизирует фокус на основе обратной связи и архива."""
+        if not isinstance(valid_focus_areas, list):
+            raise ValueError("valid_focus_areas должен быть списком")
+        try:
+            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
+            feedback_foci = []
+            if os.path.exists(feedback_path):
+                with open(feedback_path, 'r', encoding='utf-8') as file:
+                    feedback_data = json.load(file)
+                    feedback_foci = [
+                        entry['topic'] for entry in feedback_data if
+                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
+                    ]
+            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
+            archive_foci = []
+            if os.path.exists(archive_folder):
+                for filename in os.listdir(archive_folder):
+                    if filename.endswith('.json'):
+                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
+                            archive_data = json.load(file)
+                            if archive_data.get('success', False):
+                                archive_foci.append(archive_data.get('topic', ''))
+            for focus in feedback_foci + archive_foci:
+                if focus in valid_focus_areas:
+                    self.logger.info(f"✅ Выбран приоритетный фокус: {focus}")
+                    return focus
+            if valid_focus_areas:
+                self.logger.info(f"🔄 Используем первый доступный фокус: {valid_focus_areas[0]}")
+                return valid_focus_areas[0]
+            self.logger.warning("⚠️ Нет доступных фокусов для выбора.")
+            return None
+        except ValueError as ve:
+            handle_error("Focus Prioritization Error", str(ve))
+        except Exception as e:
+            handle_error("Focus Prioritization Error", str(e))
+        return None
 
-            def analyze_topic_generation(self):
-                """Анализирует темы из архива и обратной связи."""
-                try:
-                    feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-                    positive_feedback_topics = []
-                    if os.path.exists(feedback_path):
-                        with open(feedback_path, 'r', encoding='utf-8') as file:
-                            feedback_data = json.load(file)
-                            positive_feedback_topics = [
-                                entry['topic'] for entry in feedback_data if
-                                entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                            ]
-                        self.logger.info(f"✅ Загрузили {len(positive_feedback_topics)} успешных тем из обратной связи.")
-                    archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-                    successful_topics = []
-                    if os.path.exists(archive_folder):
-                        for filename in os.listdir(archive_folder):
-                            if filename.endswith('.json'):
-                                with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                                    archive_data = json.load(file)
-                                    if archive_data.get('success', False):
-                                        successful_topics.append(archive_data.get('topic', ''))
-                        self.logger.info(f"✅ Загрузили {len(successful_topics)} успешных тем из архива.")
-                    valid_focus_areas = self.get_valid_focus_areas()
-                    combined_topics = list(set(positive_feedback_topics + successful_topics + valid_focus_areas))
-                    self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
-                    return combined_topics
-                except Exception as e:
-                    handle_error("Topic Analysis Error", str(e))
-                    return []
+    def run(self):
+        """Запускает процесс генерации контента."""
+        try:
+            download_config_public()
+            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
+                config_public = json.load(file)
+            empty_folders = config_public.get("empty", [])
+            if not empty_folders:
+                self.logger.info("✅ Нет пустых папок. Процесс завершён.")
+                return
 
-            def get_valid_focus_areas(self):
-                """Получает доступные фокусные области."""
-                try:
-                    tracker_file = self.config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
-                    focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
-                    if not isinstance(focus_areas, list):
-                        raise ValueError("focus_areas должен быть списком")
-                    if os.path.exists(tracker_file):
-                        with open(tracker_file, 'r', encoding='utf-8') as file:
-                            focus_tracker = json.load(file)
-                        excluded_foci = focus_tracker[:10]
-                    else:
-                        excluded_foci = []
-                    valid_focus_areas = [focus for focus in focus_areas if focus not in excluded_foci]
-                    self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
-                    return valid_focus_areas
-                except ValueError as ve:
-                    handle_error("Focus Area Filtering Error", str(ve))
-                except Exception as e:
-                    handle_error("Focus Area Filtering Error", str(e))
-                return []
+            self.adapt_prompts()
+            self.clear_generated_content()
 
-            def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
-                """Приоритизирует фокус на основе обратной связи и архива."""
-                if not isinstance(valid_focus_areas, list):
-                    raise ValueError("valid_focus_areas должен быть списком")
-                try:
-                    feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-                    feedback_foci = []
-                    if os.path.exists(feedback_path):
-                        with open(feedback_path, 'r', encoding='utf-8') as file:
-                            feedback_data = json.load(file)
-                            feedback_foci = [
-                                entry['topic'] for entry in feedback_data if
-                                entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                            ]
-                    archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-                    archive_foci = []
-                    if os.path.exists(archive_folder):
-                        for filename in os.listdir(archive_folder):
-                            if filename.endswith('.json'):
-                                with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                                    archive_data = json.load(file)
-                                    if archive_data.get('success', False):
-                                        archive_foci.append(archive_data.get('topic', ''))
-                    for focus in feedback_foci + archive_foci:
-                        if focus in valid_focus_areas:
-                            self.logger.info(f"✅ Выбран приоритетный фокус: {focus}")
-                            return focus
-                    if valid_focus_areas:
-                        self.logger.info(f"🔄 Используем первый доступный фокус: {valid_focus_areas[0]}")
-                        return valid_focus_areas[0]
-                    self.logger.warning("⚠️ Нет доступных фокусов для выбора.")
-                    return None
-                except ValueError as ve:
-                    handle_error("Focus Prioritization Error", str(ve))
-                except Exception as e:
-                    handle_error("Focus Prioritization Error", str(e))
-                return None
+            valid_topics = self.analyze_topic_generation()
+            chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
+            if chosen_focus:
+                self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
+            topic = self.generate_topic()
+            if not topic:
+                self.logger.error("❌ Тема не сгенерирована, процесс остановлен.")
+                return
+            content_data = {"topic": topic}
+            text = self.generate_text(topic["full_topic"], content_data)
+            critique = self.critique_content(text)
+            self.save_to_generated_content("critique", {"critique": critique})
 
-            def run(self):
-                """Запускает процесс генерации контента."""
-                try:
-                    download_config_public()
-                    with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
-                        config_public = json.load(file)
-                    empty_folders = config_public.get("empty", [])
-                    if not empty_folders:
-                        self.logger.info("✅ Нет пустых папок. Процесс завершён.")
-                        return
+            sarcastic_comment = self.generate_sarcastic_comment(text, content_data)
+            sarcastic_poll = self.generate_interactive_poll(text, content_data)
+            content_dict = {
+                "topic": topic,
+                "content": text,
+                "sarcasm": {
+                    "comment": sarcastic_comment,
+                    "poll": sarcastic_poll
+                }
+            }
+            target_folder = empty_folders[0]
+            save_to_b2(target_folder, content_dict)
 
-                    self.adapt_prompts()
-                    self.clear_generated_content()
+            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+                config_gen_content = json.load(gen_file)
+                generation_id = config_gen_content["generation_id"]
 
-                    valid_topics = self.analyze_topic_generation()
-                    chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
-                    if chosen_focus:
-                        self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
-                    topic = self.generate_topic()
-                    if not topic:
-                        self.logger.error("❌ Тема не сгенерирована, процесс остановлен.")
-                        return
-                    content_data = {"topic": topic}
-                    text = self.generate_text(topic["full_topic"], content_data)
-                    critique = self.critique_content(text)
-                    self.save_to_generated_content("critique", {"critique": critique})
+            create_and_upload_image(target_folder, generation_id)
+            run_generate_media()
+            self.logger.info("✅ Генерация контента завершена.")
+        except Exception as e:
+            handle_error("Run Error", str(e))
 
-                    sarcastic_comment = self.generate_sarcastic_comment(text, content_data)
-                    sarcastic_poll = self.generate_interactive_poll(text, content_data)
-                    content_dict = {
-                        "topic": topic,
-                        "content": text,
-                        "sarcasm": {
-                            "comment": sarcastic_comment,
-                            "poll": sarcastic_poll
-                        }
-                    }
-                    target_folder = empty_folders[0]
-                    save_to_b2(target_folder, content_dict)
-
-                    with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                        config_gen_content = json.load(gen_file)
-                        generation_id = config_gen_content["generation_id"]
-
-                    create_and_upload_image(target_folder, generation_id)
-                    run_generate_media()
-                    self.logger.info("✅ Генерация контента завершена.")
-                except Exception as e:
-                    handle_error("Run Error", str(e))
-
-        def run_generate_media():
-            """Запускает скрипт generate_media.py."""
-            try:
-                scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-                script_path = os.path.join(scripts_folder, "generate_media.py")
-                if not os.path.isfile(script_path):
-                    raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
-                logger.info(f"🔄 Запуск скрипта: {script_path}")
-                subprocess.run(["python", script_path], check=True)
-                logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
-            except FileNotFoundError as e:
-                handle_error("Script Execution Error", str(e))
-            except subprocess.CalledProcessError as e:
-                handle_error("Script Execution Error", str(e))
-            except Exception as e:
-                handle_error("Script Execution Error", str(e))
-
-        if __name__ == "__main__":
-            generator = ContentGenerator()
-            generator.run()
+if __name__ == "__main__":
+    generator = ContentGenerator()
+    generator.run()
