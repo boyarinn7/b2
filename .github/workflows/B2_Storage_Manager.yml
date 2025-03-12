@@ -2,8 +2,8 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '10 13 * * *'  # Ежедневно в 13:10 UTC
-  workflow_dispatch:  # Оставляем возможность ручного запуска без параметров
+    - cron: '10 13 * * *'
+  workflow_dispatch:
 
 jobs:
   run-b2-storage-manager:
@@ -26,10 +26,10 @@ jobs:
 
     - name: Set environment variables
       run: |
-        echo "B2_BUCKET_NAME=${{ secrets.B2_BUCKET_NAME }}" >> $GITHUB_ENV
-        echo "B2_ENDPOINT=${{ secrets.B2_ENDPOINT }}" >> $GITHUB_ENV
-        echo "B2_ACCESS_KEY=${{ secrets.B2_ACCESS_KEY }}" >> $GITHUB_ENV
-        echo "B2_SECRET_KEY=${{ secrets.B2_SECRET_KEY }}" >> $GITHUB_ENV
+        echo "API_KEYS_B2_BUCKET_NAME=${{ secrets.B2_BUCKET_NAME }}" >> $GITHUB_ENV
+        echo "API_KEYS_B2_ENDPOINT=${{ secrets.B2_ENDPOINT }}" >> $GITHUB_ENV
+        echo "API_KEYS_B2_ACCESS_KEY=${{ secrets.B2_ACCESS_KEY }}" >> $GITHUB_ENV
+        echo "API_KEYS_B2_SECRET_KEY=${{ secrets.B2_SECRET_KEY }}" >> $GITHUB_ENV
         echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
         echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> $GITHUB_ENV
         echo "OPENAI_TEMPERATURE=${{ secrets.OPENAI_TEMPERATURE }}" >> $GITHUB_ENV
@@ -39,13 +39,16 @@ jobs:
         echo "SCRIPTS_FOLDER=${{ secrets.SCRIPTS_FOLDER }}" >> $GITHUB_ENV
         echo "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}" >> $GITHUB_ENV
         echo "FILE_PATHS_LOG_FOLDER=${{ secrets.FILE_PATHS_LOG_FOLDER }}" >> $GITHUB_ENV
+        echo "FILE_PATHS_FOLDER_444=${{ secrets.FILE_PATHS_FOLDER_444 }}" >> $GITHUB_ENV
+        echo "FILE_PATHS_FOLDER_555=${{ secrets.FILE_PATHS_FOLDER_555 }}" >> $GITHUB_ENV
+        echo "FILE_PATHS_FOLDER_666=${{ secrets.FILE_PATHS_FOLDER_666 }}" >> $GITHUB_ENV
 
     - name: Set PYTHONPATH
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
 
     - name: Check required environment variables
       run: |
-        required_vars="B2_BUCKET_NAME B2_ENDPOINT B2_ACCESS_KEY B2_SECRET_KEY"
+        required_vars="API_KEYS_B2_BUCKET_NAME API_KEYS_B2_ENDPOINT API_KEYS_B2_ACCESS_KEY API_KEYS_B2_SECRET_KEY FILE_PATHS_FOLDER_444 FILE_PATHS_FOLDER_555 FILE_PATHS_FOLDER_666 ARCHIVE_FOLDER"
         for var in $required_vars; do
           if [ -z "${!var}" ]; then
             echo "Error: Required environment variable $var is not set."
