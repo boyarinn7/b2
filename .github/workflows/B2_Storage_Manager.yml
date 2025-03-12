@@ -2,8 +2,8 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '10 13 * * *'
-  workflow_dispatch:
+    - cron: '10 13 * * *'  # Ежедневно в 13:10 UTC
+  workflow_dispatch:  # Ручной запуск без параметров
 
 jobs:
   run-b2-storage-manager:
@@ -48,7 +48,7 @@ jobs:
 
     - name: Check required environment variables
       run: |
-        required_vars="API_KEYS_B2_BUCKET_NAME API_KEYS_B2_ENDPOINT API_KEYS_B2_ACCESS_KEY API_KEYS_B2_SECRET_KEY FILE_PATHS_FOLDER_444 FILE_PATHS_FOLDER_555 FILE_PATHS_FOLDER_666 ARCHIVE_FOLDER"
+        required_vars="API_KEYS_B2_BUCKET_NAME API_KEYS_B2_ENDPOINT API_KEYS_B2_ACCESS_KEY API_KEYS_B2_SECRET_KEY"
         for var in $required_vars; do
           if [ -z "${!var}" ]; then
             echo "Error: Required environment variable $var is not set."
