@@ -20,9 +20,14 @@
         "final_content_path": "final_content.json",
         "feedback_file": "data/feedback.json",
         "before_critique_path": "before_critique.json",
-        "after_critique_path": "after_critique.json"
+        "after_critique_path": "after_critique.json",
+        "config_public_local": "config_public.json",
+        "folder_444": "444/",
+        "folder_555": "555/",
+        "folder_666": "666/",
+        "archive_folder": "archive/"
     },
-    "prompts": {
+    "PROMPTS": {
         "user_prompt_combined": "Write a 10-second video scene for '{topic}'. First, determine the mood (e.g., tragic, joyful, mysterious). Then, choose one creative approach from 'creative_prompts' in config. Create a script (up to 500 characters) matching the mood, including: Action: An object tied to the topic moves or changes uniquely. Camera: Use motion like 'zoom', 'spin', 'tilt', or 'shift'. Rhythm: Split 10s creatively (e.g., 3-5-2). Apply restriction: '{restriction}'. Then, add 'First Frame Description:' (up to 500 characters) as a visual metaphor or key image for the script, focusing on composition, colors, lighting, and camera angle to convey the mood, ending with 'End of Description'. Total under 1000 characters. English, Runway-ready.",
         "second_request_prompt": "Take this script: '{script_text}'. Add an unexpected twist to enhance its creativity, keeping it under 500 characters and matching the mood of '{topic}'. English, Runway-ready."
     },

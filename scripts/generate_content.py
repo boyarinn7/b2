@@ -194,26 +194,29 @@ class ContentGenerator:
             handle_error("Clear Content Error", str(e))
 
     def generate_topic(self):
-        """Генерирует тему для контента."""
+        """Генерирует новую тему на основе доступных фокусов."""
+        logger.info("🔄 Генерация новой темы...")
         try:
-            prompt_template = config.get('CONTENT.topic.prompt_template')
-            if not prompt_template:
-                raise ValueError("prompt_template не указан в конфигурации")
-            focus_areas = ", ".join(self.config['CONTENT']['topic']['focus_areas'])
-            prompt = prompt_template.format(focus_areas=focus_areas, exclusions="")
-            self.logger.info("🔄 Запрос к OpenAI для генерации темы...")
-            topic_json = self.request_openai(prompt, 50, 0.7)
-            topic_data = json.loads(topic_json)
-            topic = topic_data["full_topic"]
-            self.save_to_generated_content("topic", {"topic": topic})
-            self.logger.info(f"✅ Тема успешно сгенерирована: {topic}")
-            return topic
-        except ValueError as ve:
-            handle_error("Topic Generation Error", str(ve))
+            focus_areas = ", ".join(self.config.get('CONTENT.topic.focus_areas'))
+            exclusions = ", ".join(self.used_short_topics)
+            prompt = self.config.get('CONTENT.topic.prompt_template').format(
+                focus_areas=focus_areas,
+                exclusions=exclusions
+            )
+            logger.info(f"📝 Промпт для генерации темы: {prompt[:100]}...")
+            response = openai.ChatCompletion.create(
+                model=self.config.get('API_KEYS.openai.model'),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=self.config.get('API_KEYS.openai.max_tokens_topic'),
+                temperature=self.config.get('CONTENT.text.temperature')
+            )
+            result = response['choices'][0]['message']['content'].strip()
+            topic_data = json.loads(result)
+            return topic_data
         except Exception as e:
-            handle_error("Topic Generation Error", str(e))
-        return None
-
+            handle_error(logger, "Topic Generation Error", e)
+            return None
+        
     def request_openai(self, prompt, max_tokens, temperature):
         """Отправляет запрос к OpenAI API."""
         if not prompt or not isinstance(prompt, str):

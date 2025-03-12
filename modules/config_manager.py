@@ -129,7 +129,7 @@ class ConfigManager:
         except Exception as e:
             logging.error(f"❌ Ошибка при получении ключа '{key}' из config.json: {e}")
             return default
-        
+
     def set(self, key, value):
         """Установка значения по ключу в конфигурации."""
         keys = key.split('.')
