@@ -265,14 +265,16 @@ class ContentGenerator:
             raise ValueError("content_data должен быть словарем")
 
         if "theme" in content_data and content_data["theme"] == "tragic":
-            prompt_template = self.config['CONTENT']['tragic_text']['prompt_template']
-            temperature = self.config['CONTENT']['tragic_text']['temperature']
-            max_tokens = self.config['CONTENT']['tragic_text']['max_length']
+            prompt_template = self.config.get('CONTENT.tragic_text.prompt_template')
+            temperature = self.config.get('CONTENT.tragic_text.temperature', 0.7)
+            max_tokens = self.config.get('CONTENT.tragic_text.max_length', 500)
         else:
-            prompt_template = self.config['CONTENT']['text']['prompt_template']
-            temperature = self.config['CONTENT']['text']['temperature']
-            max_tokens = self.config['CONTENT']['text']['max_length']
+            prompt_template = self.config.get('CONTENT.text.prompt_template')
+            temperature = self.config.get('CONTENT.text.temperature', 0.7)
+            max_tokens = self.config.get('CONTENT.text.max_length', 500)
 
+        if not prompt_template:
+            raise ValueError("prompt_template для текста не указан в конфигурации")
         prompt = prompt_template.format(topic=topic)
         text = self.request_openai(prompt, max_tokens, temperature)
         if text:
@@ -536,7 +538,7 @@ class ContentGenerator:
             run_generate_media()
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            handle_error("Run Error", str(e))
+            handle_error("Run Error", str(e), e)
 
 if __name__ == "__main__":
     generator = ContentGenerator()
