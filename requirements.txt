@@ -90,4 +90,5 @@ wrapt==1.17.0
 yarl==1.18.3
 Pillow==9.5.0
 b2sdk
+moviepy==1.0.3
 

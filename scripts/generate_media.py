@@ -7,9 +7,10 @@ import openai
 import requests
 import base64
 import time
+
 from PIL import Image
 from runwayml import RunwayML
-
+from moviepy.editor import ImageClip, concatenate_videoclips
 from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
 from modules.error_handler import handle_error
@@ -184,8 +185,25 @@ def clean_script_text(text):
     cleaned = ' '.join(cleaned.split())
     return cleaned[:980]
 
+def create_mock_video(image_path, output_path, duration=10):
+    try:
+        logger.info(f"🎥 Создание имитации видео из {image_path} длительностью {duration} сек")
+        clip = ImageClip(image_path, duration=duration)
+        clip.write_videofile(
+            output_path,
+            codec="libx264",
+            fps=24,
+            audio=False,
+            logger=None
+        )
+        logger.info(f"✅ Имитация видео создана: {output_path}")
+        return output_path
+    except Exception as e:
+        handle_error(logger, "Mock Video Creation Error", e)
+        return None
+    
 def generate_runway_video(image_path, script_text):
-    """Генерирует видео через Runway ML."""
+    """Генерирует видео через Runway ML или создаёт имитацию при недостатке кредитов."""
     api_key = os.getenv("RUNWAY_API_KEY")
     if not api_key:
         logger.error("❌ RUNWAY_API_KEY не найден в переменных окружения")
@@ -208,10 +226,18 @@ def generate_runway_video(image_path, script_text):
                 logger.info("✅ Видео успешно сгенерировано")
                 return status.output[0]
             elif status.status == "FAILED":
-                logger.error("❌ Ошибка генерации видео")
+                logger.error("❌ Ошибка генерации видео в Runway")
                 return None
             time.sleep(5)
     except Exception as e:
+        error_msg = str(e)
+        if "credits" in error_msg.lower():  # Проверка на ошибку с кредитами
+            logger.warning(f"⚠️ Недостаток кредитов в Runway: {error_msg}")
+            mock_video_path = image_path.replace(".png", "_mock.mp4")
+            mock_video = create_mock_video(image_path, mock_video_path)
+            if mock_video:
+                logger.info("🔄 Используем имитацию видео из-за недостатка кредитов")
+                return mock_video  # Возвращаем путь к имитации вместо URL
         handle_error(logger, "Runway Video Generation Error", e)
         return None
 
@@ -236,80 +262,70 @@ def main():
         # Чтение config_gen.json для получения ID генерации
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
-        generation_id = config_gen["generation_id"].split('.')[0]  # Убираем расширение .json
+        generation_id = config_gen["generation_id"].split('.')[0]
         logger.info(f"📂 ID генерации: {generation_id}")
 
-        # Создание клиента B2
         b2_client = get_b2_client()
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
 
-        # Загрузка config_public.json
         download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
 
-        # Выбор целевой папки
         if "empty" in config_public and config_public["empty"]:
             target_folder = config_public["empty"][0]
             logger.info(f"🎯 Выбрана папка: {target_folder}")
         else:
             raise ValueError("Список 'empty' пуст или отсутствует")
 
-        # Загрузка темы из generated_content.json
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
         topic_data = generated_content.get("topic", "")
         if isinstance(topic_data, dict):
-            topic = topic_data.get("topic", "")  # Извлекаем строку из {"topic": "..."}
+            topic = topic_data.get("topic", "")
         else:
             topic = topic_data or generated_content.get("content", "")
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
-        logger.info(f"📝 Тема: {topic[:100]}...")  # Срез применён к строке
+        logger.info(f"📝 Тема: {topic[:100]}...")
 
-        # Генерация сценария и описания первого кадра
         script_text, first_frame_description = generate_script_and_frame(topic)
         if not script_text or not first_frame_description:
             raise ValueError("Не удалось сгенерировать сценарий или описание")
 
-        # Сохранение в JSON
         generated_content["script"] = script_text
         generated_content["first_frame_description"] = first_frame_description
         with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
             json.dump(generated_content, f, ensure_ascii=False, indent=4)
         logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
 
-        # Генерация изображения
         image_path = generate_image_with_dalle(first_frame_description, generation_id)
         if not image_path:
             raise ValueError("Не удалось сгенерировать изображение")
 
-        # Изменение размера изображения
         if not resize_existing_image(image_path):
             raise ValueError("Не удалось изменить размер изображения")
 
-        # Генерация видео
         cleaned_script = clean_script_text(script_text)
-        video_url = generate_runway_video(image_path, cleaned_script)
+        video_result = generate_runway_video(image_path, cleaned_script)
         video_path = None
-        if video_url:
-            video_path = f"{generation_id}.mp4"
-            if not download_video(video_url, video_path):
-                logger.warning("❌ Не удалось скачать видео")
-        else:
-            logger.warning("❌ Не удалось сгенерировать видео")
+        if video_result:
+            if video_result.startswith("http"):  # Если это URL от Runway
+                video_path = f"{generation_id}.mp4"
+                if not download_video(video_result, video_path):
+                    logger.warning("❌ Не удалось скачать видео")
+            else:  # Если это локальный путь к имитации
+                video_path = video_result
+                logger.info(f"🔄 Видео-имитация уже готова: {video_path}")
 
-        # Загрузка файлов в B2 (только .png и .mp4, как в старом коде)
         upload_to_b2(b2_client, target_folder, image_path)
         if video_path and os.path.exists(video_path):
             upload_to_b2(b2_client, target_folder, video_path)
 
-        # Обновление конфигурации
         update_config_public(b2_client, target_folder)
         reset_processing_lock(b2_client)
 
-        # Запуск скрипта b2_storage_manager.py
         logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
         subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 

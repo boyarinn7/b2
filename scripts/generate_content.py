@@ -441,10 +441,13 @@ class ContentGenerator:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
                 sys.exit(1)
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
-                if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get('CONTENT.tragic_text.enabled', True):
-                    text_initial = self.request_openai(self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
+                if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
+                        'CONTENT.tragic_text.enabled', True):
+                    text_initial = self.request_openai(
+                        self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
                 else:
-                    text_initial = self.request_openai(self.config.get('CONTENT.text.prompt_template').format(topic=topic))
+                    text_initial = self.request_openai(
+                        self.config.get('CONTENT.text.prompt_template').format(topic=topic))
                 critique = self.critique_content(text_initial, topic)
                 self.save_to_generated_content("critique", {"critique": critique})
             else:
@@ -474,10 +477,12 @@ class ContentGenerator:
             create_and_upload_image(target_folder, generation_id)
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
-            run_generate_media()
+            run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            handle_error("Run Error", str(e), e)
+            handle_error("Run Error", "Ошибка в основном процессе генерации", e)
+            logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
+            sys.exit(1)
 
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
@@ -490,11 +495,14 @@ def run_generate_media():
         subprocess.run(["python", script_path], check=True)
         logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
     except subprocess.CalledProcessError as e:
-        handle_error("Script Execution Error", str(e), e)
+        handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
+        logger.warning("⚠️ Генерация медиа не удалась, продолжаем без медиа.")
     except FileNotFoundError as e:
-        handle_error("File Not Found Error", str(e), e)
+        handle_error("File Not Found Error", f"Скрипт не найден: {script_path}", e)
+        logger.warning("⚠️ Скрипт generate_media.py отсутствует, продолжаем без медиа.")
     except Exception as e:
-        handle_error("Unknown Error", str(e), e)
+        handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
+        logger.warning("⚠️ Неизвестная ошибка в generate_media, продолжаем без медиа.")
 
 if __name__ == "__main__":
     generator = ContentGenerator()
