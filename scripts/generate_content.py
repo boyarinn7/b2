@@ -41,7 +41,7 @@ def create_and_upload_image(folder, generation_id):
         logger.info(f"✅ Изображение успешно загружено в B2: {s3_key}")
         os.remove(local_file_path)
     except Exception as e:
-        handle_error("Image Upload Error", str(e))
+        handle_error("Image Upload Error", str(e), e)
 
 def get_b2_client():
     """Создает клиент для работы с Backblaze B2."""
@@ -53,7 +53,7 @@ def get_b2_client():
             aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
         )
     except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e))
+        handle_error("B2 Client Initialization Error", str(e), e)
 
 def download_config_public():
     """Загружает файл config_public.json из B2 в локальное хранилище."""
@@ -65,7 +65,7 @@ def download_config_public():
         s3.download_file(bucket_name, config_public_path, config_public_path)
         logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
     except Exception as e:
-        handle_error("Download Config Public Error", str(e))
+        handle_error("Download Config Public Error", str(e), e)
 
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
@@ -83,7 +83,7 @@ def save_generation_id_to_config(file_id):
             json.dump({"generation_id": file_id}, file, ensure_ascii=False, indent=4)
         logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
     except Exception as e:
-        handle_error("Save Generation ID Error", str(e))
+        handle_error("Save Generation ID Error", str(e), e)
 
 def save_to_b2(folder, content):
     """Сохраняет контент в B2 без двойного кодирования JSON."""
@@ -117,7 +117,7 @@ def save_to_b2(folder, content):
         s3.upload_fileobj(json_bytes, bucket_name, s3_key)
         logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
     except Exception as e:
-        handle_error("B2 Upload Error", str(e))
+        handle_error("B2 Upload Error", str(e), e)
 
 class ContentGenerator:
     def __init__(self):
@@ -160,9 +160,9 @@ class ContentGenerator:
                 json.dump({}, file, ensure_ascii=False, indent=4)
             logger.info("✅ Файл успешно очищен.")
         except PermissionError:
-            handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
+            handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}", PermissionError())
         except Exception as e:
-            handle_error("Clear Content Error", str(e))
+            handle_error("Clear Content Error", str(e), e)
 
     def generate_topic(self):
         if not self.config.get('CONTENT.topic.enabled', True):
@@ -175,16 +175,26 @@ class ContentGenerator:
                 raise ValueError("focus_areas не задан в конфигурации.")
             selected_focus = random.choice(focus_areas)
             prompt_template = self.config.get('CONTENT.topic.prompt_template')
-            prompt = prompt_template.format(focus_areas=selected_focus)
+            # Предполагаем, что exclusions может быть в конфиге или пустым списком
+            exclusions = self.config.get('CONTENT.topic.exclusions', [])
+            prompt = prompt_template.format(focus_areas=selected_focus, exclusions=', '.join(exclusions))
             logger.info(f"🔄 Запрос к OpenAI для генерации темы с фокусом: {selected_focus}")
-            topic = self.request_openai(prompt)
+            topic_response = self.request_openai(prompt)
+            # Ожидаем JSON-формат из логов
+            try:
+                topic_data = json.loads(topic_response)
+                topic = topic_data.get("full_topic", "")
+                short_topic = topic_data.get("short_topic", "")
+            except json.JSONDecodeError:
+                logger.warning("⚠️ OpenAI вернул не JSON, используем как строку.")
+                topic = topic_response
             self.save_to_generated_content("topic", {"topic": topic})
             is_tragic = selected_focus.endswith('(т)')
             content_data = {"theme": "tragic" if is_tragic else "normal"}
             logger.info(f"✅ Тема успешно сгенерирована: {topic}, трагическая: {is_tragic}")
             return topic, content_data
         except Exception as e:
-            handle_error("Topic Generation Error", str(e))
+            handle_error("Topic Generation Error", str(e), e)
             return "", {}
 
     def request_openai(self, prompt):
@@ -263,7 +273,7 @@ class ContentGenerator:
             self.logger.error("❌ OpenAI вернул некорректный формат! Возвращаем пустой объект.")
             return {}
         except Exception as e:
-            handle_error("Sarcasm Poll Generation Error", str(e))
+            handle_error("Sarcasm Poll Generation Error", str(e), e)
             return {}
 
     def save_to_generated_content(self, stage, data):
@@ -293,11 +303,11 @@ class ContentGenerator:
                 json.dump(result_data, file, ensure_ascii=False, indent=4)
             logger.info(f"✅ Данные успешно обновлены и сохранены на этапе: {stage}")
         except FileNotFoundError:
-            handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}")
+            handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}", FileNotFoundError())
         except PermissionError:
-            handle_error("Save to Generated Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
+            handle_error("Save to Generated Content Error", f"Нет прав на запись в файл: {self.content_output_path}", PermissionError())
         except Exception as e:
-            handle_error("Save to Generated Content Error", str(e))
+            handle_error("Save to Generated Content Error", str(e), e)
 
     def critique_content(self, content, topic):
         if not self.config.get('CONTENT.critique.enabled', True):
@@ -317,7 +327,7 @@ class ContentGenerator:
             self.logger.info("✅ Критика успешно завершена.")
             return critique
         except Exception as e:
-            handle_error("Critique Error", str(e))
+            handle_error("Critique Error", str(e), e)
             return "Критика текста завершилась ошибкой."
 
     def analyze_topic_generation(self):
@@ -352,7 +362,7 @@ class ContentGenerator:
             self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
             return combined_topics
         except Exception as e:
-            handle_error("Topic Analysis Error", str(e))
+            handle_error("Topic Analysis Error", str(e), e)
             return []
 
     def get_valid_focus_areas(self):
@@ -369,7 +379,7 @@ class ContentGenerator:
             self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
             return valid_focus_areas
         except Exception as e:
-            handle_error("Focus Area Filtering Error", str(e))
+            handle_error("Focus Area Filtering Error", str(e), e)
             return []
 
     def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
@@ -402,7 +412,7 @@ class ContentGenerator:
             self.logger.warning("⚠️ Нет доступных фокусов для выбора.")
             return None
         except Exception as e:
-            handle_error("Focus Prioritization Error", str(e))
+            handle_error("Focus Prioritization Error", str(e), e)
             return None
 
     def run(self):
@@ -467,7 +477,7 @@ class ContentGenerator:
             run_generate_media()
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            handle_error("Run Error", str(e))
+            handle_error("Run Error", str(e), e)
 
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
@@ -480,11 +490,11 @@ def run_generate_media():
         subprocess.run(["python", script_path], check=True)
         logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
     except subprocess.CalledProcessError as e:
-        handle_error("Script Execution Error", e)
+        handle_error("Script Execution Error", str(e), e)
     except FileNotFoundError as e:
-        handle_error("File Not Found Error", e)
+        handle_error("File Not Found Error", str(e), e)
     except Exception as e:
-        handle_error("Unknown Error", e)
+        handle_error("Unknown Error", str(e), e)
 
 if __name__ == "__main__":
     generator = ContentGenerator()
