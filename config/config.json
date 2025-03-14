@@ -200,7 +200,7 @@
     "GENERATE": {
         "topic_threshold": 7,
         "text_threshold": 8,
-        "max_attempts": 3,
+        "max_attempts": 1,
         "adaptation_enabled": true,
         "adaptation_parameters": {
             "emotional_focus": 0.7,

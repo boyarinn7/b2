@@ -2,8 +2,8 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '10 13 * * *'  # Ежедневно в 13:10 UTC
-  workflow_dispatch:  # Ручной запуск без параметров
+    - cron: '10 13 * * *'  
+  workflow_dispatch: 
 
 jobs:
   run-b2-storage-manager:
@@ -42,6 +42,7 @@ jobs:
         echo "FILE_PATHS_FOLDER_444=${{ secrets.FILE_PATHS_FOLDER_444 }}" >> $GITHUB_ENV
         echo "FILE_PATHS_FOLDER_555=${{ secrets.FILE_PATHS_FOLDER_555 }}" >> $GITHUB_ENV
         echo "FILE_PATHS_FOLDER_666=${{ secrets.FILE_PATHS_FOLDER_666 }}" >> $GITHUB_ENV
+        echo "MIDJOURNEY_API_KEY=${{ secrets.MIDJOURNEY_API_KEY }}" >> $GITHUB_ENV
 
     - name: Set PYTHONPATH
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
