@@ -4,6 +4,10 @@
             "endpoint": "https://s3.us-east-005.backblazeb2.com",
             "bucket_name": "boyarinnbotbucket"
         },
+        "midjourney": {
+            "endpoint": "https://api.piapi.ai/midjourney/imagine",
+            "task_endpoint": "https://api.piapi.ai/midjourney/task"
+        },
         "openai": {
             "model": "gpt-4"
         }
@@ -206,10 +210,32 @@
     },
     "IMAGE_GENERATION": {
         "image_size": "1792x1024",
-        "num_images": 1
+        "num_images": 1,
+        "midjourney_enabled": true, 
+        "dalle_enabled": true  
     },
     "VISUAL_ANALYSIS": {
-        "min_script_length": 200
+        "min_script_length": 200,
+        "image_selection_criteria": [
+            {"name": "Dramatism", "weight": 1.2},
+            {"name": "Epicness", "weight": 1.5},
+            {"name": "Historical context", "weight": 1.0},
+            {"name": "Depth of scene", "weight": 1.0},
+            {"name": "Balance of elements", "weight": 1.0},
+            {"name": "Focus", "weight": 1.2},
+            {"name": "Contrast", "weight": 1.0},
+            {"name": "Atmospheric lighting", "weight": 1.3},
+            {"name": "Color palette", "weight": 1.0},
+            {"name": "Clarity of key elements", "weight": 1.0},
+            {"name": "No artifacts", "weight": 1.0},
+            {"name": "Plausibility", "weight": 1.0},
+            {"name": "Historical attributes", "weight": 1.0},
+            {"name": "Iconography", "weight": 1.0},
+            {"name": "Dynamic tension", "weight": 1.2},
+            {"name": "Uniqueness", "weight": 1.3},
+            {"name": "Cinematic quality", "weight": 1.5},
+            {"name": "Prompt match", "weight": 1.2}
+    ]
     },
     "PATHS": {
         "output_image_format": "png"

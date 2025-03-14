@@ -33,22 +33,32 @@ CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath(config.get("FILE_PATHS.config_public_
 CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")
 SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
 
-# Настройки генерации из конфига (с значениями по умолчанию)
-USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined", "Write a detailed script for a video on '{topic}'...")
-OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4-turbo")
+# Настройки генерации из конфига
+USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
+OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
 OPENAI_MAX_TOKENS = config.get("OPENAI_SETTINGS.max_tokens", 1000)
 OPENAI_TEMPERATURE = config.get("OPENAI_SETTINGS.temperature", 0.7)
 MIN_SCRIPT_LENGTH = config.get("VISUAL_ANALYSIS.min_script_length", 200)
-IMAGE_SIZE_DALLE = config.get("IMAGE_GENERATION.image_size", "1024x1024")
+IMAGE_SIZE = config.get("IMAGE_GENERATION.image_size", "1792x1024")
 NUM_IMAGES = config.get("IMAGE_GENERATION.num_images", 1)
+MIDJOURNEY_ENABLED = config.get("IMAGE_GENERATION.midjourney_enabled", True)
+DALLE_ENABLED = config.get("IMAGE_GENERATION.dalle_enabled", True)
 OUTPUT_IMAGE_FORMAT = config.get("PATHS.output_image_format", "png")
+MIDJOURNEY_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
+MIDJOURNEY_TASK_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
+IMAGE_SELECTION_CRITERIA = config.get("VISUAL_ANALYSIS.image_selection_criteria", [])
+MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)  # Новый параметр из конфига
 
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
 
-# Установка API-ключа OpenAI из переменной окружения (секреты GitHub)
+# Установка ключей API из переменных окружения (секреты GitHub)
 openai.api_key = os.getenv("OPENAI_API_KEY")
+MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
 if not openai.api_key:
     raise ValueError("API-ключ OpenAI не найден в переменной окружения OPENAI_API_KEY")
+if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
+    raise ValueError("API-ключ Midjourney не найден в переменной окружения MIDJOURNEY_API_KEY")
+
 
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
@@ -65,6 +75,7 @@ def get_b2_client():
         handle_error(logger, "B2 Client Initialization Error", e)
         return None
 
+
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3) в локальное хранилище."""
     try:
@@ -74,6 +85,7 @@ def download_file_from_b2(client, remote_path, local_path):
         logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
     except Exception as e:
         handle_error(logger, "B2 Download Error", e)
+
 
 def upload_to_b2(client, folder, file_path):
     """Загружает локальный файл в указанную папку B2 и удаляет локальную копию."""
@@ -89,6 +101,7 @@ def upload_to_b2(client, folder, file_path):
         logger.info(f"🗑️ Локальный файл {file_path} удалён после загрузки.")
     except Exception as e:
         handle_error(logger, "B2 Upload Error", e)
+
 
 def update_config_public(client, folder):
     """Обновляет config_public.json: удаляет папку из списка 'empty'."""
@@ -107,6 +120,7 @@ def update_config_public(client, folder):
     except Exception as e:
         handle_error(logger, "Config Public Update Error", e)
 
+
 def reset_processing_lock(client):
     """Сбрасывает флаг processing_lock в config_public.json."""
     try:
@@ -123,49 +137,157 @@ def reset_processing_lock(client):
     except Exception as e:
         handle_error(logger, "Processing Lock Reset Error", e)
 
+
 # === Функции генерации сценария и видео ===
 def generate_script_and_frame(topic):
-    """Генерирует сценарий и описание первого кадра для видео."""
-    try:
-        combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
-        logger.info(f"🔎 Отправка запроса для генерации сценария и описания: {combined_prompt[:100]}...")
-        response = openai.ChatCompletion.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": combined_prompt}],
-            max_tokens=OPENAI_MAX_TOKENS,
-            temperature=OPENAI_TEMPERATURE,
-        )
-        combined_response = response['choices'][0]['message']['content'].strip()
-        if len(combined_response) < MIN_SCRIPT_LENGTH:
-            logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
-            return None, None
-        if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-            logger.error("❌ Маркеры кадра не найдены в ответе!")
-            return None, None
-        script_text = combined_response.split("First Frame Description:")[0].strip()
-        first_frame_description = combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-        logger.info(f"🎬 Сценарий: {script_text[:100]}...")
-        logger.info(f"🖼️ Описание первого кадра: {first_frame_description[:100]}...")
-        return script_text, first_frame_description
-    except Exception as e:
-        handle_error(logger, "Script and Frame Generation Error", e)
-        return None, None
+    """Генерирует сценарий и описание первого кадра для видео с повторными попытками."""
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
+            logger.info(f"🔎 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация сценария для '{topic[:100]}'...")
+            response = openai.ChatCompletion.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "user", "content": combined_prompt}],
+                max_tokens=OPENAI_MAX_TOKENS,
+                temperature=OPENAI_TEMPERATURE,
+            )
+            combined_response = response['choices'][0]['message']['content'].strip()
+            if len(combined_response) < MIN_SCRIPT_LENGTH:
+                logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
+                continue
+            if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+                logger.error("❌ Маркеры кадра не найдены в ответе!")
+                continue
+            script_text = combined_response.split("First Frame Description:")[0].strip()
+            first_frame_description = \
+            combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+            logger.info(f"🎬 Сценарий: {script_text[:100]}...")
+            logger.info(f"🖼️ Описание первого кадра: {first_frame_description[:100]}...")
+            return script_text, first_frame_description
+        except Exception as e:
+            handle_error(logger, f"Script Generation Error (попытка {attempt + 1}/{MAX_ATTEMPTS})", e)
+            if attempt == MAX_ATTEMPTS - 1:
+                logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
+                return None, None
+    return None, None
+
+
+def generate_image_with_midjourney(prompt, generation_id):
+    """Генерирует 4 изображения через Midjourney и выбирает лучшее с повторными попытками."""
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            headers = {"X-API-KEY": MIDJOURNEY_API_KEY}
+            payload = {
+                "prompt": prompt,
+                "aspect_ratio": "16:9",
+                "process_mode": "fast",
+                "skip_prompt_check": False
+            }
+            logger.info(f"🔄 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация через Midjourney: {prompt[:100]}...")
+
+            # Создание задачи
+            response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers)
+            response.raise_for_status()
+            task_id = response.json()["task_id"]
+
+            # Ожидание завершения
+            get_task_url = f"{MIDJOURNEY_TASK_ENDPOINT}/{task_id}"
+            while True:
+                result = requests.get(get_task_url, headers=headers)
+                result.raise_for_status()
+                data = result.json()["data"]
+                if data["status"] == "completed":
+                    break
+                time.sleep(5)
+
+            # Извлекаем 4 URL
+            image_urls = data["output"]["temporary_image_urls"]
+            logger.info(f"✅ Сгенерировано 4 изображения: {len(image_urls)} URL")
+
+            # Формируем критерии с весами из конфига
+            criteria_text = ", ".join([f"{c['name']} (weight: {c['weight']})" for c in IMAGE_SELECTION_CRITERIA])
+            gpt_response = openai.ChatCompletion.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Evaluate these 4 images for the prompt '{prompt}'. Score each from 0-10 on these criteria: {criteria_text}. "
+                                        "Calculate the weighted total score for each image (score * weight). "
+                                        "Return the image number (1-4) with the highest total score and explain why."
+                            },
+                            *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
+            answer = gpt_response.choices[0].message.content
+            logger.info(f"🎨 GPT-4o анализ: {answer[:100]}...")
+
+            # Извлекаем номер лучшего изображения с проверкой
+            best_index = int(answer.split("Image ")[1].split(":")[0]) - 1
+            if best_index not in range(4):
+                logger.error(f"❌ GPT-4o вернул неверный индекс: {best_index}. Выбираем первое изображение.")
+                best_index = 0
+            best_image_url = image_urls[best_index]
+
+            # Скачиваем выбранное изображение
+            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+            response = requests.get(best_image_url, stream=True)
+            response.raise_for_status()
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"✅ Изображение сохранено: {image_path}")
+            return image_path
+        except Exception as e:
+            handle_error(logger, f"Midjourney Image Generation Error (попытка {attempt + 1}/{MAX_ATTEMPTS})", e)
+            if attempt == MAX_ATTEMPTS - 1:
+                logger.error("❌ Превышено максимальное количество попыток генерации Midjourney.")
+                return None
+    return None
+
 
 def generate_image_with_dalle(prompt, generation_id):
-    response = openai.Image.create(
-        prompt=prompt,
-        n=NUM_IMAGES,
-        size=IMAGE_SIZE_DALLE,
-        model="dall-e-3",
-        response_format="b64_json"
-    )
-    image_data = response["data"][0]["b64_json"]
-    image_path = f"{generation_id}.png"
-    with open(image_path, "wb") as f:
-        f.write(base64.b64decode(image_data))
-    with Image.open(image_path) as img:
-        logger.info(f"✅ Сгенерировано изображение размером: {img.size}")
-    return image_path
+    """Генерирует изображение через DALL·E 3 с повторными попытками."""
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            logger.info(f"🔄 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация через DALL·E 3: {prompt[:100]}...")
+            response = openai.Image.create(
+                prompt=prompt,
+                n=NUM_IMAGES,
+                size=IMAGE_SIZE,
+                model="dall-e-3",
+                response_format="b64_json"
+            )
+            image_data = response["data"][0]["b64_json"]
+            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+            with open(image_path, "wb") as f:
+                f.write(base64.b64decode(image_data))
+            with Image.open(image_path) as img:
+                logger.info(f"✅ Сгенерировано изображение размером: {img.size}")
+            return image_path
+        except Exception as e:
+            handle_error(logger, f"DALL·E Image Generation Error (попытка {attempt + 1}/{MAX_ATTEMPTS})", e)
+            if attempt == MAX_ATTEMPTS - 1:
+                logger.error("❌ Превышено максимальное количество попыток генерации DALL·E.")
+                return None
+    return None
+
+
+def generate_image(prompt, generation_id):
+    """Выбирает генератор изображений с приоритетом Midjourney."""
+    if MIDJOURNEY_ENABLED:
+        logger.info("🎨 Используем Midjourney для генерации изображения")
+        return generate_image_with_midjourney(prompt, generation_id)
+    elif DALLE_ENABLED:
+        logger.info("🎨 Используем DALL·E 3 для генерации изображения")
+        return generate_image_with_dalle(prompt, generation_id)
+    else:
+        raise ValueError("Ни Midjourney, ни DALL·E 3 не включены в конфиге")
+
 
 def resize_existing_image(image_path):
     """Изменяет размер изображения до 1280x768."""
@@ -179,13 +301,16 @@ def resize_existing_image(image_path):
         handle_error(logger, "Image Resize Error", e)
         return False
 
+
 def clean_script_text(text):
     """Очищает текст сценария для Runway."""
     cleaned = text.replace('\n', ' ').replace('\r', ' ')
     cleaned = ' '.join(cleaned.split())
     return cleaned[:980]
 
+
 def create_mock_video(image_path, output_path, duration=10):
+    """Создает имитацию видео из изображения."""
     try:
         logger.info(f"🎥 Создание имитации видео из {image_path} длительностью {duration} сек")
         clip = ImageClip(image_path, duration=duration)
@@ -201,7 +326,8 @@ def create_mock_video(image_path, output_path, duration=10):
     except Exception as e:
         handle_error(logger, "Mock Video Creation Error", e)
         return None
-    
+
+
 def generate_runway_video(image_path, script_text):
     """Генерирует видео через Runway ML или создаёт имитацию при недостатке кредитов."""
     api_key = os.getenv("RUNWAY_API_KEY")
@@ -224,22 +350,23 @@ def generate_runway_video(image_path, script_text):
             status = client.tasks.retrieve(task.id)
             if status.status == "SUCCEEDED":
                 logger.info("✅ Видео успешно сгенерировано")
-                return status.output[0]
+                return status.output[0]  # URL настоящего видео
             elif status.status == "FAILED":
                 logger.error("❌ Ошибка генерации видео в Runway")
                 return None
             time.sleep(5)
     except Exception as e:
         error_msg = str(e)
-        if "credits" in error_msg.lower():  # Проверка на ошибку с кредитами
+        if "credits" in error_msg.lower():
             logger.warning(f"⚠️ Недостаток кредитов в Runway: {error_msg}")
-            mock_video_path = image_path.replace(".png", "_mock.mp4")
-            mock_video = create_mock_video(image_path, mock_video_path)
+            video_path = image_path.replace(".png", ".mp4")
+            mock_video = create_mock_video(image_path, video_path)
             if mock_video:
-                logger.info("🔄 Используем имитацию видео из-за недостатка кредитов")
-                return mock_video  # Возвращаем путь к имитации вместо URL
+                logger.info(f"🔄 Замена: сгенерирована имитация видео: {mock_video}")
+                return mock_video
         handle_error(logger, "Runway Video Generation Error", e)
         return None
+
 
 def download_video(url, output_path):
     """Скачивает видео по URL."""
@@ -255,11 +382,11 @@ def download_video(url, output_path):
         handle_error(logger, "Video Download Error", e)
         return False
 
+
 # === Основная функция ===
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
     try:
-        # Чтение config_gen.json для получения ID генерации
         with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
             config_gen = json.load(file)
         generation_id = config_gen["generation_id"].split('.')[0]
@@ -300,7 +427,7 @@ def main():
             json.dump(generated_content, f, ensure_ascii=False, indent=4)
         logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
 
-        image_path = generate_image_with_dalle(first_frame_description, generation_id)
+        image_path = generate_image(first_frame_description, generation_id)
         if not image_path:
             raise ValueError("Не удалось сгенерировать изображение")
 
@@ -311,13 +438,13 @@ def main():
         video_result = generate_runway_video(image_path, cleaned_script)
         video_path = None
         if video_result:
-            if video_result.startswith("http"):  # Если это URL от Runway
+            if video_result.startswith("http"):
                 video_path = f"{generation_id}.mp4"
                 if not download_video(video_result, video_path):
                     logger.warning("❌ Не удалось скачать видео")
-            else:  # Если это локальный путь к имитации
+            else:
                 video_path = video_result
-                logger.info(f"🔄 Видео-имитация уже готова: {video_path}")
+                logger.info(f"🔄 Используем имитацию видео: {video_path}")
 
         upload_to_b2(b2_client, target_folder, image_path)
         if video_path and os.path.exists(video_path):
@@ -332,6 +459,7 @@ def main():
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
+
 
 if __name__ == "__main__":
     try:
