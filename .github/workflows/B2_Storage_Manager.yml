@@ -2,8 +2,10 @@ name: B2 Storage Manager Workflow
 
 on:
   schedule:
-    - cron: '10 13 * * *'  
-  workflow_dispatch: 
+    - cron: '10 13 * * *'  # Запуск по расписанию (ежедневно в 13:10 UTC)
+  workflow_dispatch:       # Ручной запуск
+  repository_dispatch:     # Запуск от Render
+    types: [midjourney-task-completed]  # Триггер от вебхука
 
 jobs:
   run-b2-storage-manager:
