@@ -10,10 +10,10 @@ app = Flask(__name__)
 # Переменные окружения
 B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
-B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")  # Замените на имя бакета
-B2_ENDPOINT = os.getenv("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")  # Замените, если ваш endpoint другой
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")
+B2_ENDPOINT = os.getenv("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")  # Замените на ваш репозиторий
+GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")
 
 # Проверяем переменные окружения
 if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
@@ -25,7 +25,7 @@ else:
         "s3",
         endpoint_url=B2_ENDPOINT,
         aws_access_key_id=B2_ACCESS_KEY,
-        aws_secret_key_id=B2_SECRET_KEY
+        aws_secret_access_key=B2_SECRET_KEY  # Исправлено с aws_secret_key_id
     )
 
 @app.route('/hook', methods=['POST'])
@@ -43,7 +43,7 @@ def webhook_handler():
     # Работа с config_public.json
     remote_config = "config/config_public.json"
     try:
-        # Скачиваем config в память (без локального файла)
+        # Скачиваем config в память
         config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
         current_config = json.loads(config_obj['Body'].read().decode('utf-8'))
     except Exception as e:
