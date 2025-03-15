@@ -61,7 +61,7 @@ python-dateutil==2.9.0.post0
 PyYAML==6.0.2
 readability==0.3.1
 regex==2024.11.6
-requests==2.32.3
+requests==2.31.0
 rich==13.9.4
 rsa==4.7.2
 ru_core_news_md @ https://github.com/explosion/spacy-models/releases/download/ru_core_news_md-3.8.0/ru_core_news_md-3.8.0-py3-none-any.whl#sha256=43f456d40e4b70726874e01ce01fce32f50089ba98a2660292e9a6c63a06ebe9
@@ -89,9 +89,6 @@ wheel==0.45.1
 wrapt==1.17.0
 yarl==1.18.3
 Pillow==9.5.0
-b2sdk
 moviepy==1.0.3
 Flask==2.3.3
-requests==2.31.0
 b2sdk==1.21.0
-
