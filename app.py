@@ -8,9 +8,9 @@ app = Flask(__name__)
 
 B2_APPLICATION_KEY_ID = os.getenv("B2_APPLICATION_KEY_ID")
 B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
-B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "your-bucket-name")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "your-username/your-repo")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/б2")
 
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)

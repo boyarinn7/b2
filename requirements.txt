@@ -91,4 +91,7 @@ yarl==1.18.3
 Pillow==9.5.0
 b2sdk
 moviepy==1.0.3
+Flask==2.3.3
+requests==2.31.0
+b2sdk==1.21.0
 
