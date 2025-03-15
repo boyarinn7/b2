@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify
 import requests
-from b2sdk.v2 import InMemoryAccountInfo, B2Api
+import boto3
 import json
 import os
+from io import StringIO
 
 app = Flask(__name__)
 
@@ -10,22 +11,26 @@ app = Flask(__name__)
 B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")  # Замените на имя бакета
+B2_ENDPOINT = os.getenv("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")  # Замените, если ваш endpoint другой
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")  # Замените на ваш репозиторий
 
-# Инициализация B2
-info = InMemoryAccountInfo()
-b2_api = B2Api(info)
-try:
-    b2_api.authorize_account("production", B2_ACCESS_KEY, B2_SECRET_KEY)
-    bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
-except Exception as e:
-    app.logger.error(f"B2 authorization failed: {str(e)}")
-    bucket = None
+# Проверяем переменные окружения
+if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
+    app.logger.error("B2 environment variables are missing")
+    b2_client = None
+else:
+    # Создаём клиент B2
+    b2_client = boto3.client(
+        "s3",
+        endpoint_url=B2_ENDPOINT,
+        aws_access_key_id=B2_ACCESS_KEY,
+        aws_secret_key_id=B2_SECRET_KEY
+    )
 
 @app.route('/hook', methods=['POST'])
 def webhook_handler():
-    if bucket is None:
+    if b2_client is None:
         return jsonify({"error": "B2 not initialized"}), 500
 
     try:
@@ -35,24 +40,26 @@ def webhook_handler():
     except KeyError as e:
         return jsonify({"error": f"Invalid JSON: missing {str(e)}"}), 400
 
-    # Читаем или создаём config_public.json
+    # Работа с config_public.json
+    remote_config = "config/config_public.json"
     try:
-        file_info = bucket.get_file_info_by_name("config/config_public.json")
-        downloaded_file = bucket.download_file_by_id(file_info.id_)
-        current_config = json.loads(downloaded_file.read())  # Исправлено чтение файла
+        # Скачиваем config в память (без локального файла)
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        current_config = json.loads(config_obj['Body'].read().decode('utf-8'))
     except Exception as e:
         app.logger.warning(f"Config file not found, creating new: {str(e)}")
         current_config = {"publish": "", "empty": [], "processing_lock": False}
 
+    # Обновляем config
     current_config["midjourney_results"] = {
         "task_id": task_id,
         "image_urls": image_urls
     }
 
-    # Сохраняем в B2
+    # Сохраняем обратно в B2
     try:
-        updated_config = json.dumps(current_config).encode()
-        bucket.upload_bytes(updated_config, "config/config_public.json")
+        updated_config = json.dumps(current_config, ensure_ascii=False).encode('utf-8')
+        b2_client.put_object(Bucket=B2_BUCKET_NAME, Key=remote_config, Body=updated_config)
     except Exception as e:
         app.logger.error(f"Failed to upload to B2: {str(e)}")
         return jsonify({"error": "Failed to update config"}), 500
