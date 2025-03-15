@@ -13,7 +13,7 @@ B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")  # Замен�
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")  # Замените на ваш репозиторий
 
-# Инициализация B2 с обработкой ошибок
+# Инициализация B2
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 try:
@@ -38,7 +38,8 @@ def webhook_handler():
     # Читаем или создаём config_public.json
     try:
         file_info = bucket.get_file_info_by_name("config/config_public.json")
-        current_config = json.loads(bucket.download_file_by_id(file_info.id_).read().decode())
+        downloaded_file = bucket.download_file_by_id(file_info.id_)
+        current_config = json.loads(downloaded_file.read())  # Исправлено чтение файла
     except Exception as e:
         app.logger.warning(f"Config file not found, creating new: {str(e)}")
         current_config = {"publish": "", "empty": [], "processing_lock": False}
