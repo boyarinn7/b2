@@ -7,6 +7,7 @@ import openai
 import requests
 import base64
 import time
+import re
 
 from PIL import Image
 from runwayml import RunwayML
@@ -59,6 +60,68 @@ if not openai.api_key:
 if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
     raise ValueError("API-ключ Midjourney не найден в переменной окружения MIDJOURNEY_API_KEY")
 
+
+def check_midjourney_results(b2_client):
+    remote_config = "config/config_public.json"
+    try:
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        return config_data.get("midjourney_results", None)
+    except Exception as e:
+        logger.error(f"Ошибка при проверке midjourney_results: {e}")
+        return None
+
+
+def select_best_image(b2_client, image_urls, prompt):
+    global config  # Предполагается, что config уже инициализирован через ConfigManager
+    try:
+        # Загружаем критерии, промпт и max_tokens из конфига
+        criteria = config.get("VISUAL_ANALYSIS.image_selection_criteria")
+        selection_prompt = config.get("VISUAL_ANALYSIS.image_selection_prompt")
+        max_tokens = config.get("VISUAL_ANALYSIS.image_selection_max_tokens", 500)
+
+        # Формируем строку критериев с весами
+        criteria_text = ", ".join([f"{c['name']} (weight: {c['weight']})" for c in criteria])
+
+        # Формируем полный промпт
+        full_prompt = selection_prompt.format(prompt=prompt, criteria=criteria_text)
+
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                gpt_response = openai.ChatCompletion.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": full_prompt},
+                                *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
+                            ]
+                        }
+                    ],
+                    max_tokens=max_tokens
+                )
+                answer = gpt_response.choices[0].message.content
+                logger.info(f"OpenAI выбор: {answer[:100]}...")
+
+                # Извлекаем номер лучшего изображения
+                best_index_match = re.search(r"Image (\d+)", answer)
+                if best_index_match:
+                    best_index = int(best_index_match.group(1)) - 1
+                    if best_index in range(4):
+                        return image_urls[best_index]
+                logger.error(f"Неверный индекс в ответе OpenAI: {answer}, выбираем первое изображение")
+                return image_urls[0]
+            except openai.error.OpenAIError as e:
+                logger.error(f"Ошибка OpenAI API (попытка {attempt + 1}/{MAX_ATTEMPTS}): {e}")
+                if attempt < MAX_ATTEMPTS - 1:
+                    time.sleep(5)
+                else:
+                    logger.error("Превышено количество попыток OpenAI, выбираем первое изображение")
+                    return image_urls[0]
+    except Exception as e:
+        logger.error(f"Ошибка в select_best_image: {e}")
+        return image_urls[0]  # Возвращаем первую картинку как запасной вариант
 
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
@@ -173,7 +236,6 @@ def generate_script_and_frame(topic):
 
 
 def generate_image_with_midjourney(prompt, generation_id):
-    """Генерирует 4 изображения через Midjourney и выбирает лучшее с повторными попытками."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             headers = {"X-API-KEY": MIDJOURNEY_API_KEY}
@@ -183,72 +245,33 @@ def generate_image_with_midjourney(prompt, generation_id):
                 "process_mode": "fast",
                 "skip_prompt_check": False
             }
-            logger.info(f"🔄 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация через Midjourney: {prompt[:100]}...")
-
-            # Создание задачи
+            logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS}: Запрос к Midjourney: {prompt[:100]}...")
             response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers)
             response.raise_for_status()
             task_id = response.json()["task_id"]
-
-            # Ожидание завершения
-            get_task_url = f"{MIDJOURNEY_TASK_ENDPOINT}/{task_id}"
-            while True:
-                result = requests.get(get_task_url, headers=headers)
-                result.raise_for_status()
-                data = result.json()["data"]
-                if data["status"] == "completed":
-                    break
+            logger.info(f"Задача {task_id} отправлена в Midjourney, завершение работы")
+            sys.exit(0)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка Midjourney (попытка {attempt + 1}/{MAX_ATTEMPTS}): {e}")
+            if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(5)
-
-            # Извлекаем 4 URL
-            image_urls = data["output"]["temporary_image_urls"]
-            logger.info(f"✅ Сгенерировано 4 изображения: {len(image_urls)} URL")
-
-            # Формируем критерии с весами из конфига
-            criteria_text = ", ".join([f"{c['name']} (weight: {c['weight']})" for c in IMAGE_SELECTION_CRITERIA])
-            gpt_response = openai.ChatCompletion.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"Evaluate these 4 images for the prompt '{prompt}'. Score each from 0-10 on these criteria: {criteria_text}. "
-                                        "Calculate the weighted total score for each image (score * weight). "
-                                        "Return the image number (1-4) with the highest total score and explain why."
-                            },
-                            *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
-                        ]
-                    }
-                ],
-                max_tokens=500
-            )
-            answer = gpt_response.choices[0].message.content
-            logger.info(f"🎨 GPT-4o анализ: {answer[:100]}...")
-
-            # Извлекаем номер лучшего изображения с проверкой
-            best_index = int(answer.split("Image ")[1].split(":")[0]) - 1
-            if best_index not in range(4):
-                logger.error(f"❌ GPT-4o вернул неверный индекс: {best_index}. Выбираем первое изображение.")
-                best_index = 0
-            best_image_url = image_urls[best_index]
-
-            # Скачиваем выбранное изображение
-            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
-            response = requests.get(best_image_url, stream=True)
-            response.raise_for_status()
-            with open(image_path, "wb") as f:
-                f.write(response.content)
-            logger.info(f"✅ Изображение сохранено: {image_path}")
-            return image_path
-        except Exception as e:
-            handle_error(logger, f"Midjourney Image Generation Error (попытка {attempt + 1}/{MAX_ATTEMPTS})", e)
-            if attempt == MAX_ATTEMPTS - 1:
-                logger.error("❌ Превышено максимальное количество попыток генерации Midjourney.")
+            else:
+                logger.error("Превышено количество попыток Midjourney")
                 return None
     return None
 
+def remove_midjourney_results(b2_client):
+    remote_config = "config/config_public.json"
+    try:
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        if "midjourney_results" in config_data:
+            del config_data["midjourney_results"]
+            updated_config = json.dumps(config_data, ensure_ascii=False).encode('utf-8')
+            b2_client.put_object(Bucket=B2_BUCKET_NAME, Key=remote_config, Body=updated_config)
+            logger.info("Ключ midjourney_results удалён из config_public.json")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении midjourney_results: {e}")
 
 def generate_image_with_dalle(prompt, generation_id):
     """Генерирует изображение через DALL·E 3 с повторными попытками."""
@@ -278,7 +301,6 @@ def generate_image_with_dalle(prompt, generation_id):
 
 
 def generate_image(prompt, generation_id):
-    """Выбирает генератор изображений с приоритетом Midjourney."""
     if MIDJOURNEY_ENABLED:
         logger.info("🎨 Используем Midjourney для генерации изображения")
         return generate_image_with_midjourney(prompt, generation_id)
@@ -287,7 +309,6 @@ def generate_image(prompt, generation_id):
         return generate_image_with_dalle(prompt, generation_id)
     else:
         raise ValueError("Ни Midjourney, ни DALL·E 3 не включены в конфиге")
-
 
 def resize_existing_image(image_path):
     """Изменяет размер изображения до 1280x768."""
@@ -396,16 +417,7 @@ def main():
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
 
-        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
-            config_public = json.load(file)
-
-        if "empty" in config_public and config_public["empty"]:
-            target_folder = config_public["empty"][0]
-            logger.info(f"🎯 Выбрана папка: {target_folder}")
-        else:
-            raise ValueError("Список 'empty' пуст или отсутствует")
-
+        # Загружаем generated_content.json для получения first_frame_description
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
         topic_data = generated_content.get("topic", "")
@@ -417,20 +429,54 @@ def main():
             raise ValueError("Тема или текст поста пусты!")
         logger.info(f"📝 Тема: {topic[:100]}...")
 
-        script_text, first_frame_description = generate_script_and_frame(topic)
-        if not script_text or not first_frame_description:
-            raise ValueError("Не удалось сгенерировать сценарий или описание")
+        # Извлекаем first_frame_description или генерируем, если его нет
+        first_frame_description = generated_content.get("first_frame_description", "")
+        if not first_frame_description:
+            script_text, first_frame_description = generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                raise ValueError("Не удалось сгенерировать сценарий или описание")
+            generated_content["script"] = script_text
+            generated_content["first_frame_description"] = first_frame_description
+            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(generated_content, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
 
-        generated_content["script"] = script_text
-        generated_content["first_frame_description"] = first_frame_description
-        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-            json.dump(generated_content, f, ensure_ascii=False, indent=4)
-        logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
+        # Проверка midjourney_results
+        midjourney_results = check_midjourney_results(b2_client)
+        if midjourney_results:
+            image_urls = midjourney_results["image_urls"]
+            best_image_url = select_best_image(b2_client, image_urls, first_frame_description)
+            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+            response = requests.get(best_image_url, stream=True)
+            response.raise_for_status()
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
+            remove_midjourney_results(b2_client)  # Удаление ключа
+        else:
+            download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+            with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+                config_public = json.load(file)
 
-        image_path = generate_image(first_frame_description, generation_id)
-        if not image_path:
-            raise ValueError("Не удалось сгенерировать изображение")
+            if "empty" in config_public and config_public["empty"]:
+                target_folder = config_public["empty"][0]
+                logger.info(f"🎯 Выбрана папка: {target_folder}")
+            else:
+                raise ValueError("Список 'empty' пуст или отсутствует")
 
+            script_text, first_frame_description = generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                raise ValueError("Не удалось сгенерировать сценарий или описание")
+
+            generated_content["script"] = script_text
+            generated_content["first_frame_description"] = first_frame_description
+            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(generated_content, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
+
+            image_path = generate_image(first_frame_description, generation_id)  # Запрос к Midjourney с завершением
+
+        # Продолжение старой логики с image_path
         if not resize_existing_image(image_path):
             raise ValueError("Не удалось изменить размер изображения")
 
@@ -459,7 +505,6 @@ def main():
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
 
 if __name__ == "__main__":
     try:

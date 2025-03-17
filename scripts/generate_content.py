@@ -10,6 +10,7 @@ import subprocess
 import boto3
 import io
 import random
+
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
 from modules.error_handler import handle_error
@@ -18,11 +19,12 @@ from modules.utils import ensure_directory_exists
 from PIL import Image, ImageDraw
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
-
 logger = get_logger("generate_content")
 config = ConfigManager()
 
-logger = get_logger("generate_media_launcher")
+B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
+FAILSAFE_PATH = "config/FailSafeVault.json"
+TRACKER_PATH = "data/topics_tracker.json"
 
 def create_and_upload_image(folder, generation_id):
     """Создает имитацию изображения и загружает его в ту же папку в B2."""
@@ -164,38 +166,55 @@ class ContentGenerator:
         except Exception as e:
             handle_error("Clear Content Error", str(e), e)
 
-    def generate_topic(self):
-        if not self.config.get('CONTENT.topic.enabled', True):
-            logger.info("🔕 Генерация темы отключена.")
-            return "", {}
+    def generate_topic(self, tracker):
+        valid_focuses = self.get_valid_focus_areas(tracker)
+        if not valid_focuses:
+            self.logger.error("❌ Нет доступных фокусов")
+            raise ValueError("Все фокусы использованы")
+        selected_focus = random.choice(valid_focuses)
+        used_labels = tracker["focus_data"].get(selected_focus, [])
+        prompt = self.config["CONTENT"]["topic"]["prompt_template"].format(
+            focus_areas=selected_focus,
+            exclusions=", ".join(used_labels)
+        )
+        topic_response = self.request_openai(prompt)
         try:
-            focus_areas = self.config.get("CONTENT.topic.focus_areas", [])
-            if not focus_areas:
-                logger.error("❌ Список focus_areas пуст!")
-                raise ValueError("focus_areas не задан в конфигурации.")
-            selected_focus = random.choice(focus_areas)
-            prompt_template = self.config.get('CONTENT.topic.prompt_template')
-            # Предполагаем, что exclusions может быть в конфиге или пустым списком
-            exclusions = self.config.get('CONTENT.topic.exclusions', [])
-            prompt = prompt_template.format(focus_areas=selected_focus, exclusions=', '.join(exclusions))
-            logger.info(f"🔄 Запрос к OpenAI для генерации темы с фокусом: {selected_focus}")
-            topic_response = self.request_openai(prompt)
-            # Ожидаем JSON-формат из логов
-            try:
-                topic_data = json.loads(topic_response)
-                topic = topic_data.get("full_topic", "")
-                short_topic = topic_data.get("short_topic", "")
-            except json.JSONDecodeError:
-                logger.warning("⚠️ OpenAI вернул не JSON, используем как строку.")
-                topic = topic_response
-            self.save_to_generated_content("topic", {"topic": topic})
-            is_tragic = selected_focus.endswith('(т)')
-            content_data = {"theme": "tragic" if is_tragic else "normal"}
-            logger.info(f"✅ Тема успешно сгенерирована: {topic}, трагическая: {is_tragic}")
-            return topic, content_data
+            topic_data = json.loads(topic_response)
+            full_topic = topic_data["full_topic"]
+            short_topic = topic_data["short_topic"]
+        except json.JSONDecodeError:
+            self.logger.error("❌ OpenAI вернул не JSON")
+            raise ValueError("Ошибка формата ответа OpenAI")
+        self.update_tracker(selected_focus, short_topic)
+        self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
+        return full_topic, {"theme": "tragic" if "(т)" in selected_focus else "normal"}
+
+    def update_tracker(self, focus, short_topic):
+        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
+            tracker = json.load(f)
+        used_focuses = tracker["used_focuses"]
+        focus_data = tracker["focus_data"]
+        if focus in used_focuses:
+            used_focuses.remove(focus)
+        used_focuses.insert(0, focus)
+        if len(used_focuses) > 15:
+            used_focuses.pop()
+        focus_data.setdefault(focus, []).insert(0, short_topic)
+        if len(focus_data[focus]) > 5:
+            focus_data[focus].pop()
+        tracker["used_focuses"] = used_focuses
+        tracker["focus_data"] = focus_data
+        with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+            json.dump(tracker, f, ensure_ascii=False, indent=4)
+        self.sync_tracker_to_b2()
+
+    def sync_tracker_to_b2(self):
+        s3 = get_b2_client()
+        try:
+            s3.upload_file(TRACKER_PATH, B2_BUCKET_NAME, "data/topics_tracker.json")
+            self.logger.info("✅ topics_tracker.json синхронизирован с B2")
         except Exception as e:
-            handle_error("Topic Generation Error", str(e), e)
-            return "", {}
+            self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
 
     def request_openai(self, prompt):
         try:
@@ -213,7 +232,7 @@ class ContentGenerator:
             logger.error(f"❌ Ошибка при работе с OpenAI API: {e}")
             raise
 
-    def generate_sarcastic_comment(self, text, content_data={}):
+    def generate_sarcasm(self, text, content_data={}):
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.comment_enabled', True):
             self.logger.info("🔕 Генерация саркастического комментария отключена.")
             return ""
@@ -240,7 +259,7 @@ class ContentGenerator:
             self.logger.error(f"❌ Ошибка генерации саркастического комментария: {e}")
             return ""
 
-    def generate_interactive_poll(self, text, content_data={}):
+    def generate_sarcasm_poll(self, text, content_data={}):
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.poll_enabled', True):
             self.logger.info("🔕 Генерация саркастического опроса отключена.")
             return {}
@@ -357,7 +376,8 @@ class ContentGenerator:
                 self.logger.info(f"✅ Загрузили {len(successful_topics)} успешных тем из архива.")
             else:
                 self.logger.warning("⚠️ Папка архива не найдена.")
-            valid_focus_areas = self.get_valid_focus_areas()
+            tracker = self.load_tracker()
+            valid_focus_areas = self.get_valid_focus_areas(tracker)
             combined_topics = list(set(positive_feedback_topics + successful_topics + valid_focus_areas))
             self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
             return combined_topics
@@ -365,22 +385,12 @@ class ContentGenerator:
             handle_error("Topic Analysis Error", str(e), e)
             return []
 
-    def get_valid_focus_areas(self):
-        try:
-            tracker_file = self.config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
-            focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
-            if os.path.exists(tracker_file):
-                with open(tracker_file, 'r', encoding='utf-8') as file:
-                    focus_tracker = json.load(file)
-                excluded_foci = focus_tracker[:10]
-            else:
-                excluded_foci = []
-            valid_focus_areas = [focus for focus in focus_areas if focus not in excluded_foci]
-            self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
-            return valid_focus_areas
-        except Exception as e:
-            handle_error("Focus Area Filtering Error", str(e), e)
-            return []
+    def get_valid_focus_areas(self, tracker):
+        all_focuses = tracker["all_focuses"]
+        used_focuses = tracker["used_focuses"]
+        valid_focuses = [f for f in all_focuses if f not in used_focuses]
+        self.logger.info(f"✅ Доступные фокусы: {valid_focuses}")
+        return valid_focuses
 
     def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
         try:
@@ -415,6 +425,45 @@ class ContentGenerator:
             handle_error("Focus Prioritization Error", str(e), e)
             return None
 
+    def load_tracker(self):
+        os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
+        s3 = get_b2_client()
+        tracker_updated = False
+        try:
+            s3.download_file(B2_BUCKET_NAME, "data/topics_tracker.json", TRACKER_PATH)
+            self.logger.info("✅ Загружен topics_tracker.json из B2")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
+            if not os.path.exists(TRACKER_PATH):
+                self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
+                with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
+                    failsafe = json.load(f)
+                tracker = {
+                    "all_focuses": failsafe["focuses"],
+                    "used_focuses": [],
+                    "focus_data": {}
+                }
+                with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(tracker, f, ensure_ascii=False, indent=4)
+                tracker_updated = True
+        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
+            tracker = json.load(f)
+        # Проверка и обновление структуры
+        if "all_focuses" not in tracker:
+            self.logger.info("Обновляем старый трекер: добавляем all_focuses")
+            with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
+                failsafe = json.load(f)
+            tracker["all_focuses"] = failsafe["focuses"]
+            # Сохраняем существующие данные
+            tracker.setdefault("used_focuses", [])
+            tracker.setdefault("focus_data", {})
+            with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+                json.dump(tracker, f, ensure_ascii=False, indent=4)
+            tracker_updated = True
+        if tracker_updated:
+            self.sync_tracker_to_b2()
+        return tracker
+
     def run(self):
         """Основной процесс генерации контента."""
         try:
@@ -430,13 +479,8 @@ class ContentGenerator:
                 return
             self.adapt_prompts()
             self.clear_generated_content()
-            valid_topics = self.analyze_topic_generation()
-            chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
-            if chosen_focus:
-                self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
-            else:
-                self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
-            topic, content_data = self.generate_topic()
+            tracker = self.load_tracker()  # Загрузка трекера для защиты от повторов
+            topic, content_data = self.generate_topic(tracker)  # Передаём трекер
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
                 sys.exit(1)
@@ -454,8 +498,8 @@ class ContentGenerator:
                 text_initial = ""
                 logger.info("🔕 Генерация текста отключена.")
             if text_initial:
-                sarcastic_comment = self.generate_sarcastic_comment(text_initial, content_data)
-                sarcastic_poll = self.generate_interactive_poll(text_initial, content_data)
+                sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
+                sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
                 self.save_to_generated_content("sarcasm", {
                     "comment": sarcastic_comment,
                     "poll": sarcastic_poll

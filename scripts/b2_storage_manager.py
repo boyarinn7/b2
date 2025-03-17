@@ -225,21 +225,20 @@ def handle_publish(s3, config_data):
     else:
         logger.warning("⚠️ Не удалось заархивировать ни одну группу.")
 
+def check_midjourney_results(b2_client):
+    remote_config = "config/config_public.json"
+    try:
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        return config_data.get("midjourney_results", None)
+    except Exception as e:
+        logger.error(f"Ошибка при проверке midjourney_results: {e}")
+        return None
+
 
 def main():
     """
     Основной процесс управления B2-хранилищем с лимитом генераций.
-
-    Логика:
-      1. При запуске считывается config_public.json из B2.
-      2. Если отсутствует и запись generation_id, и пустые папки – скрипт завершает работу.
-      3. Если есть запись generation_id – архивируются соответствующие группы файлов.
-      4. Затем выполняется перемещение готовых групп файлов:
-         из 666/ в 555/, из 555/ в 444/.
-      5. После перемещений обновляется конфигурация пустых папок.
-      6. Если обнаружены пустые папки и лимит генераций (3) не достигнут,
-         запускается генерация контента (generate_content.py).
-      7. Скрипт использует блокировку (processing_lock) для предотвращения параллельного запуска.
     """
     b2_client = None
     generation_count = 0  # Счётчик генераций за один запуск
@@ -247,6 +246,13 @@ def main():
 
     try:
         b2_client = get_b2_client()
+        # Проверка наличия midjourney_results
+        midjourney_results = check_midjourney_results(b2_client)
+        if midjourney_results:
+            logger.info("Найден midjourney_results, запускаем generate_media.py")
+            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_media.py")], check=True)
+            return
+
         config_public = load_config_public(b2_client)
 
         if not config_public.get("generation_id") and not config_public.get("empty"):
