@@ -16,6 +16,7 @@ from modules.config_manager import ConfigManager
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
+SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
 
 # === Константы из конфигурации ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
