@@ -226,6 +226,15 @@ def handle_publish(s3, config_data):
     else:
         logger.warning("⚠️ Не удалось заархивировать ни одну группу.")
 
+def is_valid_midjourney_results(midjourney_results):
+    if not midjourney_results or not isinstance(midjourney_results, dict):
+        return False
+    task_id = midjourney_results.get("task_id", "")
+    image_urls = midjourney_results.get("image_urls", [])
+    if not task_id or not isinstance(image_urls, list) or len(image_urls) == 0:
+        return False
+    return any(url.startswith("http://") or url.startswith("https://") for url in image_urls)
+
 def check_midjourney_results(b2_client):
     remote_config = "config/config_public.json"
     try:
@@ -236,70 +245,69 @@ def check_midjourney_results(b2_client):
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
         return None
 
+def update_config_public(b2_client, updates):
+    remote_config = "config/config_public.json"
+    config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+    config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+    config_data.update(updates)
+    b2_client.put_object(Bucket=B2_BUCKET_NAME, Key=remote_config, Body=json.dumps(config_data, ensure_ascii=False).encode('utf-8'))
+
 
 def main():
-    """
-    Основной процесс управления B2-хранилищем с лимитом генераций.
-    """
-    b2_client = None
-    generation_count = 0  # Счётчик генераций за один запуск
-    MAX_GENERATIONS = 3   # Максимум генераций
+    config = ConfigManager()
+    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+    b2_client = get_b2_client()
+    if not b2_client:
+        logger.error("❌ Не удалось создать клиент B2")
+        return
 
+    # Загружаем текущую конфигурацию
+    remote_config = "config/config_public.json"
     try:
-        b2_client = get_b2_client()
-        # Проверка наличия midjourney_results
-        midjourney_results = check_midjourney_results(b2_client)
-        if midjourney_results:
-            logger.info("Найден midjourney_results, запускаем generate_media.py")
-            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_media.py")], check=True)
-            return
-
-        config_public = load_config_public(b2_client)
-
-        if not config_public.get("generation_id") and not config_public.get("empty"):
-            logger.info("🚦 Нет записей о публикациях и пустых папок. Скрипт завершает работу.")
-            return
-
-        if config_public.get("processing_lock"):
-            logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
-            return
-
-        config_public["processing_lock"] = True
-        save_config_public(b2_client, config_public)
-        logger.info("🔒 Блокировка установлена.")
-
-        config_public = load_config_public(b2_client)
-        if config_public.get("generation_id"):
-            handle_publish(b2_client, config_public)
-
-        process_folders(b2_client, FOLDERS)
-
-        config_public = load_config_public(b2_client)
-        while config_public.get("empty") and generation_count < MAX_GENERATIONS:
-            logger.info(f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
-            subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-            generation_count += 1
-            config_public = load_config_public(b2_client)  # Обновляем состояние после генерации
-            logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
-
-        if generation_count >= MAX_GENERATIONS:
-            logger.info(f"🚫 Достигнут лимит генераций ({MAX_GENERATIONS}). Завершаем работу, даже если остались пустые папки: {config_public.get('empty', [])}")
-        elif not config_public.get("empty"):
-            logger.info("✅ Нет пустых папок – генерация контента завершена.")
-
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_public = json.loads(config_obj['Body'].read().decode('utf-8'))
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-    finally:
-        # Снимаем блокировку независимо от результатов
-        if b2_client:
-            try:
-                config_public = load_config_public(b2_client)
-                if config_public.get("processing_lock"):
-                    config_public["processing_lock"] = False
-                    save_config_public(b2_client, config_public)
-                    logger.info("🔓 Блокировка снята.")
-            except Exception as e:
-                logger.error(f"❌ Ошибка при завершении работы: {e}")
+        logger.error(f"❌ Ошибка загрузки config_public.json: {e}")
+        return
+
+    # Проверка processing_lock
+    if config_public.get("processing_lock", False):
+        logger.info("🔒 Процесс заблокирован, ожидание...")
+        return
+
+    # Проверка midjourney_results
+    midjourney_results = check_midjourney_results(b2_client)
+    if midjourney_results and is_valid_midjourney_results(midjourney_results):
+        logger.info("✅ Валидные midjourney_results, сценарий: midjourney")
+        update_config_public(b2_client, {"scenario": "midjourney"})
+        subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_media.py")], check=True)
+        return  # Завершаем, так как обработка Midjourney передана generate_media.py
+
+    # Если Midjourney отсутствует или некорректен, переходим к legacy
+    logger.info("ℹ️ Midjourney_results отсутствует или некорректно, переход на legacy")
+    update_config_public(b2_client, {"midjourney_results": None, "scenario": "legacy"})
+
+    # Проверка generation_id для архивации
+    generation_id = config_public.get("generation_id", "")
+    if generation_id:
+        handle_publish(b2_client, generation_id)
+        update_config_public(b2_client, {"generation_id": ""})
+
+    # Управление папками
+    process_folders(b2_client)
+
+    # Проверка лимита генераций и запуск generate_content.py
+    generation_limit = config.get("GENERATE.max_attempts", 1)
+    empty_folders = config_public.get("empty", [])
+    if "666/" in empty_folders and generation_limit > 0:
+        logger.info(f"📝 Генерация нового контента, лимит: {generation_limit}")
+        subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_content.py")], check=True)
+        update_config_public(b2_client, {"processing_lock": True})
+    else:
+        logger.info("ℹ️ Нет пустых папок 666/ или лимит генераций исчерпан")
+
+    # Сброс блокировки (если требуется в конце)
+    reset_processing_lock(b2_client)
 
 if __name__ == "__main__":
     main()
