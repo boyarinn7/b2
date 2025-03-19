@@ -17,6 +17,7 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 
+
 # === Инициализация конфигурации и логгера ===
 config = ConfigManager()
 logger = get_logger("generate_media")
@@ -139,19 +140,26 @@ def select_best_image(b2_client, image_urls, prompt):
 
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
-    """Создаёт и возвращает клиент B2 (S3) на основе настроек из конфига."""
+    endpoint = os.getenv("B2_ENDPOINT")
+    access_key = os.getenv("B2_ACCESS_KEY")
+    secret_key = os.getenv("B2_SECRET_KEY")
+
+    if not all([endpoint, access_key, secret_key]):
+        logger.error("❌ Не заданы все переменные окружения для B2: endpoint, access_key, secret_key")
+        return None
+
     try:
         client = boto3.client(
             's3',
-            endpoint_url=B2_ENDPOINT,
-            aws_access_key_id=B2_ACCESS_KEY,
-            aws_secret_access_key=B2_SECRET_KEY
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
         )
+        logger.info("✅ Клиент B2 успешно создан")
         return client
     except Exception as e:
-        handle_error(logger, "B2 Client Initialization Error", e)
+        handle_error("B2 Client Initialization Error", str(e), e)
         return None
-
 
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3) в локальное хранилище."""
@@ -502,7 +510,7 @@ def main():
 
     # Запуск следующего шага
     subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")], check=True)
-    
+
 if __name__ == "__main__":
     try:
         main()

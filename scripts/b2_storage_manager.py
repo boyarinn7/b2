@@ -254,8 +254,7 @@ def update_config_public(b2_client, updates):
 
 
 def main():
-    config = ConfigManager()
-    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+    
     b2_client = get_b2_client()
     if not b2_client:
         logger.error("❌ Не удалось создать клиент B2")

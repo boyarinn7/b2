@@ -2,17 +2,17 @@
 import b2sdk.v2
 import boto3
 import openai
+import os
+
 from runwayml import RunwayML
 from modules.config_manager import ConfigManager  # Исправлен импорт
 from modules.error_handler import handle_error  # Исправлен импорт
+from modules.logger import get_logger
+
+logger = get_logger("api_clients")
 
 # === Инициализация ConfigManager ===
 config = ConfigManager()
-
-
-
-import os
-import b2sdk.v2
 
 
 # === OpenAI Client ===
@@ -43,12 +43,24 @@ def get_b2_client():
     """
     Возвращает клиент Backblaze B2 с установленными учетными данными.
     """
+    def get_b2_client():
+    endpoint = os.getenv("B2_ENDPOINT")
+    access_key = os.getenv("B2_ACCESS_KEY")
+    secret_key = os.getenv("B2_SECRET_KEY")
+    
+    if not all([endpoint, access_key, secret_key]):
+        logger.error("❌ Не заданы все переменные окружения для B2: endpoint, access_key, secret_key")
+        return None
+    
     try:
-        return boto3.client(
+        client = boto3.client(
             's3',
-            endpoint_url=config.get('API_KEYS.b2.endpoint'),
-            aws_access_key_id=config.get('API_KEYS.b2.access_key'),
-            aws_secret_access_key=config.get('API_KEYS.b2.secret_key')
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
         )
+        logger.info("✅ Клиент B2 успешно создан")
+        return client
     except Exception as e:
-        handle_error("Backblaze B2 Client Error", e)
+        handle_error("B2 Client Initialization Error", str(e), e)
+        return None
