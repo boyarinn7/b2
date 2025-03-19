@@ -17,6 +17,7 @@ from modules.error_handler import handle_error
 from datetime import datetime
 from modules.utils import ensure_directory_exists
 from PIL import Image, ImageDraw
+from modules.api_clients import get_b2_client
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
 logger = get_logger("generate_content")
@@ -26,36 +27,6 @@ B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
 FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
 
-def create_and_upload_image(folder, generation_id):
-    """Создает имитацию изображения и загружает его в ту же папку в B2."""
-    try:
-        file_name = generation_id.replace(".json", ".png")
-        local_file_path = file_name
-        img = Image.new('RGB', (800, 600), color=(73, 109, 137))
-        draw = ImageDraw.Draw(img)
-        draw.text((10, 10), f"ID: {generation_id}", fill=(255, 255, 0))
-        img.save(local_file_path)
-        logger.info(f"✅ Изображение '{local_file_path}' успешно создано.")
-        s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
-        s3_key = f"{folder.rstrip('/')}/{file_name}"
-        s3.upload_file(local_file_path, bucket_name, s3_key)
-        logger.info(f"✅ Изображение успешно загружено в B2: {s3_key}")
-        os.remove(local_file_path)
-    except Exception as e:
-        handle_error("Image Upload Error", str(e), e)
-
-def get_b2_client():
-    """Создает клиент для работы с Backblaze B2."""
-    try:
-        return boto3.client(
-            's3',
-            endpoint_url=config.get("API_KEYS.b2.endpoint"),
-            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
-            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
-        )
-    except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e), e)
 
 def download_config_public():
     """Загружает файл config_public.json из B2 в локальное хранилище."""
@@ -88,13 +59,14 @@ def save_generation_id_to_config(file_id):
         handle_error("Save Generation ID Error", str(e), e)
 
 def save_to_b2(folder, content):
-    """Сохраняет контент в B2 без двойного кодирования JSON."""
     try:
         file_id = generate_file_id()
         save_generation_id_to_config(file_id)
         logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
         s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
+        bucket_name = os.getenv("B2_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         s3_key = f"{folder.rstrip('/')}/{file_id}"
         if not isinstance(content, dict):
             logger.error("❌ Ошибка: Контент должен быть словарём!")
@@ -210,8 +182,11 @@ class ContentGenerator:
 
     def sync_tracker_to_b2(self):
         s3 = get_b2_client()
+        bucket_name = os.getenv("B2_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         try:
-            s3.upload_file(TRACKER_PATH, B2_BUCKET_NAME, "data/topics_tracker.json")
+            s3.upload_file(TRACKER_PATH, bucket_name, "data/topics_tracker.json")
             self.logger.info("✅ topics_tracker.json синхронизирован с B2")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
@@ -518,7 +493,7 @@ class ContentGenerator:
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
-            create_and_upload_image(target_folder, generation_id)
+            # Удалён вызов create_and_upload_image
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
             run_generate_media()  # Выполняется, но не прерывает процесс при ошибке

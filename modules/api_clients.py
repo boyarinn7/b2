@@ -41,16 +41,17 @@ def get_runwayml_client():
 # === B2 Client ===
 def get_b2_client():
     """
-    Возвращает клиент Backblaze B2 с установленными учетными данными.
+    Возвращает клиент Backblaze B2, используя только переменные окружения из секретов GitHub.
     """
-    def get_b2_client():
     endpoint = os.getenv("B2_ENDPOINT")
     access_key = os.getenv("B2_ACCESS_KEY")
     secret_key = os.getenv("B2_SECRET_KEY")
     
     if not all([endpoint, access_key, secret_key]):
-        logger.error("❌ Не заданы все переменные окружения для B2: endpoint, access_key, secret_key")
-        return None
+        missing_vars = [var for var, val in [("B2_ENDPOINT", endpoint), ("B2_ACCESS_KEY", access_key), ("B2_SECRET_KEY", secret_key)] if not val]
+        error_msg = f"❌ Не заданы обязательные переменные окружения для B2: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     
     try:
         client = boto3.client(

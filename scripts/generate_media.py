@@ -9,24 +9,18 @@ import base64
 import time
 import re
 
-from PIL import Image, ImageDraw
+from PIL import Image
 from runwayml import RunwayML
 from moviepy.editor import ImageClip, concatenate_videoclips
 from modules.utils import ensure_directory_exists
 from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
-
+from modules.api_clients import get_b2_client
 
 # === Инициализация конфигурации и логгера ===
 config = ConfigManager()
 logger = get_logger("generate_media")
-
-# === Загрузка всех настроек из конфига ===
-B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name')
-B2_ENDPOINT = config.get('API_KEYS.b2.endpoint')
-B2_ACCESS_KEY = config.get('API_KEYS.b2.access_key')
-B2_SECRET_KEY = config.get('API_KEYS.b2.secret_key')
 
 # Пути к файлам
 CONFIG_GEN_PATH = os.path.abspath(config.get("FILE_PATHS.config_gen", "config/config_gen.json"))
@@ -50,8 +44,8 @@ MIDJOURNEY_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
 MIDJOURNEY_TASK_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
 IMAGE_SELECTION_CRITERIA = config.get("VISUAL_ANALYSIS.image_selection_criteria", [])
 MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)  # Новый параметр из конфига
+
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
-RUNWAY_ENABLED = config.get("VIDEO_GENERATION.runway_enabled", True)
 
 # Установка ключей API из переменных окружения (секреты GitHub)
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -62,30 +56,18 @@ if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
     raise ValueError("API-ключ Midjourney не найден в переменной окружения MIDJOURNEY_API_KEY")
 
 
-def create_mock_image(generation_id):
-    # Создаем простое изображение 1792x1024 с текстом generation_id
-    width, height = 1792, 1024
-    image = Image.new("RGB", (width, height), color="gray")
-    draw = ImageDraw.Draw(image)
-    draw.text((width // 2 - 50, height // 2), f"Mock: {generation_id}", fill="white")
-
-    # Сохраняем как PNG
-    image_path = f"{generation_id}.png"
-    image.save(image_path, "PNG")
-    logger.info(f"📷 Создано заглушка-изображение: {image_path}")
-    return image_path
-
-
 def check_midjourney_results(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_config = "config/config_public.json"
     try:
-        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
         return config_data.get("midjourney_results", None)
     except Exception as e:
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
         return None
-
 
 def select_best_image(b2_client, image_urls, prompt):
     global config  # Предполагается, что config уже инициализирован через ConfigManager
@@ -138,49 +120,32 @@ def select_best_image(b2_client, image_urls, prompt):
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]  # Возвращаем первую картинку как запасной вариант
 
-# === Функции работы с Backblaze B2 ===
-def get_b2_client():
-    endpoint = os.getenv("B2_ENDPOINT")
-    access_key = os.getenv("B2_ACCESS_KEY")
-    secret_key = os.getenv("B2_SECRET_KEY")
 
-    if not all([endpoint, access_key, secret_key]):
-        logger.error("❌ Не заданы все переменные окружения для B2: endpoint, access_key, secret_key")
-        return None
-
-    try:
-        client = boto3.client(
-            's3',
-            endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key
-        )
-        logger.info("✅ Клиент B2 успешно создан")
-        return client
-    except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e), e)
-        return None
 
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3) в локальное хранилище."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         logger.info(f"🔄 Загрузка файла из B2: {remote_path} -> {local_path}")
         ensure_directory_exists(os.path.dirname(local_path))
-        client.download_file(B2_BUCKET_NAME, remote_path, local_path)
+        client.download_file(bucket_name, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
     except Exception as e:
         handle_error(logger, "B2 Download Error", e)
 
-
 def upload_to_b2(client, folder, file_path):
-    """Загружает локальный файл в указанную папку B2 и удаляет локальную копию."""
     try:
+        bucket_name = os.getenv("B2_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         file_name = os.path.basename(file_path)
         if not folder.endswith('/'):
             folder += '/'
         s3_key = f"{folder}{file_name}"
         logger.info(f"🔄 Загрузка файла в B2: {file_path} -> {s3_key}")
-        client.upload_file(file_path, B2_BUCKET_NAME, s3_key)
+        client.upload_file(file_path, bucket_name, s3_key)
         logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
         os.remove(file_path)
         logger.info(f"🗑️ Локальный файл {file_path} удалён после загрузки.")
@@ -190,6 +155,9 @@ def upload_to_b2(client, folder, file_path):
 
 def update_config_public(client, folder):
     """Обновляет config_public.json: удаляет папку из списка 'empty'."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         logger.info(f"🔄 Обновление config_public.json: удаление {folder} из списка 'empty'")
         download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
@@ -199,15 +167,17 @@ def update_config_public(client, folder):
             config_public["empty"].remove(folder)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
         logger.info("✅ config_public.json обновлён и загружен обратно в B2.")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
         handle_error(logger, "Config Public Update Error", e)
 
-
 def reset_processing_lock(client):
     """Сбрасывает флаг processing_lock в config_public.json."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         logger.info("🔄 Сброс processing_lock в config_public.json")
         download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
@@ -217,11 +187,10 @@ def reset_processing_lock(client):
             config_public["processing_lock"] = False
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
         handle_error(logger, "Processing Lock Reset Error", e)
-
 
 # === Функции генерации сценария и видео ===
 def generate_script_and_frame(topic):
@@ -283,14 +252,17 @@ def generate_image_with_midjourney(prompt, generation_id):
     return None
 
 def remove_midjourney_results(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_config = "config/config_public.json"
     try:
-        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
         if "midjourney_results" in config_data:
             del config_data["midjourney_results"]
             updated_config = json.dumps(config_data, ensure_ascii=False).encode('utf-8')
-            b2_client.put_object(Bucket=B2_BUCKET_NAME, Key=remote_config, Body=updated_config)
+            b2_client.put_object(Bucket=bucket_name, Key=remote_config, Body=updated_config)
             logger.info("Ключ midjourney_results удалён из config_public.json")
     except Exception as e:
         logger.error(f"Ошибка при удалении midjourney_results: {e}")
@@ -429,87 +401,104 @@ def download_video(url, output_path):
 # === Основная функция ===
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
-    config = ConfigManager()
-    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+    try:
+        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
+            config_gen = json.load(file)
+        generation_id = config_gen["generation_id"].split('.')[0]
+        logger.info(f"📂 ID генерации: {generation_id}")
 
-    # Загрузка generation_id
-    with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
-        config_gen = json.load(file)
-    generation_id = config_gen["generation_id"].split('.')[0]
-    logger.info(f"📂 ID генерации: {generation_id}")
+        b2_client = get_b2_client()
+        if not b2_client:
+            raise Exception("Не удалось создать клиент B2")
 
-    b2_client = get_b2_client()
-    if not b2_client:
-        raise Exception("Не удалось создать клиент B2")
-
-    # Загружаем config_public.json для проверки сценария
-    config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key="config/config_public.json")
-    config_public = json.loads(config_obj['Body'].read().decode('utf-8'))
-    scenario = config_public.get("scenario", "legacy")
-    logger.info(f"ℹ️ Текущий сценарий: {scenario}")
-
-    if scenario == "midjourney":
-        midjourney_results = check_midjourney_results(b2_client)
-        if midjourney_results:
-            image_urls = midjourney_results["image_urls"]
-            best_image_url = select_best_image(b2_client, image_urls, "unknown prompt")
-            if best_image_url:
-                image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
-                response = requests.get(best_image_url, stream=True, timeout=10)
-                response.raise_for_status()
-                with open(image_path, "wb") as f:
-                    f.write(response.content)
-                logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
-                remove_midjourney_results(b2_client)
-            else:
-                logger.error("❌ Не удалось выбрать или загрузить изображение от Midjourney")
-                raise Exception("Все URL Midjourney недоступны")
-        else:
-            logger.error("❌ midjourney_results отсутствует в сценарии midjourney")
-            raise Exception("Midjourney данные недоступны")
-    else:
-        if not os.path.exists(CONTENT_OUTPUT_PATH):
-            logger.error(f"❌ Файл {CONTENT_OUTPUT_PATH} не существует")
-            raise FileNotFoundError(f"Файл {CONTENT_OUTPUT_PATH} не найден")
+        # Загружаем generated_content.json для получения first_frame_description
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
-        topic = generated_content.get("topic", "") or generated_content.get("content", "")
+        topic_data = generated_content.get("topic", "")
+        if isinstance(topic_data, dict):
+            topic = topic_data.get("topic", "")
+        else:
+            topic = topic_data or generated_content.get("content", "")
         if not topic:
-            logger.error("❌ Тема и контент отсутствуют в generated_content.json")
             raise ValueError("Тема или текст поста пусты!")
         logger.info(f"📝 Тема: {topic[:100]}...")
 
-        script, first_frame_description = generate_script_and_frame(topic)
-        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"script": script, "first_frame_description": first_frame_description, "topic": topic}, f, ensure_ascii=False)
+        # Извлекаем first_frame_description или генерируем, если его нет
+        first_frame_description = generated_content.get("first_frame_description", "")
+        if not first_frame_description:
+            script_text, first_frame_description = generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                raise ValueError("Не удалось сгенерировать сценарий или описание")
+            generated_content["script"] = script_text
+            generated_content["first_frame_description"] = first_frame_description
+            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(generated_content, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
 
-        if MIDJOURNEY_ENABLED:
-            generate_image_with_midjourney(first_frame_description, generation_id)
-            sys.exit(0)
-        elif DALLE_ENABLED:
-            image_path = generate_image_with_dalle(first_frame_description, generation_id)
+        # Проверка midjourney_results
+        midjourney_results = check_midjourney_results(b2_client)
+        if midjourney_results:
+            image_urls = midjourney_results["image_urls"]
+            best_image_url = select_best_image(b2_client, image_urls, first_frame_description)
+            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+            response = requests.get(best_image_url, stream=True)
+            response.raise_for_status()
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
+            remove_midjourney_results(b2_client)  # Удаление ключа
         else:
-            image_path = create_mock_image(generation_id)
+            download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+            with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+                config_public = json.load(file)
 
-    # Обработка изображения и генерация видео
-    resized_image_path = image_path
-    if not resize_existing_image(image_path):
-        logger.error("❌ Не удалось изменить размер изображения")
-        raise Exception("Ошибка обработки изображения")
-    cleaned_script = clean_script_text(script)
-    video_path = generate_runway_video(cleaned_script, resized_image_path) if RUNWAY_ENABLED else create_mock_video(resized_image_path, f"{generation_id}.mp4")
+            if "empty" in config_public and config_public["empty"]:
+                target_folder = config_public["empty"][0]
+                logger.info(f"🎯 Выбрана папка: {target_folder}")
+            else:
+                raise ValueError("Список 'empty' пуст или отсутствует")
 
-    # Загрузка в B2
-    target_folder = config_public["empty"][0] if config_public.get("empty") else "666/"
-    upload_to_b2(b2_client, target_folder, resized_image_path)
-    upload_to_b2(b2_client, target_folder, video_path)
+            script_text, first_frame_description = generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                raise ValueError("Не удалось сгенерировать сценарий или описание")
 
-    # Обновление конфигурации
-    update_config_public(b2_client, {"empty": [f for f in config_public.get("empty", []) if f != target_folder]})
-    reset_processing_lock(b2_client)
+            generated_content["script"] = script_text
+            generated_content["first_frame_description"] = first_frame_description
+            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(generated_content, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
 
-    # Запуск следующего шага
-    subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")], check=True)
+            image_path = generate_image(first_frame_description, generation_id)  # Запрос к Midjourney с завершением
+
+        # Продолжение старой логики с image_path
+        if not resize_existing_image(image_path):
+            raise ValueError("Не удалось изменить размер изображения")
+
+        cleaned_script = clean_script_text(script_text)
+        video_result = generate_runway_video(image_path, cleaned_script)
+        video_path = None
+        if video_result:
+            if video_result.startswith("http"):
+                video_path = f"{generation_id}.mp4"
+                if not download_video(video_result, video_path):
+                    logger.warning("❌ Не удалось скачать видео")
+            else:
+                video_path = video_result
+                logger.info(f"🔄 Используем имитацию видео: {video_path}")
+
+        upload_to_b2(b2_client, target_folder, image_path)
+        if video_path and os.path.exists(video_path):
+            upload_to_b2(b2_client, target_folder, video_path)
+
+        update_config_public(b2_client, target_folder)
+        reset_processing_lock(b2_client)
+
+        logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
+        subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
+
+    except Exception as e:
+        handle_error(logger, "Ошибка в процессе генерации", e)
+        raise
 
 if __name__ == "__main__":
     try:

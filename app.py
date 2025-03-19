@@ -10,7 +10,9 @@ app = Flask(__name__)
 # Переменные окружения
 B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
-B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME", "boyarinnbotbucket")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
+if not B2_BUCKET_NAME:
+    raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")
