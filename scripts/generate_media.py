@@ -428,64 +428,75 @@ def main():
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
 
-        # Загружаем generated_content.json для получения first_frame_description
+        # Загружаем generated_content.json сразу
+        if not os.path.exists(CONTENT_OUTPUT_PATH):
+            logger.warning("⚠️ generated_content.json отсутствует, запускаем генерацию")
+            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_content.py")], check=True)
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
+
+        # Извлекаем topic
         topic_data = generated_content.get("topic", "")
         if isinstance(topic_data, dict):
-            topic = topic_data.get("topic", "")
+            topic = topic_data.get("full_topic", "")
         else:
             topic = topic_data or generated_content.get("content", "")
         if not topic:
-            raise ValueError("Тема или текст поста пусты!")
+            logger.warning("⚠️ Тема отсутствует, запускаем generate_content.py")
+            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_content.py")], check=True)
+            with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
+                generated_content = json.load(f)
+            topic_data = generated_content.get("topic", "")
+            topic = topic_data.get("full_topic", "") if isinstance(topic_data, dict) else topic_data
+            if not topic:
+                raise ValueError("Тема или текст поста пусты после генерации!")
         logger.info(f"📝 Тема: {topic[:100]}...")
 
-        # Извлекаем first_frame_description или генерируем, если его нет
-        first_frame_description = generated_content.get("first_frame_description", "")
-        if not first_frame_description:
-            script_text, first_frame_description = generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
-            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-                json.dump(generated_content, f, ensure_ascii=False, indent=4)
-            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
-
-        # Проверка midjourney_results
         midjourney_results = check_midjourney_results(b2_client)
         if midjourney_results:
-            image_urls = midjourney_results["image_urls"]
-            best_image_url = select_best_image(b2_client, image_urls, first_frame_description)
-            image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
-            response = requests.get(best_image_url, stream=True)
-            response.raise_for_status()
-            with open(image_path, "wb") as f:
-                f.write(response.content)
-            logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
-            remove_midjourney_results(b2_client)  # Удаление ключа
-        else:
-            download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-            with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
-                config_public = json.load(file)
-
-            if "empty" in config_public and config_public["empty"]:
-                target_folder = config_public["empty"][0]
-                logger.info(f"🎯 Выбрана папка: {target_folder}")
+            image_urls = midjourney_results.get("image_urls", [])
+            # Проверка валидности URL
+            if not image_urls or not all(isinstance(url, str) and url.startswith("http") for url in image_urls):
+                logger.warning("⚠️ Некорректные URL в midjourney_results, очищаем ключ")
+                remove_midjourney_results(b2_client)
             else:
-                raise ValueError("Список 'empty' пуст или отсутствует")
+                best_image_url = select_best_image(b2_client, image_urls,
+                                                   generated_content.get("first_frame_description", ""))
+                image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
+                response = requests.get(best_image_url, stream=True)
+                response.raise_for_status()
+                with open(image_path, "wb") as f:
+                    f.write(response.content)
+                logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
+                remove_midjourney_results(b2_client)  # Очистка после использования
+                if not resize_existing_image(image_path):
+                    raise ValueError("Не удалось изменить размер изображения")
+                return
 
-            script_text, first_frame_description = generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
+        # Если midjourney_results нет, генерируем сценарий и изображение
+        script_text, first_frame_description = generate_script_and_frame(topic)
+        if not script_text or not first_frame_description:
+            raise ValueError("Не удалось сгенерировать сценарий или описание")
 
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
-            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-                json.dump(generated_content, f, ensure_ascii=False, indent=4)
-            logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
+        # Обновляем generated_content.json
+        generated_content["script"] = script_text
+        generated_content["first_frame_description"] = first_frame_description
+        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+            json.dump(generated_content, f, ensure_ascii=False, indent=4)
+        logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
 
-            image_path = generate_image(first_frame_description, generation_id)  # Запрос к Midjourney с завершением
+        # Генерация изображения
+        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]
+            logger.info(f"🎯 Выбрана папка: {target_folder}")
+        else:
+            raise ValueError("Список 'empty' пуст или отсутствует")
+
+        image_path = generate_image(first_frame_description, generation_id)  # Запрос к Midjourney с завершением
 
         # Продолжение старой логики с image_path
         if not resize_existing_image(image_path):
@@ -516,7 +527,7 @@ def main():
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
+    
 if __name__ == "__main__":
     try:
         main()

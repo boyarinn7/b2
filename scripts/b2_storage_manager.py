@@ -17,6 +17,7 @@ from modules.config_manager import ConfigManager
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 
+
 # === Константы из конфигурации ===
 
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # Локальный путь для временной записи
@@ -226,25 +227,30 @@ def check_midjourney_results(b2_client):
         return None
 
 def main():
-    """
-    Основной процесс управления B2-хранилищем с лимитом генераций.
-    """
     b2_client = None
-    generation_count = 0  # Счётчик генераций за один запуск
-    MAX_GENERATIONS = 3   # Максимум генераций
-    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))  # Добавляем определение
+    generation_count = 0
+    MAX_GENERATIONS = 3
+    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
 
     try:
         b2_client = get_b2_client()
-        # Проверка наличия midjourney_results
         midjourney_results = check_midjourney_results(b2_client)
         if midjourney_results:
-            logger.info("Найден midjourney_results, запускаем generate_media.py")
-            generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
-            if not os.path.isfile(generate_media_path):
-                raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-            subprocess.run([sys.executable, generate_media_path], check=True)
-            return
+            image_urls = midjourney_results.get("image_urls", [])
+            # Проверка валидности: все URL должны быть строками и начинаться с http/https
+            if not image_urls or not all(isinstance(url, str) and url.startswith("http") for url in image_urls):
+                logger.warning("⚠️ Некорректные данные в midjourney_results, очищаем ключ")
+                config_public = load_config_public(b2_client)
+                if "midjourney_results" in config_public:
+                    del config_public["midjourney_results"]
+                    save_config_public(b2_client, config_public)
+            else:
+                logger.info("Найден валидный midjourney_results, запускаем generate_media.py")
+                generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                if not os.path.isfile(generate_media_path):
+                    raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+                subprocess.run([sys.executable, generate_media_path], check=True)
+                return
 
         config_public = load_config_public(b2_client)
 
