@@ -531,7 +531,7 @@ class ContentGenerator:
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
             sys.exit(1)
-            
+
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
     try:

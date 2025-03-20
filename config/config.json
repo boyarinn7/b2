@@ -5,8 +5,8 @@
             "bucket_name": "boyarinnbotbucket"
         },
         "midjourney": {
-            "endpoint": "https://api.piapi.ai/midjourney/imagine",
-            "task_endpoint": "https://api.piapi.ai/midjourney/task"
+    "endpoint": "https://api.piapi.ai/api/v1/task",
+    "task_endpoint": "https://api.piapi.ai/midjourney/task"
         },
         "openai": {
             "model": "gpt-4"
