@@ -35,10 +35,12 @@ GENERATE_CONTENT_SCRIPT = os.path.join(config.get('FILE_PATHS.scripts_folder'), 
 
 
 def load_config_public(s3):
-    """Загружает config_public.json из B2."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         local_path = CONFIG_PUBLIC_PATH
-        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
         logger.info("✅ Конфигурация успешно загружена.")
@@ -52,7 +54,6 @@ def load_config_public(s3):
     except Exception as e:
         logger.error(f"❌ Неизвестная ошибка при загрузке конфига: {e}")
         return {}
-
 
 def save_config_public(s3, data):
     try:
@@ -68,9 +69,11 @@ def save_config_public(s3, data):
 
 
 def list_files_in_folder(s3, folder_prefix):
-    """Возвращает список файлов в указанной папке (кроме placeholder)."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
-        response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=folder_prefix)
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_prefix)
         return [
             obj['Key'] for obj in response.get('Contents', [])
             if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty')
@@ -79,7 +82,6 @@ def list_files_in_folder(s3, folder_prefix):
     except ClientError as e:
         logger.error(f"Ошибка получения списка файлов: {e}")
         return []
-
 
 def get_ready_groups(files):
     """
@@ -99,38 +101,34 @@ def get_ready_groups(files):
 
 
 def move_group(s3, src_folder, dst_folder, group_id):
-    """Перемещает файлы группы (по всем расширениям) из src_folder в dst_folder."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     for ext in FILE_EXTENSIONS:
         src_key = f"{src_folder}{group_id}{ext}"
         dst_key = f"{dst_folder}{group_id}{ext}"
         try:
-            s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+            s3.head_object(Bucket=bucket_name, Key=src_key)
             s3.copy_object(
-                Bucket=B2_BUCKET_NAME,
-                CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
+                Bucket=bucket_name,
+                CopySource={"Bucket": bucket_name, "Key": src_key},
                 Key=dst_key
             )
-            s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+            s3.delete_object(Bucket=bucket_name, Key=src_key)
             logger.info(f"✅ Перемещено: {src_key} -> {dst_key}")
         except ClientError as e:
             if e.response['Error']['Code'] != "NoSuchKey":
                 logger.error(f"Ошибка перемещения {src_key}: {e}")
 
-
 def process_folders(s3, folders):
-    """
-    Перемещает готовые группы файлов между папками сверху вниз:
-    из 666/ в 555/ и из 555/ в 444/. При этом, если в исходной папке нет готовых групп,
-    папка отмечается как пустая.
-    Если папка 666/ оказывается пустой, запускается генерация контента.
-    После перемещений обновляется список пустых папок в config_public.json.
-    """
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     empty_folders = set()
     changes_made = True
 
     while changes_made:
         changes_made = False
-        # Проходим по папкам снизу вверх (индексы: [444, 555, 666])
         for i in range(len(folders) - 1, 0, -1):
             src_folder = folders[i]
             dst_folder = folders[i - 1]
@@ -138,50 +136,39 @@ def process_folders(s3, folders):
             if src_folder in empty_folders:
                 continue
 
-            # Получаем списки файлов для исходной и целевой папок
             src_files = list_files_in_folder(s3, src_folder)
             dst_files = list_files_in_folder(s3, dst_folder)
 
-            # Определяем готовые группы в исходной папке
             src_ready = get_ready_groups(src_files)
-            # Если в целевой папке уже есть готовая группа, считаем, что она заполнена
             dst_ready = get_ready_groups(dst_files)
 
-            # Перемещаем группы из src в dst, если в целевой папке их ещё нет (емкость проверяется как наличие готовых групп)
             for group_id in src_ready:
                 if len(dst_ready) < 1:
                     move_group(s3, src_folder, dst_folder, group_id)
                     changes_made = True
 
-            # Если в исходной папке нет готовых групп, отмечаем её как пустую
             if not src_ready:
                 empty_folders.add(src_folder)
 
-    # Если папка 666/ пуста, можно запускать генерацию контента (она будет заполнена медиа-файлом)
-    if is_folder_empty(s3, B2_BUCKET_NAME, folders[-1]):
+    if is_folder_empty(s3, bucket_name, folders[-1]):
         logger.info("⚠️ Папка 666/ пуста. Запуск генерации контента...")
         subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
 
-    # Обновляем список пустых папок в конфигурации
     config_data = load_config_public(s3)
     config_data["empty"] = list(empty_folders)
     save_config_public(s3, config_data)
     logger.info(f"📂 Обновлены пустые папки: {config_data.get('empty')}")
 
-
 def handle_publish(s3, config_data):
-    """
-    Архивирует старые группы файлов по generation_id.
-    Для каждого идентификатора группы файлы из всех рабочих папок копируются в архивную папку.
-    После успешной архивации обновляется config_public.json.
-    """
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     generation_ids = config_data.get("generation_id", [])
 
     if not generation_ids:
         logger.info("📂 Нет generation_id для архивации.")
         return
 
-    # Если передан один идентификатор в виде строки – преобразуем в список
     if isinstance(generation_ids, str):
         generation_ids = [generation_ids]
 
@@ -190,7 +177,6 @@ def handle_publish(s3, config_data):
     for generation_id in generation_ids:
         logger.info(f"🔄 Архивируем группу: {generation_id}")
 
-        # Проверяем наличие файлов хотя бы в одной из рабочих папок
         files_exist = any(list_files_in_folder(s3, folder) for folder in FOLDERS)
         if not files_exist:
             logger.error(f"❌ Файлы группы {generation_id} не найдены!")
@@ -202,13 +188,13 @@ def handle_publish(s3, config_data):
                 src_key = f"{folder}{generation_id}{ext}"
                 dst_key = f"{ARCHIVE_FOLDER}{generation_id}{ext}"
                 try:
-                    s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+                    s3.head_object(Bucket=bucket_name, Key=src_key)
                     s3.copy_object(
-                        Bucket=B2_BUCKET_NAME,
-                        CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key},
+                        Bucket=bucket_name,
+                        CopySource={"Bucket": bucket_name, "Key": src_key},
                         Key=dst_key
                     )
-                    s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
+                    s3.delete_object(Bucket=bucket_name, Key=src_key)
                     logger.info(f"✅ Успешно перемещено: {src_key} -> {dst_key}")
                 except ClientError as e:
                     if e.response['Error']['Code'] != '404':
@@ -217,7 +203,6 @@ def handle_publish(s3, config_data):
         if success:
             archived_ids.append(generation_id)
 
-    # Обновляем конфигурацию: удаляем заархивированные generation_id
     if archived_ids:
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
         if not config_data["generation_id"]:
@@ -228,15 +213,17 @@ def handle_publish(s3, config_data):
         logger.warning("⚠️ Не удалось заархивировать ни одну группу.")
 
 def check_midjourney_results(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_config = "config/config_public.json"
     try:
-        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
+        config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
         return config_data.get("midjourney_results", None)
     except Exception as e:
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
         return None
-
 
 def main():
     """
@@ -245,6 +232,7 @@ def main():
     b2_client = None
     generation_count = 0  # Счётчик генераций за один запуск
     MAX_GENERATIONS = 3   # Максимум генераций
+    SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))  # Добавляем определение
 
     try:
         b2_client = get_b2_client()
@@ -252,7 +240,10 @@ def main():
         midjourney_results = check_midjourney_results(b2_client)
         if midjourney_results:
             logger.info("Найден midjourney_results, запускаем generate_media.py")
-            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_media.py")], check=True)
+            generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+            if not os.path.isfile(generate_media_path):
+                raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+            subprocess.run([sys.executable, generate_media_path], check=True)
             return
 
         config_public = load_config_public(b2_client)

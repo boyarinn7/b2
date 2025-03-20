@@ -23,19 +23,20 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'm
 logger = get_logger("generate_content")
 config = ConfigManager()
 
-B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
 FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
 
 
 def download_config_public():
     """Загружает файл config_public.json из B2 в локальное хранилище."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
         config_public_path = config.get("FILE_PATHS.config_public")
         os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
-        s3.download_file(bucket_name, config_public_path, config_public_path)
+        s3.download_file(bucket_name, "config/config_public.json", config_public_path)
         logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
     except Exception as e:
         handle_error("Download Config Public Error", str(e), e)
@@ -401,11 +402,14 @@ class ContentGenerator:
             return None
 
     def load_tracker(self):
+        bucket_name = os.getenv("B2_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
         s3 = get_b2_client()
         tracker_updated = False
         try:
-            s3.download_file(B2_BUCKET_NAME, "data/topics_tracker.json", TRACKER_PATH)
+            s3.download_file(bucket_name, "data/topics_tracker.json", TRACKER_PATH)
             self.logger.info("✅ Загружен topics_tracker.json из B2")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
@@ -423,13 +427,11 @@ class ContentGenerator:
                 tracker_updated = True
         with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
             tracker = json.load(f)
-        # Проверка и обновление структуры
         if "all_focuses" not in tracker:
             self.logger.info("Обновляем старый трекер: добавляем all_focuses")
             with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
                 failsafe = json.load(f)
             tracker["all_focuses"] = failsafe["focuses"]
-            # Сохраняем существующие данные
             tracker.setdefault("used_focuses", [])
             tracker.setdefault("focus_data", {})
             with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
