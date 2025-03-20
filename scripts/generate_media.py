@@ -8,6 +8,7 @@ import requests
 import base64
 import time
 import re
+import random
 
 from PIL import Image
 from runwayml import RunwayML
@@ -195,10 +196,25 @@ def reset_processing_lock(client):
 # === Функции генерации сценария и видео ===
 def generate_script_and_frame(topic):
     """Генерирует сценарий и описание первого кадра для видео с повторными попытками."""
+    # Загружаем creative_prompts из config.json
+    creative_prompts = config.get("creative_prompts")
+    if not creative_prompts or not isinstance(creative_prompts, list):
+        logger.error(f"❌ Ошибка: 'creative_prompts' не найден или не является списком в {config.config_path}")
+        raise ValueError("Список 'creative_prompts' не найден или некорректен в конфигурации!")
+
     for attempt in range(MAX_ATTEMPTS):
         try:
-            combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
+            # Выбираем случайный творческий подход
+            selected_prompt = random.choice(creative_prompts)
+            logger.info(f"✨ Выбран творческий подход: '{selected_prompt}'")
+
+            # Подставляем topic и выбранный creative_prompt в промпт
+            combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic).replace(
+                "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
+                f"Затем используйте творческий подход: '{selected_prompt}'"
+            )
             logger.info(f"🔎 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация сценария для '{topic[:100]}'...")
+
             response = openai.ChatCompletion.create(
                 model=OPENAI_MODEL,
                 messages=[{"role": "user", "content": combined_prompt}],
@@ -206,12 +222,14 @@ def generate_script_and_frame(topic):
                 temperature=OPENAI_TEMPERATURE,
             )
             combined_response = response['choices'][0]['message']['content'].strip()
+
             if len(combined_response) < MIN_SCRIPT_LENGTH:
                 logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
                 continue
             if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
                 logger.error("❌ Маркеры кадра не найдены в ответе!")
                 continue
+
             script_text = combined_response.split("First Frame Description:")[0].strip()
             first_frame_description = \
             combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
@@ -224,7 +242,6 @@ def generate_script_and_frame(topic):
                 logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
                 return None, None
     return None, None
-
 
 def generate_image_with_midjourney(prompt, generation_id):
     for attempt in range(MAX_ATTEMPTS):
