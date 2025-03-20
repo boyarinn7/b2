@@ -140,24 +140,51 @@ class ContentGenerator:
             handle_error("Clear Content Error", str(e), e)
 
     def generate_topic(self, tracker):
+        """
+        Генерирует уникальную тему на основе доступных фокусов из трекера.
+
+        Args:
+            tracker (dict): Словарь с данными о предыдущих темах и фокусах.
+
+        Returns:
+            tuple: (full_topic, content_data) - сгенерированная тема и связанные данные.
+
+        Raises:
+            ValueError: Если фокусы недоступны или ответ OpenAI некорректен.
+        """
         valid_focuses = self.get_valid_focus_areas(tracker)
         if not valid_focuses:
             self.logger.error("❌ Нет доступных фокусов")
             raise ValueError("Все фокусы использованы")
+
         selected_focus = random.choice(valid_focuses)
         used_labels = tracker["focus_data"].get(selected_focus, [])
-        prompt = self.config["CONTENT"]["topic"]["prompt_template"].format(
+
+        # Используем get() вместо прямого доступа
+        prompt_template = self.config.get("CONTENT", {}).get("topic", {}).get("prompt_template", "")
+        if not prompt_template:
+            self.logger.error("❌ Шаблон промпта для темы не найден в конфигурации")
+            raise ValueError("Шаблон промпта для темы не найден")
+
+        prompt = prompt_template.format(
             focus_areas=selected_focus,
             exclusions=", ".join(used_labels)
         )
         topic_response = self.request_openai(prompt)
+
+        # Парсинг ответа OpenAI (учитываем, что JSON не гарантирован)
         try:
             topic_data = json.loads(topic_response)
             full_topic = topic_data["full_topic"]
             short_topic = topic_data["short_topic"]
         except json.JSONDecodeError:
-            self.logger.error("❌ OpenAI вернул не JSON")
-            raise ValueError("Ошибка формата ответа OpenAI")
+            self.logger.warning("⚠️ OpenAI вернул не JSON, парсим вручную")
+            # Предполагаем формат: "Full topic: текст\nShort topic: текст" или просто строка
+            lines = topic_response.strip().split("\n")
+            full_topic = lines[0].replace("Full topic:", "").strip() if "Full topic:" in lines[0] else lines[0].strip()
+            short_topic = lines[1].replace("Short topic:", "").strip() if len(lines) > 1 and "Short topic:" in lines[
+                1] else full_topic[:50]
+
         self.update_tracker(selected_focus, short_topic)
         self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
         return full_topic, {"theme": "tragic" if "(т)" in selected_focus else "normal"}
@@ -465,10 +492,10 @@ class ContentGenerator:
                 if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
                         'CONTENT.tragic_text.enabled', True):
                     text_initial = self.request_openai(
-                        self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
+                        self.config.get('CONTENT.tragic_text.prompt_template', "").format(topic=topic))
                 else:
                     text_initial = self.request_openai(
-                        self.config.get('CONTENT.text.prompt_template').format(topic=topic))
+                        self.config.get('CONTENT.text.prompt_template', "").format(topic=topic))
                 critique = self.critique_content(text_initial, topic)
                 self.save_to_generated_content("critique", {"critique": critique})
             else:
@@ -495,16 +522,16 @@ class ContentGenerator:
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
-            # Удалён вызов create_and_upload_image
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
             run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            handle_error("Run Error", "Ошибка в основном процессе генерации", e)
+            # Исправляем вызов handle_error, передаём self.logger
+            handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
             sys.exit(1)
-
+            
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
     try:
