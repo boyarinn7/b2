@@ -238,7 +238,11 @@ def generate_image_with_midjourney(prompt, generation_id):
             logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS}: Запрос к Midjourney: {prompt[:100]}...")
             response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers)
             response.raise_for_status()
-            task_id = response.json()["task_id"]
+            response_json = response.json()
+            logger.info(f"Ответ от Midjourney: {response_json}")  # Логируем полный ответ
+            task_id = response_json.get("task_id")
+            if not task_id:
+                raise ValueError(f"Ключ 'task_id' отсутствует в ответе: {response.text}")
             with open("task_id.json", "w", encoding="utf-8") as f:
                 json.dump({"task_id": task_id, "prompt": prompt}, f, ensure_ascii=False, indent=4)
             logger.info(f"Задача {task_id} отправлена в Midjourney, завершение работы")
@@ -248,11 +252,15 @@ def generate_image_with_midjourney(prompt, generation_id):
             if 'response' in locals():
                 logger.error(f"Текст ответа: {response.text}")
             if attempt < MAX_ATTEMPTS - 1:
+                logger.info("Повторная попытка через 5 секунд...")
                 time.sleep(5)
             else:
                 logger.error("Превышено количество попыток Midjourney")
-                return None
-    return None
+                raise
+        except ValueError as e:
+            logger.error(f"Ошибка обработки ответа Midjourney: {e}")
+            raise
+    raise Exception("Не удалось отправить запрос в Midjourney после всех попыток")
 
 def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
