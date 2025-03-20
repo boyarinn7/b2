@@ -218,6 +218,7 @@ def generate_script_and_frame(topic):
                 return None, None
     return None, None
 
+
 def generate_image_with_midjourney(prompt, generation_id):
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -239,10 +240,13 @@ def generate_image_with_midjourney(prompt, generation_id):
             response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers)
             response.raise_for_status()
             response_json = response.json()
-            logger.info(f"Ответ от Midjourney: {response_json}")  # Логируем полный ответ
-            task_id = response_json.get("task_id")
+            logger.info(f"Ответ от Midjourney: {response_json}")
+
+            # Извлекаем task_id из объекта data
+            task_id = response_json.get("data", {}).get("task_id")
             if not task_id:
-                raise ValueError(f"Ключ 'task_id' отсутствует в ответе: {response.text}")
+                raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
+
             with open("task_id.json", "w", encoding="utf-8") as f:
                 json.dump({"task_id": task_id, "prompt": prompt}, f, ensure_ascii=False, indent=4)
             logger.info(f"Задача {task_id} отправлена в Midjourney, завершение работы")
