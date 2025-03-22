@@ -220,6 +220,7 @@ def generate_script_and_frame(topic):
 
 
 def generate_image_with_midjourney(prompt, generation_id):
+    """Генерирует изображение с помощью Midjourney, обновляет конфигурацию и завершает работу скрипта."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             headers = {
@@ -233,7 +234,7 @@ def generate_image_with_midjourney(prompt, generation_id):
                     "prompt": prompt,
                     "aspect_ratio": "16:9",
                     "process_mode": "turbo",
-                    "skip_prompt_check": False
+                    "webhook_url": "https://midjourney-webhook.onrender.com/hook"  # Указываем ваш вебхук
                 }
             }
             logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS}: Запрос к Midjourney: {prompt[:100]}...")
@@ -247,10 +248,29 @@ def generate_image_with_midjourney(prompt, generation_id):
             if not task_id:
                 raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
 
+            # Сохраняем task_id в файл
             with open("task_id.json", "w", encoding="utf-8") as f:
                 json.dump({"task_id": task_id, "prompt": prompt}, f, ensure_ascii=False, indent=4)
             logger.info(f"Задача {task_id} отправлена в Midjourney, завершение работы")
+
+            # Проверяем midjourney_results
+            b2_client = get_b2_client()
+            midjourney_results = check_midjourney_results(b2_client)
+            if midjourney_results:
+                logger.info(f"Найдены midjourney_results: {midjourney_results}")
+
+            # Удаляем midjourney_results из config_public.json
+            remove_midjourney_results(b2_client)
+
+            # Обновляем config_public.json
+            update_config_public(b2_client, generation_id)
+
+            # Сбрасываем processing_lock
+            reset_processing_lock(b2_client)
+
+            # Завершаем работу скрипта
             sys.exit(0)
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Ошибка Midjourney (попытка {attempt + 1}/{MAX_ATTEMPTS}): {e}")
             if 'response' in locals():

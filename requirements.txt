@@ -92,3 +92,4 @@ Pillow==9.5.0
 moviepy==1.0.3
 Flask==2.3.3
 b2sdk==1.21.0
+gunicorn

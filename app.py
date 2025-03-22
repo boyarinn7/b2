@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
-import requests
-import boto3
-import json
 import os
-from io import StringIO
+import json
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 
 app = Flask(__name__)
 
@@ -11,73 +10,79 @@ app = Flask(__name__)
 B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
-if not B2_BUCKET_NAME:
-    raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-B2_ENDPOINT = os.getenv("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "boyarinn7/b2")
+MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
 
-# Проверяем переменные окружения
-if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
-    app.logger.error("B2 environment variables are missing")
-    b2_client = None
-else:
-    # Создаём клиент B2
-    b2_client = boto3.client(
-        "s3",
-        endpoint_url=B2_ENDPOINT,
-        aws_access_key_id=B2_ACCESS_KEY,
-        aws_secret_access_key=B2_SECRET_KEY  # Исправлено с aws_secret_key_id
-    )
+# Проверка переменных окружения
+if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, MIDJOURNEY_API_KEY]):
+    raise ValueError("❌ Не заданы необходимые переменные окружения")
+
+# Создаем клиент B2
+b2_client = boto3.client(
+    "s3",
+    endpoint_url="https://s3.us-east-005.backblazeb2.com",
+    aws_access_key_id=B2_ACCESS_KEY,
+    aws_secret_access_key=B2_SECRET_KEY
+)
+
+def load_config_public():
+    """Загружает config_public.json из B2."""
+    try:
+        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key="config/config_public.json")
+        return json.loads(config_obj['Body'].read().decode('utf-8'))
+    except ClientError as e:
+        app.logger.warning(f"Config file not found, creating new: {str(e)}")
+        return {"publish": "", "empty": [], "processing_lock": False}
+
+def save_config_public(config_data):
+    """Сохраняет config_public.json в B2."""
+    try:
+        b2_client.put_object(
+            Bucket=B2_BUCKET_NAME,
+            Key="config/config_public.json",
+            Body=json.dumps(config_data, ensure_ascii=False).encode('utf-8')
+        )
+        app.logger.info("✅ Конфигурация успешно сохранена в B2.")
+    except Exception as e:
+        app.logger.error(f"❌ Ошибка сохранения конфигурации: {e}")
 
 @app.route('/hook', methods=['POST'])
 def webhook_handler():
-    if b2_client is None:
-        return jsonify({"error": "B2 not initialized"}), 500
+    """Обрабатывает вебхук от Midjourney."""
+    # Проверка подлинности запроса
+    api_key = request.headers.get("X-API-Key")
+    if api_key != MIDJOURNEY_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
 
+    # Обработка данных
     try:
         data = request.json
-        task_id = data["data"]["task_id"]
-        image_urls = data["data"]["output"]["image_urls"]
-    except KeyError as e:
-        return jsonify({"error": f"Invalid JSON: missing {str(e)}"}), 400
+        task_id = data.get("data", {}).get("task_id")
+        image_urls = data.get("data", {}).get("output", {}).get("image_urls", [])
 
-    # Работа с config_public.json
-    remote_config = "config/config_public.json"
-    try:
-        # Скачиваем config в память
-        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
-        current_config = json.loads(config_obj['Body'].read().decode('utf-8'))
+        if not task_id or not image_urls:
+            return jsonify({"error": "Invalid data format"}), 400
+
+        # Загружаем текущую конфигурацию
+        config_public = load_config_public()
+
+        # Убедимся, что config_public — это словарь
+        if not isinstance(config_public, dict):
+            config_public = {}  # Инициализируем как пустой словарь, если это не словарь
+
+        # Обновляем конфигурацию с результатами Midjourney
+        config_public["midjourney_results"] = {
+            "task_id": task_id,
+            "image_urls": image_urls
+        }
+
+        # Сохраняем обновленную конфигурацию
+        save_config_public(config_public)
+
+        return jsonify({"message": "Webhook processed"}), 200
+
     except Exception as e:
-        app.logger.warning(f"Config file not found, creating new: {str(e)}")
-        current_config = {"publish": "", "empty": [], "processing_lock": False}
-
-    # Обновляем config
-    current_config["midjourney_results"] = {
-        "task_id": task_id,
-        "image_urls": image_urls
-    }
-
-    # Сохраняем обратно в B2
-    try:
-        updated_config = json.dumps(current_config, ensure_ascii=False).encode('utf-8')
-        b2_client.put_object(Bucket=B2_BUCKET_NAME, Key=remote_config, Body=updated_config)
-    except Exception as e:
-        app.logger.error(f"Failed to upload to B2: {str(e)}")
-        return jsonify({"error": "Failed to update config"}), 500
-
-    # Отправляем в GitHub
-    try:
-        github_url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        payload = {"event_type": "midjourney-task-completed", "client_payload": {"task_id": task_id}}
-        response = requests.post(github_url, headers=headers, json=payload)
-        response.raise_for_status()
-    except Exception as e:
-        app.logger.error(f"GitHub request failed: {str(e)}")
-        return jsonify({"error": "Failed to trigger GitHub"}), 500
-
-    return jsonify({"message": "Webhook processed"}), 200
+        app.logger.error(f"❌ Ошибка обработки вебхука: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
