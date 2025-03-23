@@ -18,6 +18,8 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 from modules.api_clients import get_b2_client
+from PIL import Image
+from io import BytesIO
 
 # === Инициализация конфигурации и логгера ===
 config = ConfigManager()
@@ -56,6 +58,38 @@ if not openai.api_key:
 if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
     raise ValueError("API-ключ Midjourney не найден в переменной окружения MIDJOURNEY_API_KEY")
 
+def split_midjourney_grid(url):
+    try:
+        # Скачиваем изображение
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content))
+
+        # Предполагаем, что сетка 2x2 равных частей
+        width, height = img.size
+        w, h = width // 2, height // 2
+
+        # Делим на 4 части
+        images = [
+            img.crop((0, 0, w, h)),  # Верхний левый
+            img.crop((w, 0, width, h)),  # Верхний правый
+            img.crop((0, h, w, height)),  # Нижний левый
+            img.crop((w, h, width, height))  # Нижний правый
+        ]
+
+        # Сохраняем временные файлы и возвращаем пути
+        temp_paths = []
+        for i, sub_img in enumerate(images):
+            temp_path = f"temp_midjourney_{i}.png"
+            sub_img.save(temp_path)
+            temp_paths.append(temp_path)
+
+        logger.info("✅ Сетка MidJourney разделена на 4 части")
+        return temp_paths
+    except Exception as e:
+        handle_error(logger, "Ошибка при разделении сетки MidJourney", e)
+        return None
+
 # === Вспомогательные функции ===
 def check_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -73,24 +107,37 @@ def check_midjourney_results(b2_client):
 def select_best_image(b2_client, image_urls, prompt):
     try:
         criteria = config.get("VISUAL_ANALYSIS.image_selection_criteria")
-        selection_prompt = config.get("VISUAL_ANALYSIS.image_selection_prompt")
+        selection_prompt = config.get("VISUAL_ANALYSIS.image_selection_prompt",
+                                   "Select the best image based on the prompt '{prompt}' and these criteria: {criteria}")
         max_tokens = config.get("VISUAL_ANALYSIS.image_selection_max_tokens", 500)
         criteria_text = ", ".join([f"{c['name']} (weight: {c['weight']})" for c in criteria])
         full_prompt = selection_prompt.format(prompt=prompt, criteria=criteria_text)
 
+        # Если один URL, предполагаем, что это сетка
+        if len(image_urls) == 1:
+            logger.info("Обнаружен один URL, разделяем сетку MidJourney")
+            image_paths = split_midjourney_grid(image_urls[0])
+            if not image_paths:
+                logger.error("Не удалось разделить сетку, выбираем первый URL")
+                return image_urls[0]
+        else:
+            image_paths = image_urls  # Если уже отдельные URL, используем их
+
         for attempt in range(MAX_ATTEMPTS):
             try:
+                # Отправляем локальные файлы в OpenAI
+                message_content = [{"type": "text", "text": full_prompt}]
+                for path in image_paths:
+                    with open(path, "rb") as img_file:
+                        base64_image = base64.b64encode(img_file.read()).decode("utf-8")
+                        message_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{base64_image}"}
+                        })
+
                 gpt_response = openai.ChatCompletion.create(
                     model=OPENAI_MODEL,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": full_prompt},
-                                *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
-                            ]
-                        }
-                    ],
+                    messages=[{"role": "user", "content": message_content}],
                     max_tokens=max_tokens
                 )
                 answer = gpt_response.choices[0].message.content
@@ -98,17 +145,23 @@ def select_best_image(b2_client, image_urls, prompt):
                 best_index_match = re.search(r"Image (\d+)", answer)
                 if best_index_match:
                     best_index = int(best_index_match.group(1)) - 1
-                    if best_index in range(4):
-                        return image_urls[best_index]
+                    if best_index in range(len(image_paths)):
+                        best_url = image_urls[0] if len(image_urls) == 1 else image_paths[best_index]
+                        # Очистка временных файлов
+                        if len(image_urls) == 1:
+                            for path in image_paths:
+                                if path != image_paths[best_index]:
+                                    os.remove(path)
+                        return image_paths[best_index] if len(image_urls) == 1 else best_url
                 logger.error(f"Неверный индекс в ответе OpenAI: {answer}, выбираем первое изображение")
-                return image_urls[0]
+                return image_paths[0] if len(image_urls) == 1 else image_urls[0]
             except openai.error.OpenAIError as e:
                 logger.error(f"Ошибка OpenAI API (попытка {attempt + 1}/{MAX_ATTEMPTS}): {e}")
                 if attempt < MAX_ATTEMPTS - 1:
                     time.sleep(5)
                 else:
                     logger.error("Превышено количество попыток OpenAI, выбираем первое изображение")
-                    return image_urls[0]
+                    return image_paths[0] if len(image_urls) == 1 else image_urls[0]
     except Exception as e:
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]
@@ -467,18 +520,33 @@ def main():
                 logger.warning("⚠️ Некорректные URL в midjourney_results, очищаем ключ")
                 remove_midjourney_results(b2_client)
             else:
-                best_image_url = select_best_image(b2_client, image_urls,
-                                                   generated_content.get("first_frame_description", ""))
+                import shutil  # Добавляем импорт для перемещения файла
+
+                best_image_path = select_best_image(b2_client, image_urls,
+                                                    generated_content.get("first_frame_description", ""))
                 image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
-                response = requests.get(best_image_url, stream=True)
-                response.raise_for_status()
-                with open(image_path, "wb") as f:
-                    f.write(response.content)
+
+                # Проверяем, вернулся URL или локальный путь
+                if best_image_path.startswith("http"):
+                    response = requests.get(best_image_path, stream=True)
+                    response.raise_for_status()
+                    with open(image_path, "wb") as f:
+                        f.write(response.content)
+                else:
+                    shutil.move(best_image_path, image_path)
+
                 logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
                 remove_midjourney_results(b2_client)
                 script_text = generated_content.get("script", "")
                 if not script_text:
                     raise ValueError("Сценарий отсутствует в generated_content.json при наличии midjourney_results")
+
+                # Очистка временных файлов от сетки
+                for i in range(4):
+                    temp_path = f"temp_midjourney_{i}.png"
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                        logger.info(f"🗑️ Удалён временный файл: {temp_path}")
 
                 # Общий процесс после получения image_path
                 if not resize_existing_image(image_path):
@@ -542,14 +610,9 @@ def main():
         update_config_public(b2_client, target_folder)
         reset_processing_lock(b2_client)
 
-        # Убираем этот запуск, так как он уже есть выше при midjourney_results
-        # logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
-        # subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
-
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
 
 if __name__ == "__main__":
     try:
