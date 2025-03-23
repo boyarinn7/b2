@@ -154,6 +154,7 @@ def process_folders(s3, folders):
     if is_folder_empty(s3, bucket_name, folders[-1]):
         logger.info("⚠️ Папка 666/ пуста. Запуск генерации контента...")
         subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
+        sys.exit(0)  # Остановка после вызова generate_content.py
 
     config_data = load_config_public(s3)
     config_data["empty"] = list(empty_folders)
@@ -249,8 +250,14 @@ def main():
                 generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
                 if not os.path.isfile(generate_media_path):
                     raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+                # Снимаем блокировку перед запуском
+                config_public = load_config_public(b2_client)
+                if config_public.get("processing_lock"):
+                    config_public["processing_lock"] = False
+                    save_config_public(b2_client, config_public)
+                    logger.info("🔓 Блокировка снята перед запуском generate_media.py")
                 subprocess.run([sys.executable, generate_media_path], check=True)
-                return
+                sys.exit(0)  # Полное отключение после вызова generate_media.py
 
         config_public = load_config_public(b2_client)
 
@@ -276,7 +283,8 @@ def main():
         while config_public.get("empty") and generation_count < MAX_GENERATIONS:
             logger.info(f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-            generation_count += 1
+            sys.exit(0)  # Остановка после вызова generate_content.py
+            generation_count += 1  # Эта строка не выполнится
             config_public = load_config_public(b2_client)  # Обновляем состояние после генерации
             logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
 

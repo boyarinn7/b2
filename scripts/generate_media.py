@@ -467,7 +467,8 @@ def main():
                 logger.warning("⚠️ Некорректные URL в midjourney_results, очищаем ключ")
                 remove_midjourney_results(b2_client)
             else:
-                best_image_url = select_best_image(b2_client, image_urls, generated_content.get("first_frame_description", ""))
+                best_image_url = select_best_image(b2_client, image_urls,
+                                                   generated_content.get("first_frame_description", ""))
                 image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
                 response = requests.get(best_image_url, stream=True)
                 response.raise_for_status()
@@ -478,19 +479,47 @@ def main():
                 script_text = generated_content.get("script", "")
                 if not script_text:
                     raise ValueError("Сценарий отсутствует в generated_content.json при наличии midjourney_results")
-        else:
-            # Генерация сценария и изображения
-            script_text, first_frame_description = generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
-            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-                json.dump(generated_content, f, ensure_ascii=False, indent=4)
-            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
-            image_path = generate_image(first_frame_description, generation_id)  # Midjourney завершит выполнение здесь
 
-        # Общий процесс после получения image_path
+                # Общий процесс после получения image_path
+                if not resize_existing_image(image_path):
+                    raise ValueError("Не удалось изменить размер изображения")
+
+                cleaned_script = clean_script_text(script_text)
+                video_result = generate_runway_video(image_path, cleaned_script)
+                video_path = None
+                if video_result:
+                    if video_result.startswith("http"):
+                        video_path = f"{generation_id}.mp4"
+                        if not download_video(video_result, video_path):
+                            logger.warning("❌ Не удалось скачать видео")
+                    else:
+                        video_path = video_result
+                        logger.info(f"🔄 Используем имитацию видео: {video_path}")
+
+                upload_to_b2(b2_client, target_folder, image_path)
+                if video_path and os.path.exists(video_path):
+                    upload_to_b2(b2_client, target_folder, video_path)
+
+                update_config_public(b2_client, target_folder)
+                reset_processing_lock(b2_client)
+
+                # Запуск b2_storage_manager.py и отключение
+                logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
+                subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
+                sys.exit(0)  # Отключаемся после запуска b2_storage_manager.py
+
+        # Если midjourney_results нет, генерация сценария и изображения
+        script_text, first_frame_description = generate_script_and_frame(topic)
+        if not script_text or not first_frame_description:
+            raise ValueError("Не удалось сгенерировать сценарий или описание")
+        generated_content["script"] = script_text
+        generated_content["first_frame_description"] = first_frame_description
+        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+            json.dump(generated_content, f, ensure_ascii=False, indent=4)
+        logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
+        image_path = generate_image(first_frame_description, generation_id)  # Midjourney завершит выполнение здесь
+
+        # Этот код не будет достигнут при Midjourney из-за sys.exit(0) в generate_image_with_midjourney
         if not resize_existing_image(image_path):
             raise ValueError("Не удалось изменить размер изображения")
 
@@ -513,12 +542,14 @@ def main():
         update_config_public(b2_client, target_folder)
         reset_processing_lock(b2_client)
 
-        logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
-        subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
+        # Убираем этот запуск, так как он уже есть выше при midjourney_results
+        # logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
+        # subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
+
 
 if __name__ == "__main__":
     try:
