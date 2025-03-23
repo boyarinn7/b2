@@ -525,6 +525,7 @@ class ContentGenerator:
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
             run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
+            sys.exit(0)  # Добавляем завершение после запуска generate_media.py
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
             # Исправляем вызов handle_error, передаём self.logger
