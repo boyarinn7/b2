@@ -4,15 +4,23 @@ import logging
 import subprocess
 import re
 import sys
+from botocore.exceptions import ClientError  # Добавляем обратно
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+script_dir = os.path.dirname(__file__)
+parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
+sys.path.append(parent_dir)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b2_storage_manager")
-logger.info(f"sys.path: {sys.path}")
+logger.info(f"Script directory: {script_dir}")
+logger.info(f"Parent directory added to sys.path: {parent_dir}")
+logger.info(f"Full sys.path: {sys.path}")
+logger.info(f"Does b2/ exist? {os.path.isdir(os.path.join(parent_dir, 'b2'))}")
+logger.info(f"Does b2/modules/ exist? {os.path.isdir(os.path.join(parent_dir, 'b2', 'modules'))}")
+logger.info(f"Does b2/modules/utils.py exist? {os.path.isfile(os.path.join(parent_dir, 'b2', 'modules', 'utils.py'))}")
 
 from b2.modules.utils import is_folder_empty, ensure_directory_exists
 from scripts.generate_media import download_file_from_b2
-from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
 from modules.logger import get_logger
 from modules.error_handler import handle_error
