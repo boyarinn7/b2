@@ -5,7 +5,7 @@ import subprocess
 import re
 import sys
 
-from modules.utils import is_folder_empty, ensure_directory_exists
+from b2.modules.utils import is_folder_empty, ensure_directory_exists
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
