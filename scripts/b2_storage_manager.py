@@ -5,18 +5,12 @@ import subprocess
 import re
 import sys
 
-# Настройка логирования до импорта
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'b2')))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b2_storage_manager")
+logger.info(f"sys.path: {sys.path}")
 
-script_dir = os.path.dirname(__file__)
-parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
-sys.path.append(parent_dir)
-logger.info(f"Добавлен путь в sys.path: {parent_dir}")
-logger.info(f"Полный sys.path: {sys.path}")
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from b2.modules.utils import is_folder_empty, ensure_directory_exists
+from modules.utils import is_folder_empty, ensure_directory_exists
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
