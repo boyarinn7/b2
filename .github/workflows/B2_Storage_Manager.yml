@@ -67,5 +67,11 @@ jobs:
           fi
         done
 
+    - name: Check directory structure
+      run: |
+        ls -la
+        echo "Listing scripts directory:"
+        ls -la scripts || echo "Scripts directory not found"
+
     - name: Run B2 Storage Manager
-      run: python scripts/b2_storage_manager.py
+      run: python -u scripts/b2_storage_manager.py

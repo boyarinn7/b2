@@ -25,15 +25,16 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 
-# Остальной код остаётся без изменений
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
+logger.info("Начало выполнения b2_storage_manager")
+logger.info(f"Текущая рабочая директория: {os.getcwd()}")
 
 
 # === Константы из конфигурации ===
-
 CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # Локальный путь для временной записи
+logger.info(f"Локальный путь CONFIG_PUBLIC_PATH: {CONFIG_PUBLIC_PATH}")
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь к файлу в B2
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
@@ -46,18 +47,19 @@ FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 # Путь к скрипту генерации контента (generate_content.py)
 GENERATE_CONTENT_SCRIPT = os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")
+logger.info(f"Путь к generate_content.py: {GENERATE_CONTENT_SCRIPT}")
 
 
 def load_config_public(s3):
-    bucket_name = os.getenv("B2_BUCKET_NAME")
-    if not bucket_name:
-        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    """Загружает config_public.json из B2."""
     try:
         local_path = CONFIG_PUBLIC_PATH
-        s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        logger.info(f"Загрузка конфигурации из B2: {CONFIG_PUBLIC_REMOTE_PATH} в {local_path}")
+        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        logger.info("✅ Конфигурация успешно загружена.")
+        logger.info(f"Конфигурация загружена из {local_path}")
         return data
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
@@ -166,6 +168,9 @@ def process_folders(s3, folders):
 
     if is_folder_empty(s3, bucket_name, folders[-1]):
         logger.info("⚠️ Папка 666/ пуста. Запуск генерации контента...")
+        if not os.path.exists(GENERATE_CONTENT_SCRIPT):
+            logger.error(f"Ошибка: generate_content.py не найден по пути {GENERATE_CONTENT_SCRIPT}")
+            return
         subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
         sys.exit(0)  # Остановка после вызова generate_content.py
 
