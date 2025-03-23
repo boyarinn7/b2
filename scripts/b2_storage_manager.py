@@ -5,12 +5,12 @@ import subprocess
 import re
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'b2')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b2_storage_manager")
 logger.info(f"sys.path: {sys.path}")
 
-from modules.utils import is_folder_empty, ensure_directory_exists
+from b2.modules.utils import is_folder_empty, ensure_directory_exists
 from scripts.generate_media import download_file_from_b2
 from botocore.exceptions import ClientError
 from modules.api_clients import get_b2_client
