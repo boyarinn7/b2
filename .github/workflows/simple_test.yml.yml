@@ -1,0 +1,12 @@
+name: Simple Test
+
+on:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Test message
+      run: echo "Простой тест запущен"
