@@ -1,12 +1,10 @@
 name: Run Main Script
 
 on:
- # schedule:
- #   - cron: '0 0 * * *'   Запуск ежедневно в 00:00 UTC
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:
 
 jobs:
-  run-main:
+  run-b2-storage-manager:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,42 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt not found"; fi
 
-    - name: Set PYTHONPATH
-      run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
-
-    - name: Debug PYTHONPATH
-      run: echo "PYTHONPATH is set to :$PYTHONPATH"
-
-    - name: Ensure required directories and files exist
-      run: |
-        # Check and create the data directory
-        if [ ! -d core/data ]; then
-          echo "Directory core/data is missing. Creating it."
-          mkdir -p core/data
-        fi
-
-        # Check and create the focus_tracker.json file
-        if [ ! -f core/data/focus_tracker.json ]; then
-          echo "File focus_tracker.json is missing. Creating it."
-          echo "[]" > core/data/focus_tracker.json
-        else
-          echo "File focus_tracker.json found."
-        fi
-
-        # Check and create the feedback_report.json file
-        if [ ! -f core/data/feedback_report.json ]; then
-          echo "File feedback_report.json is missing. Creating it."
-          echo "{}" > core/data/feedback_report.json
-        else
-          echo "File feedback_report.json found."
-        fi
-
-    - name: Run Main Script
-      run: python scripts/main.py
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-        OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE }}
+    - name: Run B2 Storage Manager
+      run: python -u scripts/b2_storage_manager.py
