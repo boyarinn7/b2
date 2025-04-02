@@ -470,6 +470,7 @@ class ContentGenerator:
 
     def run(self):
         """Основной процесс генерации контента."""
+        logger.info(">>> Начало генерации контента (метод run)")
         try:
             if not self.config.get('CONTENT.topic.enabled', True):
                 logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
@@ -477,6 +478,7 @@ class ContentGenerator:
             download_config_public()
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
                 config_public = json.load(file)
+            logger.info(f"Загруженная config_public: {config_public}")
             empty_folders = config_public.get("empty", [])
             if not empty_folders:
                 logger.info("✅ Нет пустых папок. Процесс завершён.")
@@ -525,7 +527,7 @@ class ContentGenerator:
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
             run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
-            sys.exit(0)  # Добавляем завершение после запуска generate_media.py
+        #    sys.exit(0)  # Добавляем завершение после запуска generate_media.py
             self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
             # Исправляем вызов handle_error, передаём self.logger

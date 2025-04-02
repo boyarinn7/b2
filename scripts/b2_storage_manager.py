@@ -169,7 +169,7 @@ def process_folders(s3, folders):
             if not src_ready:
                 empty_folders.add(src_folder)
 
-    # Закомментирован блок, использующий is_folder_empty – теперь полагаемся только на определение пустоты по полным группам
+    # Используем только проверку через any_folder_empty (проверка наличия полных групп)
     # if is_folder_empty(s3, bucket_name, folders[-1]):
     #     logger.info("⚠️ Папка 666/ пуста. Запуск генерации контента...")
     #     if not os.path.exists(GENERATE_CONTENT_SCRIPT):
@@ -181,6 +181,7 @@ def process_folders(s3, folders):
     config_data = load_config_public(s3)
     config_data["empty"] = list(empty_folders)
     save_config_public(s3, config_data)
+    logger.info(f"📂 Обновлены пустые папки: {config_data.get('empty')}")
 
 def handle_publish(s3, config_data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
