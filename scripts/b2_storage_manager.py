@@ -37,13 +37,13 @@ logger.info(f"Локальный путь CONFIG_PUBLIC_PATH: {CONFIG_PUBLIC_PAT
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
-    os.getenv("FILE_PATHS_FOLDER_444"),
-    os.getenv("FILE_PATHS_FOLDER_555"),
-    os.getenv("FILE_PATHS_FOLDER_666")
+    config.get("FILE_PATHS.folder_444", "444/"),
+    config.get("FILE_PATHS.folder_555", "555/"),
+    config.get("FILE_PATHS.folder_666", "666/")
 ]
-ARCHIVE_FOLDER = os.getenv("ARCHIVE_FOLDER")
+ARCHIVE_FOLDER = config.get("FILE_PATHS.archive_folder", "archive/")
+GENERATE_CONTENT_SCRIPT = os.path.join(config.get("FILE_PATHS.scripts_folder", "scripts"), "generate_content.py")
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
-GENERATE_CONTENT_SCRIPT = os.path.join(os.getenv("SCRIPTS_FOLDER"), "generate_content.py")
 logger.info(f"Путь к generate_content.py: {GENERATE_CONTENT_SCRIPT}")
 
 # Добавим отладку для проверки значений
