@@ -262,13 +262,16 @@ def any_folder_empty(s3, folders):
     Полная группа — это наличие файлов с одинаковым идентификатором и требуемыми расширениями (.json, .png, .mp4).
     """
     for folder in folders:
+        logger.info(f"Проверяем папку: {folder}")
         files = list_files_in_folder(s3, folder)
+        logger.info(f"Найденные файлы в папке {folder}: {files}")
         ready_groups = get_ready_groups(files)
+        logger.info(f"Полные группы в папке {folder}: {ready_groups}")
         if not ready_groups:
             logger.info(f"Папка {folder} считается пустой (нет полных групп).")
             return True
         else:
-            logger.info(f"Папка {folder} содержит полные группы: {ready_groups}")
+            logger.info(f"Папка {folder} содержит полные группы.")
     return False
 
 
@@ -330,6 +333,12 @@ def main():
 
         # Перемещение групп между папками (обеспечивает очередность публикаций)
         process_folders(b2_client, FOLDERS)
+        config_public = load_config_public(b2_client)
+        logger.info(f"После process_folders() config_public: {config_public}")
+
+        # Добавляем дополнительное логирование после перемещения папок
+        config_public = load_config_public(b2_client)
+        logger.info(f"После process_folders() config_public: {config_public}")
 
         # Цикл генерации контента: если в конфигурации остаются пустые папки (нет полных групп), запускаем генератор контента
         config_public = load_config_public(b2_client)
@@ -337,7 +346,7 @@ def main():
             logger.info(
                 f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-            sys.exit(0)  # Завершаем работу сразу после вызова генератора контента
+        #    sys.exit(0)  # Завершаем работу сразу после вызова генератора контента
             generation_count += 1  # Эта строка, вероятно, не выполнится из-за sys.exit(0)
             config_public = load_config_public(b2_client)
             logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
