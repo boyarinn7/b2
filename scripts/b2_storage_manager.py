@@ -371,4 +371,4 @@ def main():
                     logger.info("🔓 Блокировка снята.")
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
-        sys.exit(0)
+    #    sys.exit(0)
