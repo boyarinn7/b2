@@ -41,14 +41,22 @@ def load_config_public():
         return {"publish": "", "empty": [], "processing_lock": False}
 
 def save_config_public(config_data):
-    """Сохраняет config_public.json в B2."""
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        app.logger.error("❌ Переменная окружения B2_BUCKET_NAME не задана")
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
+        json_str = json.dumps(config_data, ensure_ascii=False, indent=4)
+        json.loads(json_str)  # Проверяем валидность перед сохранением
         b2_client.put_object(
-            Bucket=B2_BUCKET_NAME,
+            Bucket=bucket_name,
             Key="config/config_public.json",
-            Body=json.dumps(config_data, ensure_ascii=False).encode('utf-8')
+            Body=json_str.encode('utf-8')
         )
         app.logger.info("✅ Конфигурация успешно сохранена в B2")
+    except json.JSONDecodeError as e:
+        app.logger.error(f"❌ Ошибка валидации JSON перед сохранением: {e}")
+        raise
     except NoCredentialsError:
         app.logger.error("❌ Ошибка аутентификации в B2: неверные учетные данные")
         raise
@@ -57,6 +65,7 @@ def save_config_public(config_data):
         raise
 
 @app.route('/hook', methods=['POST'])
+
 def webhook_handler():
     """Обрабатывает вебхук от Midjourney."""
     # Проверка подлинности запроса

@@ -341,17 +341,22 @@ def generate_image_with_midjourney(prompt, generation_id):
 
 def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    if not bucket_name:
-        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_config = "config/config_public.json"
     try:
         config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+    except json.JSONDecodeError as e:
+        logger.warning(f"❌ Некорректный JSON: {e}. Воссоздаём файл.")
+        config_data = {"publish": "", "empty": [], "processing_lock": False}
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке config_public.json: {e}")
+        return
+    try:
         if "midjourney_results" in config_data:
             del config_data["midjourney_results"]
-            updated_config = json.dumps(config_data, ensure_ascii=False).encode('utf-8')
+            updated_config = json.dumps(config_data, ensure_ascii=False, indent=4).encode('utf-8')
             b2_client.put_object(Bucket=bucket_name, Key=remote_config, Body=updated_config)
-            logger.info("Ключ midjourney_results удалён из config_public.json")
+            logger.info("✅ Ключ midjourney_results удалён")
     except Exception as e:
         logger.error(f"Ошибка при удалении midjourney_results: {e}")
 

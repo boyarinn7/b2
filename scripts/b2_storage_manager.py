@@ -25,38 +25,41 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 
-# === Инициализация конфигурации и логирования ===
+# Инициализация (оставляем ConfigManager для локальной отладки, но используем os.getenv для Actions)
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 logger.info("Начало выполнения b2_storage_manager")
 logger.info(f"Текущая рабочая директория: {os.getcwd()}")
 
-
-# === Константы из конфигурации ===
-CONFIG_PUBLIC_PATH = config.get('FILE_PATHS.config_public')  # Локальный путь для временной записи
+# Константы с использованием переменных окружения
+CONFIG_PUBLIC_PATH = os.getenv("CONFIG_PUBLIC_PATH")
 logger.info(f"Локальный путь CONFIG_PUBLIC_PATH: {CONFIG_PUBLIC_PATH}")
-CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"  # Путь к файлу в B2
+CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
-    config.get('FILE_PATHS.folder_444'),
-    config.get('FILE_PATHS.folder_555'),
-    config.get('FILE_PATHS.folder_666')
+    os.getenv("FILE_PATHS_FOLDER_444"),
+    os.getenv("FILE_PATHS_FOLDER_555"),
+    os.getenv("FILE_PATHS_FOLDER_666")
 ]
-ARCHIVE_FOLDER = config.get('FILE_PATHS.archive_folder')
+ARCHIVE_FOLDER = os.getenv("ARCHIVE_FOLDER")
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
-
-# Путь к скрипту генерации контента (generate_content.py)
-GENERATE_CONTENT_SCRIPT = os.path.join(config.get('FILE_PATHS.scripts_folder'), "generate_content.py")
+GENERATE_CONTENT_SCRIPT = os.path.join(os.getenv("SCRIPTS_FOLDER"), "generate_content.py")
 logger.info(f"Путь к generate_content.py: {GENERATE_CONTENT_SCRIPT}")
 
+# Добавим отладку для проверки значений
+logger.info(f"FOLDERS: {FOLDERS}")
+logger.info(f"ARCHIVE_FOLDER: {ARCHIVE_FOLDER}")
 
 def load_config_public(s3):
     """Загружает config_public.json из B2."""
     try:
         local_path = CONFIG_PUBLIC_PATH
+        bucket_name = os.getenv("B2_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         logger.info(f"Загрузка конфигурации из B2: {CONFIG_PUBLIC_REMOTE_PATH} в {local_path}")
-        s3.download_file(B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
         logger.info(f"Конфигурация загружена из {local_path}")
@@ -115,7 +118,6 @@ def get_ready_groups(files):
         if all(f"{group_id}{ext}" in file_list for ext in FILE_EXTENSIONS)
     ]
 
-
 def move_group(s3, src_folder, dst_folder, group_id):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
@@ -140,6 +142,7 @@ def process_folders(s3, folders):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    logger.info(f"Используемый bucket_name: {bucket_name}")
     empty_folders = set()
     changes_made = True
 
@@ -240,9 +243,17 @@ def check_midjourney_results(b2_client):
     try:
         config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
-        return config_data.get("midjourney_results", None)
+        midjourney_results = config_data.get("midjourney_results", None)
+        if midjourney_results and not isinstance(midjourney_results, dict):
+            logger.warning("⚠️ midjourney_results не является словарем, очищаем ключ")
+            config_data["midjourney_results"] = None
+            save_config_public(b2_client, config_data)
+        return midjourney_results
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Ошибка разбора JSON в config_public.json: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Ошибка при проверке midjourney_results: {e}")
+        logger.error(f"❌ Ошибка при проверке midjourney_results: {e}")
         return None
 
 def main():
