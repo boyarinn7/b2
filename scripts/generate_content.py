@@ -474,7 +474,8 @@ class ContentGenerator:
         try:
             if not self.config.get('CONTENT.topic.enabled', True):
                 logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
-                sys.exit(1)
+                # sys.exit(1)
+                return
             download_config_public()
             with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
                 config_public = json.load(file)
@@ -486,10 +487,11 @@ class ContentGenerator:
             self.adapt_prompts()
             self.clear_generated_content()
             tracker = self.load_tracker()  # Загрузка трекера для защиты от повторов
-            topic, content_data = self.generate_topic(tracker)  # Передаём трекер
+            topic, content_data = self.generate_topic(tracker)  # Генерация темы с учетом трекера
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
-                sys.exit(1)
+                # sys.exit(1)
+                return
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
                 if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
                         'CONTENT.tragic_text.enabled', True):
@@ -526,14 +528,14 @@ class ContentGenerator:
                 generation_id = config_gen_content["generation_id"]
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
-            run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
-        #    sys.exit(0)  # Добавляем завершение после запуска generate_media.py
-            self.logger.info("✅ Генерация контента завершена.")
+            run_generate_media()  # Запускаем генерацию медиа (если включена)
+            # sys.exit(0)  # Закомментировано для отладки, чтобы увидеть все логи
+            logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            # Исправляем вызов handle_error, передаём self.logger
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
-            sys.exit(1)
+            # sys.exit(1)  # Закомментировано для отладки
+
 
 def run_generate_media():
     """Запускает скрипт generate_media.py по локальному пути."""
