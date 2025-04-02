@@ -180,7 +180,7 @@ def process_folders(s3, folders):
 
     config_data = load_config_public(s3)
     config_data["empty"] = list(empty_folders)
-    save_config_public(s3, config_data_
+    save_config_public(s3, config_data)
 
 def handle_publish(s3, config_data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
