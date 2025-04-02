@@ -283,6 +283,7 @@ def main():
 
     try:
         b2_client = get_b2_client()
+        logger.info("Клиент B2 успешно создан.")
         config_public = load_config_public(b2_client)
 
         # Шаг 1: Проверка наличия ключа midjourney_results
@@ -301,7 +302,7 @@ def main():
                     save_config_public(b2_client, config_public)
                     logger.info("🔓 Блокировка снята перед запуском generate_media.py")
                 subprocess.run([sys.executable, generate_media_path], check=True)
-                sys.exit(0)
+            #    sys.exit(0)
             else:
                 logger.warning("⚠️ Некорректные данные в midjourney_results, очищаем ключ")
                 if "midjourney_results" in config_public:
