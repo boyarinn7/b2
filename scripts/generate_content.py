@@ -529,7 +529,7 @@ class ContentGenerator:
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
             run_generate_media()  # Запускаем генерацию медиа (если включена)
-            # sys.exit(0)  # Закомментировано для отладки, чтобы увидеть все логи
+            sys.exit(0)  # Закомментировано для отладки, чтобы увидеть все логи
             logger.info("✅ Генерация контента завершена.")
         except Exception as e:
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)

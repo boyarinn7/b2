@@ -303,7 +303,7 @@ def main():
                     save_config_public(b2_client, config_public)
                     logger.info("🔓 Блокировка снята перед запуском generate_media.py")
                 subprocess.run([sys.executable, generate_media_path], check=True)
-            #    sys.exit(0)
+                sys.exit(0)
             else:
                 logger.warning("⚠️ Некорректные данные в midjourney_results, очищаем ключ")
                 if "midjourney_results" in config_public:
@@ -348,7 +348,7 @@ def main():
             logger.info(
                 f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-        #    sys.exit(0)  # Завершаем работу сразу после вызова генератора контента
+            sys.exit(0)  # Завершаем работу сразу после вызова генератора контента
             generation_count += 1  # Эта строка, вероятно, не выполнится из-за sys.exit(0)
             config_public = load_config_public(b2_client)
             logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
@@ -372,4 +372,7 @@ def main():
                     logger.info("🔓 Блокировка снята.")
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
-    #    sys.exit(0)
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()
