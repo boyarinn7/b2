@@ -1,9 +1,9 @@
-import subprocess
 import os
 import json
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from flask import Flask, request, jsonify
+import requests  # Добавляем requests для вызова GitHub API
 
 app = Flask(__name__)
 
@@ -12,9 +12,10 @@ B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
 B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Добавляем токен GitHub
 
 # Проверка переменных окружения
-if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, MIDJOURNEY_API_KEY]):
+if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, MIDJOURNEY_API_KEY, GITHUB_TOKEN]):
     app.logger.error("❌ Не заданы необходимые переменные окружения")
     raise ValueError("❌ Не заданы необходимые переменные окружения")
 
@@ -58,7 +59,7 @@ def save_config_public(config_data):
         app.logger.error(f"❌ Ошибка валидации JSON перед сохранением: {e}")
         raise
     except NoCredentialsError:
-        app.logger.error("❌ Ошибка аутентификации в B2: неверные учетные данные")
+        app.logger.error(f"❌ Ошибка аутентификации в B2: неверные учетные данные")
         raise
     except Exception as e:
         app.logger.error(f"❌ Ошибка сохранения конфигурации в B2: {e}")
@@ -66,7 +67,7 @@ def save_config_public(config_data):
 
 @app.route('/hook', methods=['POST'])
 def webhook_handler():
-    """Обрабатывает вебхук от Midjourney."""
+    """Обрабатывает вебхук от Midjourney и запускает GitHub Actions."""
     # Проверка подлинности запроса
     api_key = request.headers.get("X-API-Key")
     app.logger.info(f"Получен запрос с API-ключом: {api_key}")
@@ -92,8 +93,6 @@ def webhook_handler():
 
         # Загружаем текущую конфигурацию
         config_public = load_config_public()
-
-        # Убедимся, что config_public — это словарь
         if not isinstance(config_public, dict):
             app.logger.warning("⚠️ config_public не является словарем, инициализируем пустой")
             config_public = {"publish": "", "empty": [], "processing_lock": False}
@@ -107,22 +106,24 @@ def webhook_handler():
         # Сохраняем обновленную конфигурацию
         save_config_public(config_public)
 
-        # Новое: сразу загружаем обновленную конфигурацию и логируем её содержимое
+        # Проверяем обновление
         updated_config = load_config_public()
-        app.logger.info("После обновления, config_public: " + json.dumps(updated_config, ensure_ascii=False))
+        app.logger.info(f"После обновления, config_public: {json.dumps(updated_config, ensure_ascii=False)}")
 
-        # Запуск b2_storage_manager.py
-        script_path = "scripts/b2_storage_manager.py"
-        app.logger.info(f"🔄 Запуск скрипта: {script_path}")
-        try:
-            subprocess.run(["python", script_path], check=True)
-            app.logger.info(f"✅ Скрипт {script_path} успешно выполнен")
-        except subprocess.CalledProcessError as e:
-            app.logger.error(f"❌ Ошибка выполнения скрипта {script_path}: {e}")
-            return jsonify({"error": f"Failed to run {script_path}: {str(e)}"}), 500
-        except FileNotFoundError:
-            app.logger.error(f"❌ Скрипт {script_path} не найден")
-            return jsonify({"error": f"Script {script_path} not found"}), 500
+        # Запускаем GitHub Actions через API
+        owner = "boyarinn7"  # Замени на имя владельца репозитория
+        repo = "b2"      # Замени на имя репозитория
+        github_url = f"https://api.github.com/repos/{owner}/{repo}/dispatches"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        payload = {"event_type": "midjourney-task-completed"}
+        response = requests.post(github_url, json=payload, headers=headers)
+        if response.status_code == 204:
+            app.logger.info("✅ GitHub Actions успешно запущен")
+        else:
+            app.logger.error(f"❌ Ошибка запуска GitHub Actions: {response.status_code} - {response.text}")
 
         return jsonify({"message": "Webhook processed"}), 200
 

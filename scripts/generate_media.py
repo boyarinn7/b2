@@ -29,8 +29,7 @@ logger.info("sys.path = " + str(sys.path))
 # Определяем каталог скрипта и добавляем родительский каталог в sys.path
 script_dir = os.path.dirname(__file__)
 parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+sys.path.insert(0, parent_dir)
 
 # Пути к файлам
 CONFIG_GEN_PATH = os.path.abspath(config.get("FILE_PATHS.config_gen", "config/config_gen.json"))
