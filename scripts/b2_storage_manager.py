@@ -62,12 +62,14 @@ def load_config_public(s3):
         s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        logger.info(f"Конфигурация загружена из {local_path}")
+        logger.info(f"Конфигурация загружена из {local_path}: {json.dumps(data, ensure_ascii=False)}")
         return data
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
             logger.warning("⚠️ Конфиг не найден, создаём новый.")
-            return {"processing_lock": False, "empty": [], "generation_id": []}
+            new_data = {"processing_lock": False, "empty": [], "generation_id": []}
+            logger.info(f"Создан новый конфиг: {json.dumps(new_data, ensure_ascii=False)}")
+            return new_data
         logger.error(f"❌ Ошибка загрузки конфига: {e}")
         return {}
     except Exception as e:
@@ -82,10 +84,9 @@ def save_config_public(s3, data):
         with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         s3.upload_file(CONFIG_PUBLIC_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
-        logger.info("✅ Конфигурация успешно сохранена.")
+        logger.info(f"✅ Конфигурация успешно сохранена. Новое содержимое: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
-
 
 def list_files_in_folder(s3, folder_prefix):
     bucket_name = os.getenv("B2_BUCKET_NAME")
