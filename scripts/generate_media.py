@@ -223,11 +223,20 @@ def reset_processing_lock(client):
         download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
+        logger.info(f"Перед сбросом, processing_lock: {config_public.get('processing_lock')}")
         if config_public.get("processing_lock", False):
             config_public["processing_lock"] = False
+        else:
+            logger.info("processing_lock уже сброшен.")
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
         client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
+        logger.info("✅ processing_lock успешно сброшен в config_public.json")
+        # Проверка: повторно загружаем файл и логируем новое состояние
+        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            new_config = json.load(file)
+        logger.info(f"После сброса, config_public: {json.dumps(new_config, ensure_ascii=False)}")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
         handle_error(logger, "Processing Lock Reset Error", e)
