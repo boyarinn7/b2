@@ -286,7 +286,7 @@ def generate_image_with_midjourney(prompt, generation_id):
                 "input": {
                     "prompt": prompt,
                     "aspect_ratio": "16:9",
-                    "process_mode": "v6",
+                    "process_mode": "v5",
                     "webhook_url": "https://midjourney-webhook.onrender.com/hook"  # Указываем ваш вебхук
                 }
             }
