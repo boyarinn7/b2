@@ -65,7 +65,6 @@ def save_config_public(config_data):
         raise
 
 @app.route('/hook', methods=['POST'])
-
 def webhook_handler():
     """Обрабатывает вебхук от Midjourney."""
     # Проверка подлинности запроса
@@ -108,7 +107,7 @@ def webhook_handler():
         # Сохраняем обновленную конфигурацию
         save_config_public(config_public)
 
-        # Новое: сразу загружаем обновленную конфигурацию и логируем её
+        # Новое: сразу загружаем обновленную конфигурацию и логируем её содержимое
         updated_config = load_config_public()
         app.logger.info("После обновления, config_public: " + json.dumps(updated_config, ensure_ascii=False))
 
