@@ -352,20 +352,17 @@ def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     remote_config = "config/config_public.json"
     try:
+        # Загружаем текущую конфигурацию из B2
         config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
         config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
-    except json.JSONDecodeError as e:
-        logger.warning(f"❌ Некорректный JSON: {e}. Воссоздаём файл.")
-        config_data = {"publish": "", "empty": [], "processing_lock": False}
-    except Exception as e:
-        logger.error(f"Ошибка при загрузке config_public.json: {e}")
-        return
-    try:
         if "midjourney_results" in config_data:
+            logger.info("Удаляем ключ midjourney_results из config_public.")
             del config_data["midjourney_results"]
             updated_config = json.dumps(config_data, ensure_ascii=False, indent=4).encode('utf-8')
             b2_client.put_object(Bucket=bucket_name, Key=remote_config, Body=updated_config)
-            logger.info("✅ Ключ midjourney_results удалён")
+            logger.info("✅ Ключ midjourney_results удалён из config_public.")
+        else:
+            logger.info("Ключ midjourney_results отсутствует в config_public, ничего не удаляем.")
     except Exception as e:
         logger.error(f"Ошибка при удалении midjourney_results: {e}")
 
