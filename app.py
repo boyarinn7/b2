@@ -108,6 +108,10 @@ def webhook_handler():
         # Сохраняем обновленную конфигурацию
         save_config_public(config_public)
 
+        # Новое: сразу загружаем обновленную конфигурацию и логируем её
+        updated_config = load_config_public()
+        app.logger.info("После обновления, config_public: " + json.dumps(updated_config, ensure_ascii=False))
+
         # Запуск b2_storage_manager.py
         script_path = "scripts/b2_storage_manager.py"
         app.logger.info(f"🔄 Запуск скрипта: {script_path}")
