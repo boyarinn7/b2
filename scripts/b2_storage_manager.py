@@ -32,7 +32,7 @@ logger.info("Начало выполнения b2_storage_manager")
 logger.info(f"Текущая рабочая директория: {os.getcwd()}")
 
 # Константы с использованием переменных окружения
-CONFIG_PUBLIC_PATH = os.getenv("CONFIG_PUBLIC_PATH")
+CONFIG_PUBLIC_PATH = os.getenv("CONFIG_PUBLIC_PATH", "config_public.json")
 logger.info(f"Локальный путь CONFIG_PUBLIC_PATH: {CONFIG_PUBLIC_PATH}")
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
