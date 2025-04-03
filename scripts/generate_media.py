@@ -286,7 +286,7 @@ def generate_image_with_midjourney(prompt, generation_id):
                 "input": {
                     "prompt": prompt,
                     "aspect_ratio": "16:9",
-                    "process_mode": "turbo",
+                    "process_mode": "v6",
                     "webhook_url": "https://midjourney-webhook.onrender.com/hook"  # Указываем ваш вебхук
                 }
             }
@@ -438,7 +438,7 @@ def generate_runway_video(image_path, script_text):
             base64_image = base64.b64encode(img_file.read()).decode("utf-8")
         client = RunwayML(api_key=api_key)
         task = client.image_to_video.create(
-            model="gen3a_turbo",
+            model="gen4",
             prompt_image=f"data:image/png;base64,{base64_image}",
             prompt_text=script_text,
             duration=10,

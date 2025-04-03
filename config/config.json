@@ -5,15 +5,15 @@
             "bucket_name": "boyarinnbotbucket"
         },
         "midjourney": {
-    "endpoint": "https://api.piapi.ai/api/v1/task",
-    "task_endpoint": "https://api.piapi.ai/midjourney/task"
+            "endpoint": "https://api.piapi.ai/api/v1/task",
+            "task_endpoint": "https://api.piapi.ai/midjourney/task"
         },
         "openai": {
-            "model": "gpt-4"
+            "model": "gpt-4o"
         }
     },
     "OPENAI_SETTINGS": {
-        "model": "gpt-4"
+        "model": "gpt-4o"
     },
     "FILE_PATHS": {
         "meta_folder": "data/meta/",
