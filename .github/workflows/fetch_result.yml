@@ -1,7 +1,7 @@
 name: Fetch MidJourney Result
 on:
   schedule:
-    - cron: "30,45,0 0 * * *" # 00:30, 00:45, 01:00 UTC
+    - cron: "40,55,10 13 * * *" # 13:40, 13:55, 14:10 UTC
   workflow_dispatch:
 jobs:
   fetch-result:

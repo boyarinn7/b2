@@ -1,36 +1,27 @@
 name: B2 Storage Manager Workflow
-
 on:
   schedule:
-    - cron: '10 13 * * *'  # Запуск по расписанию (ежедневно в 13:10 UTC)
-  workflow_dispatch:       # Ручной запуск
-  repository_dispatch:     # Запуск от Render
-    types: [midjourney-task-completed]  # Триггер от вебхука
-
+    - cron: '10 13 * * *'  # 13:10 UTC
+  workflow_dispatch:      # Ручной запуск
 jobs:
   run-b2-storage-manager:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg  # Для moviepy
-
+        sudo apt-get install -y ffmpeg
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt not found"; exit 1; fi
-
     - name: Set environment variables
       run: |
         echo "B2_BUCKET_NAME=${{ secrets.B2_BUCKET_NAME }}" >> $GITHUB_ENV
@@ -53,10 +44,8 @@ jobs:
         echo "FILE_PATHS_FOLDER_444=${{ secrets.FILE_PATHS_FOLDER_444 }}" >> $GITHUB_ENV
         echo "FILE_PATHS_FOLDER_555=${{ secrets.FILE_PATHS_FOLDER_555 }}" >> $GITHUB_ENV
         echo "FILE_PATHS_FOLDER_666=${{ secrets.FILE_PATHS_FOLDER_666 }}" >> $GITHUB_ENV
-
     - name: Set PYTHONPATH
       run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
-
     - name: Check required environment variables
       run: |
         required_vars="B2_BUCKET_NAME B2_ENDPOINT B2_ACCESS_KEY B2_SECRET_KEY OPENAI_API_KEY MIDJOURNEY_API_KEY RUNWAY_API_KEY"
@@ -66,12 +55,10 @@ jobs:
             exit 1
           fi
         done
-
     - name: Check directory structure
       run: |
         ls -la
         echo "Listing scripts directory:"
         ls -la scripts || echo "Scripts directory not found"
-
     - name: Run B2 Storage Manager
       run: python -u scripts/b2_storage_manager.py
