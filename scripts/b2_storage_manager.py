@@ -4,6 +4,8 @@ import logging
 import subprocess
 import re
 import sys
+import time
+
 from botocore.exceptions import ClientError
 
 script_dir = os.path.dirname(__file__)
@@ -288,17 +290,15 @@ def main():
         logger.info("Клиент B2 успешно создан.")
         config_public = load_config_public(b2_client)
 
-        # Шаг 1: Проверка наличия ключа midjourney_results
+        # Шаг 1: Проверка midjourney_results
         midjourney_results = config_public.get("midjourney_results")
         if midjourney_results:
             image_urls = midjourney_results.get("image_urls", [])
-            # Проверка валидности: все URL должны быть строками, начинающимися с http/https
             if image_urls and all(isinstance(url, str) and url.startswith("http") for url in image_urls):
                 logger.info("Найден валидный midjourney_results, запускаем generate_media.py")
                 generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
                 if not os.path.isfile(generate_media_path):
                     raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-                # Снимаем блокировку перед запуском генератора медиа, если она установлена
                 if config_public.get("processing_lock"):
                     config_public["processing_lock"] = False
                     save_config_public(b2_client, config_public)
@@ -311,17 +311,13 @@ def main():
                     del config_public["midjourney_results"]
                     save_config_public(b2_client, config_public)
 
-        # Обновляем конфигурацию после возможной очистки midjourney_results
+        # Шаг 2: Проверка блокировки и midjourney_task
         config_public = load_config_public(b2_client)
-
-        # Убираем прежнюю проверку, чтобы не завершать работу раньше времени:
-        # if not config_public.get("generation_id") and not config_public.get("empty"):
-        #     logger.info("🚦 Нет записей о публикациях и пустых папок. Скрипт завершает работу.")
-        #     return
-
-        # Если процесс уже запущен (блокировка установлена), завершаем работу.
         if config_public.get("processing_lock"):
             logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
+            return
+        if config_public.get("midjourney_task"):
+            logger.info(f"ℹ️ Задача {config_public['midjourney_task']['task_id']} уже отправлена, ждём fetch_media.py")
             return
 
         # Устанавливаем блокировку
@@ -329,41 +325,49 @@ def main():
         save_config_public(b2_client, config_public)
         logger.info("🔒 Блокировка установлена.")
 
-        # Архивация опубликованных групп (если имеются)
+        # Архивация опубликованных групп
         config_public = load_config_public(b2_client)
         if config_public.get("generation_id"):
             handle_publish(b2_client, config_public)
 
-        # Перемещение групп между папками (обеспечивает очередность публикаций)
+        # Перемещение групп между папками
         process_folders(b2_client, FOLDERS)
         config_public = load_config_public(b2_client)
         logger.info(f"После process_folders() config_public: {config_public}")
 
-        # Добавляем дополнительное логирование после перемещения папок
+        # Генерация контента, если есть пустые папки
         config_public = load_config_public(b2_client)
-        logger.info(f"После process_folders() config_public: {config_public}")
-
-        # Цикл генерации контента: если в конфигурации остаются пустые папки (нет полных групп), запускаем генератор контента
-        config_public = load_config_public(b2_client)
-        while config_public.get("empty") and generation_count < MAX_GENERATIONS:
-            logger.info(
-                f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
+        if any_folder_empty(b2_client, FOLDERS) and not midjourney_results and not config_public.get("midjourney_task"):
+            logger.info("⚠️ Обнаружены пустые папки, запускаем генерацию...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-            sys.exit(0)  # Завершаем работу сразу после вызова генератора контента
-            generation_count += 1  # Эта строка, вероятно, не выполнится из-за sys.exit(0)
-            config_public = load_config_public(b2_client)
-            logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
+            generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+            if not os.path.isfile(generate_media_path):
+                raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+            result = subprocess.run([sys.executable, generate_media_path], capture_output=True, text=True)
+            task_id = None
+            for line in result.stdout.splitlines():
+                if "Задача" in line and "отправлена в MidJourney" in line:
+                    task_id = line.split()[1]
+                    break
+            if task_id:
+                config_public["midjourney_task"] = {
+                    "task_id": task_id,
+                    "sent_at": int(time.time())
+                }
+                save_config_public(b2_client, config_public)
+                logger.info(f"✅ Задача {task_id} сохранена в config_public.json")
+            else:
+                logger.error("❌ Не удалось получить task_id из generate_media.py")
+            config_public["processing_lock"] = False
+            save_config_public(b2_client, config_public)
+            logger.info("🔓 Блокировка снята после отправки задачи.")
+            sys.exit(0)
 
-        if generation_count >= MAX_GENERATIONS:
-            logger.info(
-                f"🚫 Достигнут лимит генераций ({MAX_GENERATIONS}). Завершаем работу, даже если остались пустые папки: {config_public.get('empty', [])}")
-        elif not config_public.get("empty"):
-            logger.info("✅ Нет пустых папок – генерация контента завершена.")
+        logger.info("✅ Нет пустых папок или задач для генерации.")
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
     finally:
-        # Сбрасываем блокировку независимо от результатов
         if b2_client:
             try:
                 config_public = load_config_public(b2_client)
