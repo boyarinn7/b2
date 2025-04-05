@@ -14,13 +14,19 @@ from modules.api_clients import get_b2_client
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fetch_media")
 
-MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+# Константы
+CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
+CONFIG_MIDJOURNEY_REMOTE_PATH = "config/config_midjourney.json"
+CONFIG_PUBLIC_LOCAL_PATH = "config_public.json"  # Добавлено для локального пути
 CONFIG_PUBLIC_PATH = "config/config_public.json"
 CONFIG_FETCH_PATH = "config/config_fetch.json"
+MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
 
+# Инициализация
 config = ConfigManager()
 b2_client = get_b2_client()
 
+# Функции для работы с конфигами
 def load_config(file_path):
     try:
         config_obj = b2_client.get_object(Bucket=config.get("API_KEYS.b2.bucket_name"), Key=file_path)
@@ -41,9 +47,52 @@ def save_config(file_path, config_data):
     )
     logger.info(f"✅ Конфигурация сохранена в {file_path}")
 
+def load_config_midjourney(client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        client.download_file(bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
+        with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logger.warning(f"⚠️ Конфиг {CONFIG_MIDJOURNEY_REMOTE_PATH} не найден, создаём новый: {e}")
+        return {"midjourney_task": None}
+
+def save_config_midjourney(client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_MIDJOURNEY_LOCAL_PATH, bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH)
+        logger.info(f"✅ config_midjourney.json сохранён в B2: {json.dumps(data, ensure_ascii=False)}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения config_midjourney.json: {e}")
+        raise
+
+def load_config_public(client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        client.download_file(bucket_name, CONFIG_PUBLIC_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logger.warning(f"⚠️ Конфиг {CONFIG_PUBLIC_PATH} не найден, создаём новый: {e}")
+        return {}
+
+def save_config_public(client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        logger.info(f"✅ config_public.json сохранён в B2")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения config_public.json: {e}")
+        raise
+
+# Функции для получения результатов
 def fetch_midjourney_result(task_id):
     headers = {"X-API-Key": MIDJOURNEY_API_KEY}
-    response = requests.get(f"{config.get('API_KEYS.midjourney.endpoint')}/{task_id}", headers=headers, timeout=30)
+    response = requests.get(f"{config.get('API_KEYS.midjourney.task_endpoint')}/{task_id}", headers=headers, timeout=30)
     data = response.json()
     if data["code"] == 200 and data["data"]["status"] == "completed":
         image_url = data["data"]["output"]["image_url"]
@@ -66,13 +115,13 @@ def main():
         logger.info("ℹ️ Задача уже завершена (done: true), завершаем работу")
         return
 
-    config_public = load_config(CONFIG_PUBLIC_PATH)
-    if "midjourney_task" not in config_public:
-        logger.info("ℹ️ Нет задач для проверки в config_public.json")
-        return
-
-    task_id = config_public["midjourney_task"]["task_id"]
-    sent_at = config_public["midjourney_task"]["sent_at"]
+    config_midjourney = load_config_midjourney(b2_client)
+    if "midjourney_task" not in config_midjourney or not config_midjourney["midjourney_task"]:
+        logger.info("ℹ️ Нет задач для проверки в config_midjourney.json")
+        sys.exit(0)
+    task_info = config_midjourney["midjourney_task"]
+    task_id = task_info["task_id"]
+    sent_at = task_info["sent_at"]
     current_time = int(time.time())
     elapsed_time = current_time - sent_at
     fetch_attempts = config_fetch.get("fetch_attempts", 0)
@@ -84,6 +133,8 @@ def main():
         logger.info(f"ℹ️ Слишком рано ({elapsed_time} сек < 15 мин), ждём следующего запуска")
         return
 
+    config_public = load_config_public(b2_client)  # Загружаем config_public для записи результатов
+
     if elapsed_time >= check_intervals[min(fetch_attempts, len(check_intervals) - 1)]:
         image_url = fetch_midjourney_result(task_id)
         if image_url:
@@ -91,11 +142,13 @@ def main():
                 "task_id": task_id,
                 "image_urls": [image_url]
             }
-            del config_public["midjourney_task"]
-            save_config(CONFIG_PUBLIC_PATH, config_public)
+            save_config_public(b2_client, config_public)
             config_fetch["done"] = True
             config_fetch["fetch_attempts"] = 0
             save_config(CONFIG_FETCH_PATH, config_fetch)
+            config_midjourney["midjourney_task"] = None  # Очищаем задачу
+            save_config_midjourney(b2_client, config_midjourney)
+            logger.info("✅ Задача завершена, config_midjourney.json очищен.")
             logger.info("🔄 Запускаем b2_storage_manager.py для обработки результата")
             subprocess.run(["python", "scripts/b2_storage_manager.py"])
         else:
@@ -115,20 +168,20 @@ def main():
                     dalle_url = fetch_dalle_result(prompt, generation_id)
                     if dalle_url:
                         config_public["midjourney_results"] = {"task_id": task_id, "image_urls": [dalle_url]}
-                        del config_public["midjourney_task"]
-                        save_config(CONFIG_PUBLIC_PATH, config_public)
+                        save_config_public(b2_client, config_public)
                         config_fetch["done"] = True
                     else:
                         logger.error("❌ DALL·E 3 тоже не сработал, сбрасываем задачу")
-                        del config_public["midjourney_task"]
-                        save_config(CONFIG_PUBLIC_PATH, config_public)
                         config_fetch["done"] = False
+                    config_fetch["fetch_attempts"] = 0
+                    config_midjourney["midjourney_task"] = None  # Очищаем задачу
+                    save_config_midjourney(b2_client, config_midjourney)
                 else:
                     logger.info("ℹ️ DALL·E 3 отключён, сбрасываем задачу")
-                    del config_public["midjourney_task"]
-                    save_config(CONFIG_PUBLIC_PATH, config_public)
                     config_fetch["done"] = False
-                config_fetch["fetch_attempts"] = 0
+                    config_fetch["fetch_attempts"] = 0
+                    config_midjourney["midjourney_task"] = None  # Очищаем задачу
+                    save_config_midjourney(b2_client, config_midjourney)
             save_config(CONFIG_FETCH_PATH, config_fetch)
             logger.info(f"ℹ️ Попытка {fetch_attempts}/5 завершена")
 

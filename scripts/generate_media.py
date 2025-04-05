@@ -37,6 +37,9 @@ CONFIG_PUBLIC_REMOTE_PATH = config.get("FILE_PATHS.config_public", "config/confi
 CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath(config.get("FILE_PATHS.config_public_local", "config_public.json"))
 CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")
 SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
+CONFIG_MIDJOURNEY_REMOTE_PATH = "config/config_midjourney.json"
+
 
 # Настройки генерации из конфига
 USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
@@ -308,6 +311,26 @@ def save_config_public(client, data):
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения config_public.json: {e}")
 
+def load_config_midjourney(client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        client.download_file(bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
+        with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logger.warning(f"⚠️ Конфиг {CONFIG_MIDJOURNEY_REMOTE_PATH} не найден, создаём новый: {e}")
+        return {"midjourney_task": None}
+
+def save_config_midjourney(client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_MIDJOURNEY_LOCAL_PATH, bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH)
+        logger.info(f"✅ config_midjourney.json сохранён в B2: {json.dumps(data, ensure_ascii=False)}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения config_midjourney.json: {e}")
+        raise
 
 # Обновленная функция generate_image_with_midjourney с расписанием
 def generate_image_with_midjourney(prompt, generation_id, target_folder):
@@ -345,13 +368,13 @@ def generate_image_with_midjourney(prompt, generation_id, target_folder):
                 if not task_id:
                     raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
 
-                config_public = load_config_public(b2_client)
-                config_public["midjourney_task"] = {
+                config_midjourney = load_config_midjourney(b2_client)
+                config_midjourney["midjourney_task"] = {
                     "task_id": task_id,
                     "sent_at": int(time.time())
                 }
-                save_config_public(b2_client, config_public)
-                logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_public.json")
+                save_config_midjourney(b2_client, config_midjourney)
+                logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_midjourney.json")
                 sys.exit(0)
 
             except (requests.exceptions.RequestException, ValueError) as e:
