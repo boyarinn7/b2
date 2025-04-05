@@ -4,6 +4,10 @@ import requests
 import json
 import subprocess
 import logging
+import sys
+
+# Добавляем корень проекта в sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from modules.config_manager import ConfigManager
 from modules.api_clients import get_b2_client
 
