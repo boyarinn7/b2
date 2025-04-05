@@ -128,7 +128,7 @@ def main():
 
     logger.info(f"ℹ️ Прошло {elapsed_time} секунд с момента отправки задачи {task_id}, попытка {fetch_attempts + 1}")
 
-    check_intervals = [900, 1200, 1800, 3600, 18000]  # 15, 20, 30, 60, 300 минут
+    check_intervals = [60, 120, 180, 300, 600]  # 15, 20, 30, 60, 300 минут
     if elapsed_time < check_intervals[0]:
         logger.info(f"ℹ️ Слишком рано ({elapsed_time} сек < 15 мин), ждём следующего запуска")
         return
