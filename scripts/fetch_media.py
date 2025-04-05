@@ -17,7 +17,7 @@ logger = logging.getLogger("fetch_media")
 # Константы
 CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
 CONFIG_MIDJOURNEY_REMOTE_PATH = "config/config_midjourney.json"
-CONFIG_PUBLIC_LOCAL_PATH = "config_public.json"  # Добавлено для локального пути
+CONFIG_PUBLIC_LOCAL_PATH = "config_public.json"
 CONFIG_PUBLIC_PATH = "config/config_public.json"
 CONFIG_FETCH_PATH = "config/config_fetch.json"
 MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
@@ -92,22 +92,42 @@ def save_config_public(client, data):
 # Функции для получения результатов
 def fetch_midjourney_result(task_id):
     headers = {"X-API-Key": MIDJOURNEY_API_KEY}
-    response = requests.get(f"{config.get('API_KEYS.midjourney.task_endpoint')}/{task_id}", headers=headers, timeout=30)
-    data = response.json()
-    if data["code"] == 200 and data["data"]["status"] == "completed":
-        image_url = data["data"]["output"]["image_url"]
-        logger.info(f"✅ Результат получен: {image_url}")
-        return image_url
-    elif data["data"]["status"] == "pending":
-        logger.info("ℹ️ Задача ещё в процессе")
+    endpoint = f"{config.get('API_KEYS.midjourney.task_endpoint')}/{task_id}"
+    try:
+        response = requests.get(endpoint, headers=headers, timeout=30)
+        logger.info(f"ℹ️ Ответ от MidJourney: {response.status_code} - {response.text[:200]}")
+        response.raise_for_status()
+        data = response.json()
+        if data["code"] == 200 and data["data"]["status"] == "completed":
+            output = data["data"]["output"]
+            # Проверяем, один URL или массив
+            if "image_urls" in output and isinstance(output["image_urls"], list):
+                image_urls = output["image_urls"]
+                logger.info(f"✅ Получено {len(image_urls)} URL: {image_urls}")
+                return image_urls[0]  # Берём первый URL, можно позже брать все
+            elif "image_url" in output:
+                image_url = output["image_url"]
+                logger.info(f"✅ Результат получен: {image_url}")
+                return image_url
+            else:
+                logger.error(f"❌ Нет URL в output: {output}")
+                return None
+        elif data["data"]["status"] == "pending":
+            logger.info("ℹ️ Задача ещё в процессе")
+            return None
+        else:
+            logger.error(f"❌ Неожиданный статус задачи: {data}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка запроса к MidJourney: {e}")
         return None
-    else:
-        raise Exception(f"Ошибка получения результата: {data}")
+    except ValueError as e:
+        logger.error(f"❌ Ошибка разбора JSON от MidJourney: {e}, ответ: {response.text}")
+        return None
 
 def fetch_dalle_result(prompt, generation_id):
-    # Заглушка для DALL·E 3, реализация будет в generate_media.py
     logger.info(f"ℹ️ Переключаемся на DALL·E 3 для {generation_id} с промптом: {prompt[:50]}...")
-    return None  # Пока возвращаем None, реализацию добавим позже
+    return None  # Пока заглушка
 
 def main():
     config_fetch = load_config(CONFIG_FETCH_PATH)
@@ -128,25 +148,25 @@ def main():
 
     logger.info(f"ℹ️ Прошло {elapsed_time} секунд с момента отправки задачи {task_id}, попытка {fetch_attempts + 1}")
 
-    check_intervals = [60, 120, 180, 300, 600]  # 15, 20, 30, 60, 300 минут
+    check_intervals = [900, 1200, 1800, 3600, 18000]  # 15, 20, 30, 60, 300 минут
     if elapsed_time < check_intervals[0]:
         logger.info(f"ℹ️ Слишком рано ({elapsed_time} сек < 15 мин), ждём следующего запуска")
         return
 
-    config_public = load_config_public(b2_client)  # Загружаем config_public для записи результатов
+    config_public = load_config_public(b2_client)
 
     if elapsed_time >= check_intervals[min(fetch_attempts, len(check_intervals) - 1)]:
         image_url = fetch_midjourney_result(task_id)
         if image_url:
             config_public["midjourney_results"] = {
                 "task_id": task_id,
-                "image_urls": [image_url]
+                "image_urls": [image_url]  # Оставляем как список для совместимости
             }
             save_config_public(b2_client, config_public)
             config_fetch["done"] = True
             config_fetch["fetch_attempts"] = 0
             save_config(CONFIG_FETCH_PATH, config_fetch)
-            config_midjourney["midjourney_task"] = None  # Очищаем задачу
+            config_midjourney["midjourney_task"] = None
             save_config_midjourney(b2_client, config_midjourney)
             logger.info("✅ Задача завершена, config_midjourney.json очищен.")
             logger.info("🔄 Запускаем b2_storage_manager.py для обработки результата")
@@ -155,7 +175,7 @@ def main():
             fetch_attempts += 1
             config_fetch["fetch_attempts"] = fetch_attempts
 
-            if fetch_attempts >= 5:  # После 300 минут
+            if fetch_attempts >= 5:
                 logger.warning("⚠️ MidJourney не ответил за 5 часов")
                 if config.get("IMAGE_GENERATION.dalle_enabled", False):
                     logger.info("ℹ️ Пробуем DALL·E 3 как запасной вариант")
@@ -174,13 +194,13 @@ def main():
                         logger.error("❌ DALL·E 3 тоже не сработал, сбрасываем задачу")
                         config_fetch["done"] = False
                     config_fetch["fetch_attempts"] = 0
-                    config_midjourney["midjourney_task"] = None  # Очищаем задачу
+                    config_midjourney["midjourney_task"] = None
                     save_config_midjourney(b2_client, config_midjourney)
                 else:
                     logger.info("ℹ️ DALL·E 3 отключён, сбрасываем задачу")
                     config_fetch["done"] = False
                     config_fetch["fetch_attempts"] = 0
-                    config_midjourney["midjourney_task"] = None  # Очищаем задачу
+                    config_midjourney["midjourney_task"] = None
                     save_config_midjourney(b2_client, config_midjourney)
             save_config(CONFIG_FETCH_PATH, config_fetch)
             logger.info(f"ℹ️ Попытка {fetch_attempts}/5 завершена")
