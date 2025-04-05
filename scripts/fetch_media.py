@@ -92,7 +92,8 @@ def save_config_public(client, data):
 # Функции для получения результатов
 def fetch_midjourney_result(task_id):
     headers = {"X-API-Key": MIDJOURNEY_API_KEY}
-    endpoint = f"{config.get('API_KEYS.midjourney.task_endpoint')}/{task_id}"
+    # Исправляем эндпоинт на правильный
+    endpoint = f"https://api.piapi.ai/api/v1/task/{task_id}"
     try:
         response = requests.get(endpoint, headers=headers, timeout=30)
         logger.info(f"ℹ️ Ответ от MidJourney: {response.status_code} - {response.text[:200]}")
@@ -100,11 +101,10 @@ def fetch_midjourney_result(task_id):
         data = response.json()
         if data["code"] == 200 and data["data"]["status"] == "completed":
             output = data["data"]["output"]
-            # Проверяем, один URL или массив
             if "image_urls" in output and isinstance(output["image_urls"], list):
                 image_urls = output["image_urls"]
                 logger.info(f"✅ Получено {len(image_urls)} URL: {image_urls}")
-                return image_urls[0]  # Берём первый URL, можно позже брать все
+                return image_urls[0]
             elif "image_url" in output:
                 image_url = output["image_url"]
                 logger.info(f"✅ Результат получен: {image_url}")
@@ -160,7 +160,7 @@ def main():
         if image_url:
             config_public["midjourney_results"] = {
                 "task_id": task_id,
-                "image_urls": [image_url]  # Оставляем как список для совместимости
+                "image_urls": [image_url]
             }
             save_config_public(b2_client, config_public)
             config_fetch["done"] = True
