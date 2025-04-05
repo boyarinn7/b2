@@ -93,6 +93,11 @@ def save_to_b2(folder, content):
         logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
     except Exception as e:
         handle_error("B2 Upload Error", str(e), e)
+        # Резервное сохранение
+        failed_path = f"failed_{file_id}"
+        with open(failed_path, "w", encoding="utf-8") as f:
+            json.dump(content, f, ensure_ascii=False, indent=4)
+        logger.warning(f"⚠️ Сохранена резервная копия в {failed_path}")
 
 class ContentGenerator:
     def __init__(self):

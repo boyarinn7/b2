@@ -286,49 +286,96 @@ def generate_script_and_frame(topic):
                 return None, None
     return None, None
 
-def generate_image_with_midjourney(prompt, generation_id):
-    """Генерирует изображение с помощью Midjourney, сохраняет task_id и завершает работу."""
-    for attempt in range(MAX_ATTEMPTS):
-        try:
-            headers = {
-                "X-API-Key": MIDJOURNEY_API_KEY,
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "midjourney",
-                "task_type": "imagine",
-                "input": {
-                    "prompt": prompt,
-                    "aspect_ratio": "16:9",
-                    "process_mode": "v5"
+def load_config_public(client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_PUBLIC_LOCAL_PATH
+    try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        client.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        with open(local_path, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки config_public.json: {e}")
+        return {}
+
+def save_config_public(client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    try:
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
+        logger.info("✅ config_public.json сохранён в B2.")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения config_public.json: {e}")
+
+
+# Обновленная функция generate_image_with_midjourney с расписанием
+def generate_image_with_midjourney(prompt, generation_id, target_folder):
+    schedule = [
+        (3, 60, 300),  # 3 попытки с интервалом 1 мин, перерыв 5 мин
+        (3, 60, 1800),  # 3 попытки с интервалом 1 мин, перерыв 30 мин
+        (3, 60, 0)  # 3 попытки с интервалом 1 мин, без перерыва
+    ]
+
+    total_attempts = 0
+    b2_client = get_b2_client()
+
+    for attempts, interval, break_duration in schedule:
+        for attempt in range(attempts):
+            total_attempts += 1
+            try:
+                headers = {
+                    "X-API-Key": MIDJOURNEY_API_KEY,
+                    "Content-Type": "application/json"
                 }
-            }
-            logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS}: Запрос к Midjourney: {prompt[:100]}...")
-            response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers)
-            response.raise_for_status()
-            response_json = response.json()
-            logger.info(f"Ответ от Midjourney: {response_json}")
+                payload = {
+                    "model": "midjourney",
+                    "task_type": "imagine",
+                    "input": {
+                        "prompt": prompt,
+                        "aspect_ratio": "16:9",
+                        "process_mode": "v5"
+                    }
+                }
+                logger.info(f"Попытка {total_attempts}/9: Запрос к MidJourney: {prompt[:100]}...")
+                response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers, timeout=30)
+                response.raise_for_status()
+                response_json = response.json()
+                task_id = response_json.get("data", {}).get("task_id")
+                if not task_id:
+                    raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
 
-            task_id = response_json.get("data", {}).get("task_id")
-            if not task_id:
-                raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
+                config_public = load_config_public(b2_client)
+                config_public["midjourney_task"] = {
+                    "task_id": task_id,
+                    "sent_at": int(time.time())
+                }
+                save_config_public(b2_client, config_public)
+                logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_public.json")
+                sys.exit(0)
 
-            logger.info(f"Задача {task_id} отправлена в MidJourney, завершение работы")
-            sys.exit(0)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка Midjourney (попытка {attempt + 1}/{MAX_ATTEMPTS}): {e}")
-            if 'response' in locals():
-                logger.error(f"Текст ответа: {response.text}")
-            if attempt < MAX_ATTEMPTS - 1:
-                logger.info("Повторная попытка через 5 секунд...")
-                time.sleep(5)
-            else:
-                raise
-        except ValueError as e:
-            logger.error(f"Ошибка обработки ответа Midjourney: {e}")
-            raise
-    raise Exception("Не удалось отправить запрос в Midjourney после всех попыток")
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logger.error(f"Ошибка MidJourney (попытка {total_attempts}/9): {e}")
+                if 'response' in locals():
+                    logger.error(f"Текст ответа: {response.text}")
+                if total_attempts == 9:
+                    logger.warning("⚠️ MidJourney не ответил после 9 попыток, переключаемся на DALL·E 3")
+                    if DALLE_ENABLED:
+                        image_path = generate_image_with_dalle(prompt, generation_id)
+                        if image_path:
+                            logger.info(f"✅ DALL·E 3 сгенерировал изображение: {image_path}")
+                            upload_to_b2(b2_client, target_folder, image_path)
+                            sys.exit(0)
+                        else:
+                            raise Exception("Не удалось сгенерировать изображение через DALL·E 3")
+                    else:
+                        raise Exception("MidJourney не ответил, и DALL·E 3 отключен")
+                elif attempt < attempts - 1:
+                    logger.info(f"⏳ Ожидание {interval} секунд перед следующей попыткой")
+                    time.sleep(interval)
+                elif break_duration > 0:
+                    logger.info(f"⏳ Перерыв {break_duration // 60} минут перед следующим блоком")
+                    time.sleep(break_duration)
 
 def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -373,13 +420,16 @@ def generate_image_with_dalle(prompt, generation_id):
                 return None
     return None
 
-def generate_image(prompt, generation_id):
+# Обновленная функция generate_image для передачи target_folder
+def generate_image(prompt, generation_id, target_folder):
     if MIDJOURNEY_ENABLED:
         logger.info("🎨 Используем Midjourney для генерации изображения")
-        return generate_image_with_midjourney(prompt, generation_id)
+        generate_image_with_midjourney(prompt, generation_id, target_folder)
     elif DALLE_ENABLED:
         logger.info("🎨 Используем DALL·E 3 для генерации изображения")
-        return generate_image_with_dalle(prompt, generation_id)
+        image_path = generate_image_with_dalle(prompt, generation_id)
+        if image_path:
+            upload_to_b2(get_b2_client(), target_folder, image_path)
     else:
         raise ValueError("Ни Midjourney, ни DALL·E 3 не включены в конфиге")
 
@@ -481,8 +531,8 @@ def main():
         logger.info(f"📂 ID генерации: {generation_id}")
 
         if not os.path.exists(CONTENT_OUTPUT_PATH):
-            logger.warning("⚠️ generated_content.json отсутствует, запускаем генерацию")
-            subprocess.run([sys.executable, os.path.join(SCRIPTS_FOLDER, "generate_content.py")], check=True)
+            raise FileNotFoundError(
+                f"❌ Файл {CONTENT_OUTPUT_PATH} отсутствует. Запустите generate_content.py через b2_storage_manager.py")
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
             generated_content = json.load(f)
 
@@ -559,6 +609,7 @@ def main():
                 subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
                 sys.exit(0)
 
+        # Если midjourney_results нет, генерируем сценарий и изображение
         script_text, first_frame_description = generate_script_and_frame(topic)
         if not script_text or not first_frame_description:
             raise ValueError("Не удалось сгенерировать сценарий или описание")
@@ -567,11 +618,14 @@ def main():
         with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
             json.dump(generated_content, f, ensure_ascii=False, indent=4)
         logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
-        generate_image(first_frame_description, generation_id)  # Завершит выполнение здесь
+
+        # Генерация изображения с новым расписанием
+        generate_image(first_frame_description, generation_id, target_folder)
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
+
 
 if __name__ == "__main__":
     try:
