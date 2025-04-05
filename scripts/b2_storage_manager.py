@@ -311,8 +311,10 @@ def main():
                     del config_public["midjourney_results"]
                     save_config_public(b2_client, config_public)
 
-        # Шаг 2: Проверка блокировки и midjourney_task
+        # Обновляем конфигурацию
         config_public = load_config_public(b2_client)
+
+        # Шаг 2: Проверка блокировки и midjourney_task
         if config_public.get("processing_lock"):
             logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
             return
@@ -335,35 +337,54 @@ def main():
         config_public = load_config_public(b2_client)
         logger.info(f"После process_folders() config_public: {config_public}")
 
-        # Генерация контента, если есть пустые папки
+        # Добавляем дополнительное логирование после перемещения папок
         config_public = load_config_public(b2_client)
-        if any_folder_empty(b2_client, FOLDERS) and not midjourney_results and not config_public.get("midjourney_task"):
-            logger.info("⚠️ Обнаружены пустые папки, запускаем генерацию...")
-            subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-            generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
-            if not os.path.isfile(generate_media_path):
-                raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-            result = subprocess.run([sys.executable, generate_media_path], capture_output=True, text=True)
-            task_id = None
-            for line in result.stdout.splitlines():
-                if "Задача" in line and "отправлена в MidJourney" in line:
-                    task_id = line.split()[1]
-                    break
-            if task_id:
-                config_public["midjourney_task"] = {
-                    "task_id": task_id,
-                    "sent_at": int(time.time())
-                }
-                save_config_public(b2_client, config_public)
-                logger.info(f"✅ Задача {task_id} сохранена в config_public.json")
-            else:
-                logger.error("❌ Не удалось получить task_id из generate_media.py")
-            config_public["processing_lock"] = False
-            save_config_public(b2_client, config_public)
-            logger.info("🔓 Блокировка снята после отправки задачи.")
-            sys.exit(0)
+        logger.info(f"После process_folders() config_public: {config_public}")
 
-        logger.info("✅ Нет пустых папок или задач для генерации.")
+        # Цикл генерации контента с учётом MidJourney
+        config_public = load_config_public(b2_client)
+        while config_public.get("empty") and generation_count < MAX_GENERATIONS:
+            logger.info(
+                f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
+            if not midjourney_results and not config_public.get("midjourney_task"):
+                subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
+                generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                if not os.path.isfile(generate_media_path):
+                    raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+                result = subprocess.run([sys.executable, generate_media_path], capture_output=True, text=True)
+                task_id = None
+                for line in result.stdout.splitlines():
+                    if "Задача" in line and "отправлена в MidJourney" in line:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == "Задача" and i + 1 < len(parts):
+                                task_id = parts[i + 1]
+                                break
+                        if task_id:
+                            break
+                if task_id:
+                    config_public["midjourney_task"] = {
+                        "task_id": task_id,
+                        "sent_at": int(time.time())
+                    }
+                    save_config_public(b2_client, config_public)
+                    logger.info(f"✅ Задача {task_id} сохранена в config_public.json")
+                else:
+                    logger.error(f"❌ Не удалось найти task_id в выводе: {result.stdout}")
+                    logger.error(f"Ошибка: {result.stderr}")
+                config_public["processing_lock"] = False
+                save_config_public(b2_client, config_public)
+                logger.info("🔓 Блокировка снята после отправки задачи.")
+                sys.exit(0)  # Завершаем после первой генерации, как в старой версии
+            generation_count += 1
+            config_public = load_config_public(b2_client)
+            logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
+
+        if generation_count >= MAX_GENERATIONS:
+            logger.info(
+                f"🚫 Достигнут лимит генераций ({MAX_GENERATIONS}). Завершаем работу, даже если остались пустые папки: {config_public.get('empty', [])}")
+        elif not config_public.get("empty"):
+            logger.info("✅ Нет пустых папок – генерация контента завершена.")
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
@@ -378,6 +399,6 @@ def main():
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
         sys.exit(0)
-
+        
 if __name__ == "__main__":
     main()
