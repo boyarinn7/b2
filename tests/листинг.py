@@ -28,7 +28,7 @@ s3_client = boto3.client(
 
 
 def list_folder(bucket_name, prefix):
-    """Выводит содержимое папки в виде таблицы"""
+    """Выводит содержимое папки в виде таблицы."""
     table = PrettyTable(["Файл", "Размер (KB)"])
     try:
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
@@ -44,8 +44,8 @@ def list_folder(bucket_name, prefix):
         logging.error(f"❌ Ошибка при листинге {prefix}: {e}")
 
 
-def get_config(bucket_name, config_file="config/config_public.json"):
-    """Проверяет и загружает config_public.json"""
+def get_config(bucket_name, config_file):
+    """Загружает и выводит содержимое JSON-конфига из B2."""
     try:
         response = s3_client.get_object(Bucket=bucket_name, Key=config_file)
         config_data = json.loads(response["Body"].read().decode("utf-8"))
@@ -53,7 +53,6 @@ def get_config(bucket_name, config_file="config/config_public.json"):
         table = PrettyTable(["Параметр", "Значение"])
         for key, value in config_data.items():
             table.add_row([key, json.dumps(value, ensure_ascii=False)])
-
         logging.info(f"\n📄 Содержимое {config_file}:\n{table}")
         return config_data
 
@@ -68,11 +67,16 @@ def get_config(bucket_name, config_file="config/config_public.json"):
         return None
 
 
-# Выполняем листинг в виде таблицы
-list_folder(B2_BUCKET_NAME, "444/")
-list_folder(B2_BUCKET_NAME, "555/")
-list_folder(B2_BUCKET_NAME, "666/")
-list_folder(B2_BUCKET_NAME, "config/")  # Добавлен листинг папки config
+if __name__ == "__main__":
+    # Листинг других папок (как в оригинале)
+    list_folder(B2_BUCKET_NAME, "444/")
+    list_folder(B2_BUCKET_NAME, "555/")
+    list_folder(B2_BUCKET_NAME, "666/")
 
-# Проверяем и загружаем конфиг
-get_config(B2_BUCKET_NAME)
+    # Листинг папки config
+    list_folder(B2_BUCKET_NAME, "config/")
+
+    # Вывод содержимого конфигурационных файлов
+    get_config(B2_BUCKET_NAME, "config/config_public.json")
+    get_config(B2_BUCKET_NAME, "config/config_fetch.json")
+    get_config(B2_BUCKET_NAME, "config/config_midjourney.json")

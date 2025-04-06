@@ -1,7 +1,7 @@
 name: B2 Storage Manager Workflow
 on:
   schedule:
-    - cron: '10 13 * * *'  # 13:10 UTC
+    - cron: '* * * * *'  # 13:10 UTC
   workflow_dispatch:      # Ручной запуск
 jobs:
   run-b2-storage-manager:
