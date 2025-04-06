@@ -4,7 +4,7 @@ import logging
 import subprocess
 import re
 import sys
-import time
+from datetime import datetime
 from botocore.exceptions import ClientError
 
 script_dir = os.path.dirname(__file__)
@@ -27,6 +27,9 @@ logger.info("Начало выполнения b2_storage_manager")
 
 CONFIG_PUBLIC_PATH = os.getenv("CONFIG_PUBLIC_PATH", "config/config_public.json")
 CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
+CONFIG_GEN_PATH = "config/config_gen.json"  # Добавлено для generation_id
+CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"  # Добавлено для midjourney_results
+CONTENT_OUTPUT_PATH = "generated_content.json"  # Для интеграции медиа
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get("FILE_PATHS.folder_444", "444/"),
@@ -46,7 +49,9 @@ def load_config_public(s3):
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
-            return json.load(file)
+            data = json.load(file)
+        logger.info(f"Loaded {CONFIG_PUBLIC_REMOTE_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        return data
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
             logger.warning("⚠️ Конфиг не найден, создаём новый.")
@@ -66,9 +71,70 @@ def save_config_public(s3, data):
         with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         s3.upload_file(CONFIG_PUBLIC_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
-        logger.info(f"✅ Конфигурация успешно сохранена.")
+        logger.info(f"Saved {CONFIG_PUBLIC_REMOTE_PATH}: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
+
+def load_config_gen(s3):
+    try:
+        local_path = "config_gen.json"
+        s3.download_file(os.getenv("B2_BUCKET_NAME"), CONFIG_GEN_PATH, local_path)
+        with open(local_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        logger.info(f"Loaded {CONFIG_GEN_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        return data
+    except Exception as e:
+        logger.warning(f"Config {CONFIG_GEN_PATH} not found or invalid: {e}")
+        return {}
+
+def save_config_gen(s3, data):
+    local_path = "config_gen.json"
+    with open(local_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    s3.upload_file(local_path, os.getenv("B2_BUCKET_NAME"), CONFIG_GEN_PATH)
+    logger.info(f"Saved {CONFIG_GEN_PATH}: {json.dumps(data, ensure_ascii=False)}")
+
+def load_config_midjourney(s3):
+    try:
+        local_path = "config_midjourney.json"
+        s3.download_file(os.getenv("B2_BUCKET_NAME"), CONFIG_MIDJOURNEY_PATH, local_path)
+        with open(local_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        logger.info(f"Loaded {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        return data
+    except Exception as e:
+        logger.warning(f"Config {CONFIG_MIDJOURNEY_PATH} not found or invalid: {e}")
+        return {}
+
+def save_config_midjourney(s3, data):
+    local_path = "config_midjourney.json"
+    with open(local_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    s3.upload_file(local_path, os.getenv("B2_BUCKET_NAME"), CONFIG_MIDJOURNEY_PATH)
+    logger.info(f"Saved {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
+
+def generate_file_id():
+    now = datetime.utcnow()
+    return f"{now.strftime('%Y%m%d-%H%M')}"
+
+def update_content_json(s3, target_folder, generation_id):
+    json_path = f"{target_folder}{generation_id}.json"
+    local_json = "temp_content.json"
+    try:
+        s3.download_file(os.getenv("B2_BUCKET_NAME"), json_path, local_json)
+        with open(local_json, 'r', encoding='utf-8') as f:
+            content_dict = json.load(f)
+        with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
+            media_data = json.load(f)
+        content_dict["script"] = media_data.get("script", "")
+        content_dict["image_url"] = f"{target_folder}{generation_id}.png"
+        content_dict["video_url"] = f"{target_folder}{generation_id}.mp4"
+        with open(local_json, 'w', encoding='utf-8') as f:
+            json.dump(content_dict, f, indent=4, ensure_ascii=False)
+        s3.upload_file(local_json, os.getenv("B2_BUCKET_NAME"), json_path)
+        logger.info(f"Updated {json_path}: {json.dumps(content_dict, ensure_ascii=False)}")
+    except Exception as e:
+        logger.error(f"Failed to update {json_path}: {e}")
 
 def list_files_in_folder(s3, folder_prefix):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -191,13 +257,18 @@ def main():
         b2_client = get_b2_client()
         logger.info("Клиент B2 успешно создан.")
         config_public = load_config_public(b2_client)
+        config_gen = load_config_gen(b2_client)
+        config_midjourney = load_config_midjourney(b2_client)
 
-        # Инициализация страховки
-        generation_attempts = 0
-        MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)  # Берем из конфига или 3 по умолчанию
+        # Проверка или генерация generation_id
+        generation_id = config_gen.get("generation_id")
+        if not generation_id:
+            generation_id = generate_file_id()
+            config_gen["generation_id"] = generation_id
+            save_config_gen(b2_client, config_gen)
 
         # Проверка midjourney_results
-        midjourney_results = config_public.get("midjourney_results")
+        midjourney_results = config_midjourney.get("midjourney_results")
         if midjourney_results:
             image_urls = midjourney_results.get("image_urls", [])
             if image_urls and all(isinstance(url, str) and url.startswith("http") for url in image_urls):
@@ -209,13 +280,17 @@ def main():
                     config_public["processing_lock"] = False
                     save_config_public(b2_client, config_public)
                     logger.info("🔓 Блокировка снята перед запуском generate_media.py")
-                subprocess.run([sys.executable, generate_media_path], check=True)
+                result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                if result.returncode == 0:
+                    target_folder = config_public["empty"][0] if config_public.get("empty") else FOLDERS[-1]
+                    update_content_json(b2_client, target_folder, generation_id)
+                    config_midjourney["midjourney_results"] = {}
+                    save_config_midjourney(b2_client, config_midjourney)
                 sys.exit(0)
             else:
                 logger.warning("⚠️ Некорректные данные в midjourney_results, очищаем ключ")
-                if "midjourney_results" in config_public:
-                    del config_public["midjourney_results"]
-                    save_config_public(b2_client, config_public)
+                config_midjourney["midjourney_results"] = {}
+                save_config_midjourney(b2_client, config_midjourney)
 
         # Проверка блокировки и задач
         config_public = load_config_public(b2_client)
@@ -226,7 +301,6 @@ def main():
             logger.info(f"ℹ️ Задача {config_public['midjourney_task']['task_id']} уже отправлена, ждём fetch_media.py")
             return
 
-        # Устанавливаем блокировку
         config_public["processing_lock"] = True
         save_config_public(b2_client, config_public)
         logger.info("🔒 Блокировка установлена.")
@@ -242,11 +316,14 @@ def main():
 
         # Генерация с учётом страховки
         config_public = load_config_public(b2_client)
-        if any_folder_empty(b2_client, FOLDERS) and not midjourney_results and not config_public.get("midjourney_task"):
+        generation_attempts = 0
+        MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)
+        if any_folder_empty(b2_client, FOLDERS) and not config_midjourney.get("midjourney_results") and not config_public.get("midjourney_task"):
             if generation_attempts < MAX_ATTEMPTS:
                 logger.info(f"⚠️ Обнаружены пустые папки, попытка генерации #{generation_attempts + 1} из {MAX_ATTEMPTS}...")
-                subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
-                generation_attempts += 1
+                result = subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id], check=True)
+                if result.returncode == 0:
+                    generation_attempts += 1
                 config_public["processing_lock"] = False
                 save_config_public(b2_client, config_public)
                 logger.info("🔓 Блокировка снята после запуска генерации.")
@@ -255,7 +332,7 @@ def main():
                 logger.warning(f"🚫 Достигнут лимит попыток генерации ({MAX_ATTEMPTS}). Папки всё ещё пусты.")
                 config_public["processing_lock"] = False
                 save_config_public(b2_client, config_public)
-                sys.exit(1)  # Выход с ошибкой, чтобы сигнализировать о проблеме
+                sys.exit(1)
 
         # Завершение, если все папки полные
         if not any_folder_empty(b2_client, FOLDERS):
