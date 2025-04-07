@@ -1,4 +1,4 @@
-name: Test
+name: B2 Storage Manager Workflow
 
 on:
   schedule:
@@ -27,10 +27,13 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt не найден"; exit 1; fi
-        pip list  # Покажем установленные пакеты для диагностики
+        pip list  # Для диагностики
 
     - name: Установка переменных среды
       run: |
+        echo "B2_ENDPOINT=${{ secrets.B2_ENDPOINT }}" >> $GITHUB_ENV
+        echo "B2_ACCESS_KEY=${{ secrets.B2_ACCESS_KEY }}" >> $GITHUB_ENV
+        echo "B2_SECRET_KEY=${{ secrets.B2_SECRET_KEY }}" >> $GITHUB_ENV
         echo "B2_BUCKET_NAME=${{ secrets.B2_BUCKET_NAME }}" >> $GITHUB_ENV
         echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
         echo "MIDJOURNEY_API_KEY=${{ secrets.MIDJOURNEY_API_KEY }}" >> $GITHUB_ENV
@@ -41,25 +44,19 @@ jobs:
         ls -la
         ls -la scripts || echo "Каталог scripts не найден"
 
-    - name: Тестовый запуск Python
-      run: |
-        python -c "import sys; print(sys.version); print(sys.path)" > test.log 2>&1
-
-    - name: Запуск b2_storage_manager.py с диагностикой
+    - name: Запуск b2_storage_manager.py
       run: |
         python -u scripts/b2_storage_manager.py --zero-delay > b2_storage_manager.log 2>&1 || {
           echo "Ошибка выполнения b2_storage_manager.py, см. логи ниже:"
           cat b2_storage_manager.log
           exit 1
         }
-        cat b2_storage_manager.log  # Покажем логи даже при успехе
+        cat b2_storage_manager.log  # Показываем логи даже при успехе
 
     - name: Загрузка логов как артефакта
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: b2-storage-manager-logs
-        path: |
-          b2_storage_manager.log
-          test.log
+        path: b2_storage_manager.log
         retention-days: 7
