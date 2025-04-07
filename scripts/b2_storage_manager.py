@@ -253,6 +253,13 @@ def any_folder_empty(s3, folders):
 def main():
     b2_client = None
     SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
+    import argparse
+    import time
+
+    parser = argparse.ArgumentParser(description="B2 Storage Manager")
+    parser.add_argument("--zero-delay", action="store_true", help="Run without delay for scheduled checks")
+    args = parser.parse_args()
+
     try:
         b2_client = get_b2_client()
         logger.info("Клиент B2 успешно создан.")
@@ -260,88 +267,111 @@ def main():
         config_gen = load_config_gen(b2_client)
         config_midjourney = load_config_midjourney(b2_client)
 
-        # Проверка или генерация generation_id
-        generation_id = config_gen.get("generation_id")
-        if not generation_id:
-            generation_id = generate_file_id()
-            config_gen["generation_id"] = generation_id
-            save_config_gen(b2_client, config_gen)
-
-        # Проверка midjourney_results
-        midjourney_results = config_midjourney.get("midjourney_results")
-        if midjourney_results:
-            image_urls = midjourney_results.get("image_urls", [])
-            if image_urls and all(isinstance(url, str) and url.startswith("http") for url in image_urls):
-                logger.info("Найден валидный midjourney_results, запускаем generate_media.py")
-                generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
-                if not os.path.isfile(generate_media_path):
-                    raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-                if config_public.get("processing_lock"):
-                    config_public["processing_lock"] = False
-                    save_config_public(b2_client, config_public)
-                    logger.info("🔓 Блокировка снята перед запуском generate_media.py")
-                result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
-                if result.returncode == 0:
-                    target_folder = config_public["empty"][0] if config_public.get("empty") else FOLDERS[-1]
-                    update_content_json(b2_client, target_folder, generation_id)
-                    config_midjourney["midjourney_results"] = {}
-                    save_config_midjourney(b2_client, config_midjourney)
-                sys.exit(0)
-            else:
-                logger.warning("⚠️ Некорректные данные в midjourney_results, очищаем ключ")
-                config_midjourney["midjourney_results"] = {}
-                save_config_midjourney(b2_client, config_midjourney)
-
-        # Проверка блокировки и задач
-        config_public = load_config_public(b2_client)
         if config_public.get("processing_lock"):
             logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
             return
-        if config_public.get("midjourney_task"):
-            logger.info(f"ℹ️ Задача {config_public['midjourney_task']['task_id']} уже отправлена, ждём fetch_media.py")
-            return
+
+        max_tasks_per_run = config.get("max_tasks_per_run", 1)
+        tasks_processed = 0
 
         config_public["processing_lock"] = True
         save_config_public(b2_client, config_public)
         logger.info("🔒 Блокировка установлена.")
 
-        # Архивация
-        config_public = load_config_public(b2_client)
-        if config_public.get("generation_id"):
+        while tasks_processed < max_tasks_per_run:
+            midjourney_results = config_midjourney.get("midjourney_results")
+            if midjourney_results and "image_urls" in midjourney_results:
+                image_urls = midjourney_results.get("image_urls", [])
+                if image_urls and all(isinstance(url, str) and url.startswith("http") for url in image_urls):
+                    logger.info("Найден валидный midjourney_results, запускаем generate_media.py")
+                    generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                    if not os.path.isfile(generate_media_path):
+                        raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
+                    generation_id = config_gen.get("generation_id")
+                    if not generation_id:
+                        generation_id = generate_file_id()
+                        config_gen["generation_id"] = generation_id
+                        save_config_gen(b2_client, config_gen)
+                    result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                    if result.returncode == 0:
+                        update_content_json(b2_client, "666/", generation_id)  # Фиксация на 666/
+                        config_midjourney["midjourney_results"] = {}
+                        save_config_midjourney(b2_client, config_midjourney)
+                        tasks_processed += 1
+                        config_public["processing_lock"] = False
+                        save_config_public(b2_client, config_public)
+                        logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
+                        subprocess.run([sys.executable, __file__])
+                        return
+
+            midjourney_task = config_midjourney.get("midjourney_task")
+            if midjourney_task:
+                fetch_media_path = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
+                if not os.path.isfile(fetch_media_path):
+                    raise FileNotFoundError(f"❌ Файл {fetch_media_path} не найден")
+                if args.zero_delay:
+                    logger.info("Повторный запуск с --zero-delay, проверяем fetch_media.py")
+                    result = subprocess.run([sys.executable, fetch_media_path], check=True)
+                    config_midjourney = load_config_midjourney(b2_client)
+                    if config_midjourney.get("midjourney_results"):
+                        generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                        generation_id = config_gen.get("generation_id")
+                        result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                        if result.returncode == 0:
+                            tasks_processed += 1
+                            config_public["processing_lock"] = False
+                            save_config_public(b2_client, config_public)
+                            logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
+                            subprocess.run([sys.executable, __file__])
+                            return
+                    else:
+                        logger.info("ℹ️ Результат не получен, проверка продолжится по расписанию")
+                        return
+                else:
+                    logger.info("Первый запуск, ждем 10 минут перед fetch_media.py")
+                    time.sleep(600)
+                    result = subprocess.run([sys.executable, fetch_media_path], check=True)
+                    config_midjourney = load_config_midjourney(b2_client)
+                    if config_midjourney.get("midjourney_results"):
+                        generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                        generation_id = config_gen.get("generation_id")
+                        result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                        if result.returncode == 0:
+                            tasks_processed += 1
+                            config_public["processing_lock"] = False
+                            save_config_public(b2_client, config_public)
+                            logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
+                            subprocess.run([sys.executable, __file__])
+                            return
+                    else:
+                        logger.info("ℹ️ MidJourney не ответил за 10 минут, проверка продолжится по расписанию")
+                        return
+
             handle_publish(b2_client, config_public)
+            process_folders(b2_client, FOLDERS)
+            config_public = load_config_public(b2_client)
 
-        # Сортировка
-        process_folders(b2_client, FOLDERS)
-        config_public = load_config_public(b2_client)
-
-        # Генерация с учётом страховки
-        config_public = load_config_public(b2_client)
-        generation_attempts = 0
-        MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)
-        if any_folder_empty(b2_client, FOLDERS) and not config_midjourney.get("midjourney_results") and not config_public.get("midjourney_task"):
-            if generation_attempts < MAX_ATTEMPTS:
-                logger.info(f"⚠️ Обнаружены пустые папки, попытка генерации #{generation_attempts + 1} из {MAX_ATTEMPTS}...")
+            if any_folder_empty(b2_client, FOLDERS) and tasks_processed < max_tasks_per_run:
+                generation_id = config_gen.get("generation_id")
+                if not generation_id:
+                    generation_id = generate_file_id()
+                    config_gen["generation_id"] = generation_id
+                    save_config_gen(b2_client, config_gen)
+                logger.info(f"⚠️ Обнаружены пустые папки, запускаем генерацию для {generation_id}")
                 result = subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id], check=True)
                 if result.returncode == 0:
-                    generation_attempts += 1
-                config_public["processing_lock"] = False
-                save_config_public(b2_client, config_public)
-                logger.info("🔓 Блокировка снята после запуска генерации.")
-                sys.exit(0)
+                    generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+                    result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                    if result.returncode == 0:
+                        tasks_processed += 1
+                        config_public["processing_lock"] = False
+                        save_config_public(b2_client, config_public)
+                        logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
+                        subprocess.run([sys.executable, __file__])
+                        return
             else:
-                logger.warning(f"🚫 Достигнут лимит попыток генерации ({MAX_ATTEMPTS}). Папки всё ещё пусты.")
-                config_public["processing_lock"] = False
-                save_config_public(b2_client, config_public)
-                sys.exit(1)
-
-        # Завершение, если все папки полные
-        if not any_folder_empty(b2_client, FOLDERS):
-            logger.info("✅ Все папки содержат полные группы, завершаем работу.")
-            config_public["processing_lock"] = False
-            save_config_public(b2_client, config_public)
-            sys.exit(0)
-        else:
-            logger.info("ℹ️ Есть пустые папки, но генерация не требуется (возможно, ожидается fetch_media.py).")
+                logger.info("✅ Все папки заполнены, работа завершена")
+                break
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
@@ -352,7 +382,7 @@ def main():
                 if config_public.get("processing_lock"):
                     config_public["processing_lock"] = False
                     save_config_public(b2_client, config_public)
-                    logger.info("🔓 Блокировка снята.")
+                    logger.info("🔓 Блокировка снята в finally")
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
         sys.exit(0)

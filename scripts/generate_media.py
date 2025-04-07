@@ -334,71 +334,58 @@ def save_config_midjourney(client, data):
 
 # Обновленная функция generate_image_with_midjourney с расписанием
 def generate_image_with_midjourney(prompt, generation_id, target_folder):
-    schedule = [
-        (3, 60, 300),  # 3 попытки с интервалом 1 мин, перерыв 5 мин
-        (3, 60, 1800),  # 3 попытки с интервалом 1 мин, перерыв 30 мин
-        (3, 60, 0)  # 3 попытки с интервалом 1 мин, без перерыва
-    ]
-
-    total_attempts = 0
     b2_client = get_b2_client()
+    try:
+        headers = {
+            "X-API-Key": MIDJOURNEY_API_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "midjourney",
+            "task_type": "imagine",
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": "16:9",
+                "process_mode": "v5"
+            }
+        }
+        logger.info(f"Запрос к MidJourney: {prompt[:100]}...")
+        response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        response_json = response.json()
+        task_id = response_json.get("data", {}).get("task_id")
+        if not task_id:
+            raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
 
-    for attempts, interval, break_duration in schedule:
-        for attempt in range(attempts):
-            total_attempts += 1
-            try:
-                headers = {
-                    "X-API-Key": MIDJOURNEY_API_KEY,
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "midjourney",
-                    "task_type": "imagine",
-                    "input": {
-                        "prompt": prompt,
-                        "aspect_ratio": "16:9",
-                        "process_mode": "v5"
-                    }
-                }
-                logger.info(f"Попытка {total_attempts}/9: Запрос к MidJourney: {prompt[:100]}...")
-                response = requests.post(MIDJOURNEY_ENDPOINT, json=payload, headers=headers, timeout=30)
-                response.raise_for_status()
-                response_json = response.json()
-                task_id = response_json.get("data", {}).get("task_id")
-                if not task_id:
-                    raise ValueError(f"Ключ 'task_id' отсутствует в 'data' ответа: {response.text}")
+        config_midjourney = load_config_midjourney(b2_client)
+        config_midjourney["midjourney_task"] = {
+            "task_id": task_id,
+            "sent_at": int(time.time())
+        }
+        save_config_midjourney(b2_client, config_midjourney)
+        logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_midjourney.json")
 
-                config_midjourney = load_config_midjourney(b2_client)
-                config_midjourney["midjourney_task"] = {
-                    "task_id": task_id,
-                    "sent_at": int(time.time())
-                }
-                save_config_midjourney(b2_client, config_midjourney)
-                logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_midjourney.json")
-                sys.exit(0)
+        # Запуск b2_storage_manager.py
+        if not os.path.isfile(B2_STORAGE_MANAGER_SCRIPT):
+            raise FileNotFoundError(f"❌ Скрипт {B2_STORAGE_MANAGER_SCRIPT} не найден")
+        logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
+        subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 
-            except (requests.exceptions.RequestException, ValueError) as e:
-                logger.error(f"Ошибка MidJourney (попытка {total_attempts}/9): {e}")
-                if 'response' in locals():
-                    logger.error(f"Текст ответа: {response.text}")
-                if total_attempts == 9:
-                    logger.warning("⚠️ MidJourney не ответил после 9 попыток, переключаемся на DALL·E 3")
-                    if DALLE_ENABLED:
-                        image_path = generate_image_with_dalle(prompt, generation_id)
-                        if image_path:
-                            logger.info(f"✅ DALL·E 3 сгенерировал изображение: {image_path}")
-                            upload_to_b2(b2_client, target_folder, image_path)
-                            sys.exit(0)
-                        else:
-                            raise Exception("Не удалось сгенерировать изображение через DALL·E 3")
-                    else:
-                        raise Exception("MidJourney не ответил, и DALL·E 3 отключен")
-                elif attempt < attempts - 1:
-                    logger.info(f"⏳ Ожидание {interval} секунд перед следующей попыткой")
-                    time.sleep(interval)
-                elif break_duration > 0:
-                    logger.info(f"⏳ Перерыв {break_duration // 60} минут перед следующим блоком")
-                    time.sleep(break_duration)
+    except (requests.exceptions.RequestException, ValueError) as e:
+        logger.error(f"Ошибка MidJourney: {e}")
+        if 'response' in locals():
+            logger.error(f"Текст ответа: {response.text}")
+        if DALLE_ENABLED:
+            logger.warning("⚠️ MidJourney не ответил, переключаемся на DALL·E 3")
+            image_path = generate_image_with_dalle(prompt, generation_id)
+            if image_path:
+                logger.info(f"✅ DALL·E 3 сгенерировал изображение: {image_path}")
+                upload_to_b2(b2_client, target_folder, image_path)
+                subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
+            else:
+                raise Exception("Не удалось сгенерировать изображение через DALL·E 3")
+        else:
+            raise Exception("MidJourney не ответил, и DALL·E 3 отключен")
 
 def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -543,16 +530,20 @@ def download_video(url, output_path):
 # === Основная функция ===
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate Media")
+    parser.add_argument("--generation_id", type=str, required=True, help="ID for content generation")
+    args = parser.parse_args()
+
     try:
         b2_client = get_b2_client()
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
 
-        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
-            config_gen = json.load(file)
-        generation_id = config_gen["generation_id"].split('.')[0]
+        generation_id = args.generation_id
         logger.info(f"📂 ID генерации: {generation_id}")
 
+        # Загрузка generated_content.json
         if not os.path.exists(CONTENT_OUTPUT_PATH):
             raise FileNotFoundError(
                 f"❌ Файл {CONTENT_OUTPUT_PATH} отсутствует. Запустите generate_content.py через b2_storage_manager.py")
@@ -567,24 +558,25 @@ def main():
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
 
-        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
-            config_public = json.load(file)
-        target_folder = config_public["empty"][0] if config_public.get("empty") else None
-        if not target_folder:
-            raise ValueError("Список 'empty' пуст или отсутствует")
+        # Загрузка config_midjourney.json
+        config_midjourney = load_config_midjourney(b2_client)
+        midjourney_results = config_midjourney.get("midjourney_results", {})
 
-        midjourney_results = check_midjourney_results(b2_client)
-        if midjourney_results:
+        target_folder = "666/"  # Фиксированная папка по новой логике
+
+        # Сценарий 1: Есть midjourney_results
+        if midjourney_results and "image_urls" in midjourney_results:
             image_urls = midjourney_results.get("image_urls", [])
             if not image_urls or not all(isinstance(url, str) and url.startswith("http") for url in image_urls):
                 logger.warning("⚠️ Некорректные URL в midjourney_results, очищаем ключ")
-                remove_midjourney_results(b2_client)
+                config_midjourney["midjourney_results"] = {}
+                save_config_midjourney(b2_client, config_midjourney)
             else:
                 import shutil
 
+                # Выбор лучшего изображения
                 best_image_path = select_best_image(b2_client, image_urls,
-                                                    generated_content.get("first_frame_description", ""))
+                                                    generated_content.get("first_frame_description", topic))
                 image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
 
                 if best_image_path.startswith("http"):
@@ -596,20 +588,22 @@ def main():
                     shutil.move(best_image_path, image_path)
 
                 logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
-                remove_midjourney_results(b2_client)
-                script_text = generated_content.get("script", "")
-                if not script_text:
-                    raise ValueError("Сценарий отсутствует в generated_content.json")
 
+                # Удаление временных файлов
                 for i in range(4):
                     temp_path = f"temp_midjourney_{i}.png"
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
                         logger.info(f"🗑️ Удалён временный файл: {temp_path}")
 
+                # Изменение размера изображения
                 if not resize_existing_image(image_path):
                     raise ValueError("Не удалось изменить размер изображения")
 
+                # Генерация видео
+                script_text = generated_content.get("script", "")
+                if not script_text:
+                    raise ValueError("Сценарий отсутствует в generated_content.json")
                 cleaned_script = clean_script_text(script_text)
                 video_result = generate_runway_video(image_path, cleaned_script)
                 video_path = None
@@ -622,33 +616,42 @@ def main():
                         video_path = video_result
                         logger.info(f"🔄 Используем имитацию видео: {video_path}")
 
+                # Загрузка в B2
                 upload_to_b2(b2_client, target_folder, image_path)
                 if video_path and os.path.exists(video_path):
                     upload_to_b2(b2_client, target_folder, video_path)
 
-                update_config_public(b2_client, target_folder)
-                reset_processing_lock(b2_client)
+                # Очистка midjourney_results
+                config_midjourney["midjourney_results"] = {}
+                save_config_midjourney(b2_client, config_midjourney)
+
+                # Запуск b2_storage_manager.py
+                if not os.path.isfile(B2_STORAGE_MANAGER_SCRIPT):
+                    raise FileNotFoundError(f"❌ Скрипт {B2_STORAGE_MANAGER_SCRIPT} не найден")
                 logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
                 subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
-                sys.exit(0)
 
-        # Если midjourney_results нет, генерируем сценарий и изображение
-        script_text, first_frame_description = generate_script_and_frame(topic)
-        if not script_text or not first_frame_description:
-            raise ValueError("Не удалось сгенерировать сценарий или описание")
-        generated_content["script"] = script_text
-        generated_content["first_frame_description"] = first_frame_description
-        with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-            json.dump(generated_content, f, ensure_ascii=False, indent=4)
-        logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
+        # Сценарий 2: Нет midjourney_results
+        else:
+            # Генерация сценария и кадра
+            script_text, first_frame_description = generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                raise ValueError("Не удалось сгенерировать сценарий или описание")
+            generated_content["script"] = script_text
+            generated_content["first_frame_description"] = first_frame_description
+            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(generated_content, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
 
-        # Генерация изображения с новым расписанием
-        generate_image(first_frame_description, generation_id, target_folder)
+            # Отправка задачи MidJourney
+            generate_image(first_frame_description, generation_id, target_folder)
+
+            # Запуск b2_storage_manager.py (выполняется внутри generate_image после сохранения task_id)
+            # Здесь ничего не добавляем, так как generate_image уже вызывает b2_storage_manager.py
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
 
 if __name__ == "__main__":
     try:

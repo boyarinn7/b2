@@ -7,9 +7,9 @@ B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
 
-# Локальный путь к файлу
-LOCAL_FILE_PATH = r"C:\Users\boyar\777\config_public.json"
-REMOTE_FILE_PATH = "config/config_public.json"
+# Пути
+LOCAL_FILE_PATH = r"C:\Users\boyar\777\topics_tracker.json"
+REMOTE_FILE_PATH = "config/topics_tracker.json"
 
 # Проверяем переменные окружения
 if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
@@ -25,7 +25,7 @@ s3 = boto3.client(
 )
 
 def upload_file():
-    """Загружает локальный файл в хранилище B2, заменяя содержимое удаленного файла."""
+    """Загружает локальный файл в B2 в config/topics_tracker.json."""
     try:
         print(f"🔄 Загружаем {LOCAL_FILE_PATH} -> {REMOTE_FILE_PATH} в B2")
         s3.upload_file(LOCAL_FILE_PATH, B2_BUCKET_NAME, REMOTE_FILE_PATH)

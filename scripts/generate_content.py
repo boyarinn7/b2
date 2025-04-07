@@ -476,27 +476,35 @@ class ContentGenerator:
     def run(self):
         """Основной процесс генерации контента."""
         logger.info(">>> Начало генерации контента (метод run)")
+        import argparse
+        parser = argparse.ArgumentParser(description="Generate Content")
+        parser.add_argument("--generation_id", type=str, help="ID for content generation")
+        args = parser.parse_args()
+
         try:
-            if not self.config.get('CONTENT.topic.enabled', True):
-                logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
-                # sys.exit(1)
-                return
-            download_config_public()
-            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
-                config_public = json.load(file)
-            logger.info(f"Загруженная config_public: {config_public}")
-            empty_folders = config_public.get("empty", [])
-            if not empty_folders:
-                logger.info("✅ Нет пустых папок. Процесс завершён.")
-                return
+            # Проверка и получение generation_id
+            if args.generation_id:
+                generation_id = args.generation_id
+                logger.info(f"ℹ️ Используем переданный generation_id: {generation_id}")
+            else:
+                with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+                    config_gen_content = json.load(gen_file)
+                    generation_id = config_gen_content.get("generation_id")
+                if not generation_id:
+                    generation_id = generate_file_id()
+                    save_generation_id_to_config(generation_id)
+                    logger.info(f"ℹ️ Сгенерирован новый generation_id: {generation_id}")
+                else:
+                    logger.info(f"ℹ️ Используем generation_id из config_gen.json: {generation_id}")
+
             self.adapt_prompts()
             self.clear_generated_content()
             tracker = self.load_tracker()  # Загрузка трекера для защиты от повторов
             topic, content_data = self.generate_topic(tracker)  # Генерация темы с учетом трекера
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
-                # sys.exit(1)
                 return
+
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
                 if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
                         'CONTENT.tragic_text.enabled', True):
@@ -510,6 +518,7 @@ class ContentGenerator:
             else:
                 text_initial = ""
                 logger.info("🔕 Генерация текста отключена.")
+
             if text_initial:
                 sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
                 sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
@@ -517,8 +526,9 @@ class ContentGenerator:
                     "comment": sarcastic_comment,
                     "poll": sarcastic_poll
                 })
+
             final_text = text_initial.strip()
-            target_folder = empty_folders[0]
+            target_folder = "666/"  # Фиксированная папка
             content_dict = {
                 "topic": topic,
                 "content": final_text,
@@ -528,39 +538,43 @@ class ContentGenerator:
                 }
             }
             save_to_b2(target_folder, content_dict)
-            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                config_gen_content = json.load(gen_file)
-                generation_id = config_gen_content["generation_id"]
-            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
-            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
-            run_generate_media()  # Запускаем генерацию медиа (если включена)
-            sys.exit(0)  # Закомментировано для отладки, чтобы увидеть все логи
+
+            # Запуск generate_media.py с полной обработкой ошибок
+            scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
+            generate_media_path = os.path.join(scripts_folder, "generate_media.py")
+            if not os.path.isfile(generate_media_path):
+                handle_error("File Not Found Error", f"Скрипт не найден: {generate_media_path}", FileNotFoundError())
+                logger.warning("⚠️ Скрипт generate_media.py отсутствует, завершаем без медиа.")
+                return
+            logger.info(f"🔄 Запуск generate_media.py с generation_id: {generation_id}")
+            try:
+                result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id],
+                                        check=True)
+                if result.returncode == 0:
+                    # Запуск b2_storage_manager.py
+                    b2_manager_path = os.path.join(scripts_folder, "b2_storage_manager.py")
+                    if not os.path.isfile(b2_manager_path):
+                        handle_error("File Not Found Error", f"Скрипт не найден: {b2_manager_path}",
+                                     FileNotFoundError())
+                        logger.warning("⚠️ Скрипт b2_storage_manager.py отсутствует, завершаем.")
+                        return
+                    logger.info("🔄 Запуск b2_storage_manager.py для продолжения цикла")
+                    subprocess.run([sys.executable, b2_manager_path])
+                else:
+                    logger.error("❌ Ошибка при выполнении generate_media.py")
+            except subprocess.CalledProcessError as e:
+                handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
+                logger.warning("⚠️ Генерация медиа не удалась, завершаем без медиа.")
+                return
+            except Exception as e:
+                handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
+                logger.warning("⚠️ Неизвестная ошибка в generate_media, завершаем.")
+                return
+
             logger.info("✅ Генерация контента завершена.")
         except Exception as e:
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
-            # sys.exit(1)  # Закомментировано для отладки
-
-
-def run_generate_media():
-    """Запускает скрипт generate_media.py по локальному пути."""
-    try:
-        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-        script_path = os.path.join(scripts_folder, "generate_media.py")
-        if not os.path.isfile(script_path):
-            raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
-        logger.info(f"🔄 Запуск скрипта: {script_path}")
-        subprocess.run(["python", script_path], check=True)
-        logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
-    except subprocess.CalledProcessError as e:
-        handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
-        logger.warning("⚠️ Генерация медиа не удалась, продолжаем без медиа.")
-    except FileNotFoundError as e:
-        handle_error("File Not Found Error", f"Скрипт не найден: {script_path}", e)
-        logger.warning("⚠️ Скрипт generate_media.py отсутствует, продолжаем без медиа.")
-    except Exception as e:
-        handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
-        logger.warning("⚠️ Неизвестная ошибка в generate_media, продолжаем без медиа.")
 
 if __name__ == "__main__":
     generator = ContentGenerator()
