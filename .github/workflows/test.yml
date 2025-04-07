@@ -1,4 +1,4 @@
-name: B2 Storage Manager Workflow
+name: Test
 
 on:
   schedule:
