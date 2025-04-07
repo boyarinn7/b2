@@ -25,6 +25,7 @@ from io import BytesIO
 config = ConfigManager()
 logger = get_logger("generate_media")
 logger.info("sys.path = " + str(sys.path))
+os.makedirs("config", exist_ok=True)
 
 # Определяем каталог скрипта и добавляем родительский каталог в sys.path
 script_dir = os.path.dirname(__file__)
@@ -32,14 +33,16 @@ parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
 sys.path.insert(0, parent_dir)
 
 # Пути к файлам
-CONFIG_GEN_PATH = os.path.abspath(config.get("FILE_PATHS.config_gen", "config/config_gen.json"))
-CONFIG_PUBLIC_REMOTE_PATH = config.get("FILE_PATHS.config_public", "config/config_public.json")
-CONFIG_PUBLIC_LOCAL_PATH = os.path.abspath(config.get("FILE_PATHS.config_public_local", "config_public.json"))
-CONTENT_OUTPUT_PATH = config.get("FILE_PATHS.content_output_path", "generated_content.json")
-SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
-CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
-CONFIG_MIDJOURNEY_REMOTE_PATH = "config/config_midjourney.json"
-
+CONFIG_GEN_PATH = "config/config_gen.json"
+CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"
+CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"  # Было CONFIG_MIDJOURNEY_REMOTE_PATH
+CONFIG_MIDJOURNEY_LOCAL_PATH = "config/config_midjourney.json"
+CONTENT_OUTPUT_PATH = "generated_content.json"
+SCRIPTS_FOLDER = "scripts/"
+B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
+TARGET_FOLDER = "666/"
+CONFIG_PUBLIC_PATH = "config/config_public.json"
+CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"
 
 # Настройки генерации из конфига
 USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
@@ -210,14 +213,14 @@ def update_config_public(client, folder):
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         logger.info(f"🔄 Обновление config_public.json: удаление {folder} из списка 'empty'")
-        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        download_file_from_b2(client, CONFIG_PUBLIC_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
         if "empty" in config_public and folder in config_public["empty"]:
             config_public["empty"].remove(folder)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
         logger.info("✅ config_public.json обновлён и загружен обратно в B2.")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
@@ -229,7 +232,7 @@ def reset_processing_lock(client):
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         logger.info("🔄 Сброс processing_lock в config_public.json")
-        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        download_file_from_b2(client, CONFIG_PUBLIC_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             config_public = json.load(file)
         logger.info(f"Перед сбросом, processing_lock: {config_public.get('processing_lock')}")
@@ -239,10 +242,10 @@ def reset_processing_lock(client):
             logger.info("processing_lock уже сброшен.")
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
         logger.info("✅ processing_lock успешно сброшен в config_public.json")
         # Проверка: повторно загружаем файл и логируем новое состояние
-        download_file_from_b2(client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        download_file_from_b2(client, CONFIG_PUBLIC_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             new_config = json.load(file)
         logger.info(f"После сброса, config_public: {json.dumps(new_config, ensure_ascii=False)}")
@@ -294,7 +297,7 @@ def load_config_public(client):
     local_path = CONFIG_PUBLIC_LOCAL_PATH
     try:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        client.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        client.download_file(bucket_name, CONFIG_PUBLIC_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             return json.load(file)
     except Exception as e:
@@ -306,7 +309,7 @@ def save_config_public(client, data):
     try:
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
+        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
         logger.info("✅ config_public.json сохранён в B2.")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения config_public.json: {e}")
@@ -314,11 +317,11 @@ def save_config_public(client, data):
 def load_config_midjourney(client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     try:
-        client.download_file(bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
+        client.download_file(bucket_name, CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as file:
             return json.load(file)
     except Exception as e:
-        logger.warning(f"⚠️ Конфиг {CONFIG_MIDJOURNEY_REMOTE_PATH} не найден, создаём новый: {e}")
+        logger.warning(f"⚠️ Конфиг {CONFIG_MIDJOURNEY_PATH} не найден, создаём новый: {e}")
         return {"midjourney_task": None}
 
 def save_config_midjourney(client, data):
@@ -326,7 +329,7 @@ def save_config_midjourney(client, data):
     try:
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_MIDJOURNEY_LOCAL_PATH, bucket_name, CONFIG_MIDJOURNEY_REMOTE_PATH)
+        client.upload_file(CONFIG_MIDJOURNEY_LOCAL_PATH, bucket_name, CONFIG_MIDJOURNEY_PATH)
         logger.info(f"✅ config_midjourney.json сохранён в B2: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения config_midjourney.json: {e}")
@@ -558,11 +561,14 @@ def main():
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
 
-        # Загрузка config_midjourney.json
-        config_midjourney = load_config_midjourney(b2_client)
+        # Загрузка config_midjourney.json из нового пути
+        download_file_from_b2(b2_client, CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
+        with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as f:
+            config_midjourney = json.load(f)
         midjourney_results = config_midjourney.get("midjourney_results", {})
 
-        target_folder = "666/"  # Фиксированная папка по новой логике
+        # Используем фиксированный TARGET_FOLDER
+        target_folder = TARGET_FOLDER
 
         # Сценарий 1: Есть midjourney_results
         if midjourney_results and "image_urls" in midjourney_results:
@@ -570,7 +576,9 @@ def main():
             if not image_urls or not all(isinstance(url, str) and url.startswith("http") for url in image_urls):
                 logger.warning("⚠️ Некорректные URL в midjourney_results, очищаем ключ")
                 config_midjourney["midjourney_results"] = {}
-                save_config_midjourney(b2_client, config_midjourney)
+                with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(config_midjourney, f, ensure_ascii=False, indent=4)
+                upload_to_b2(b2_client, os.path.dirname(CONFIG_MIDJOURNEY_PATH), CONFIG_MIDJOURNEY_LOCAL_PATH)
             else:
                 import shutil
 
@@ -623,7 +631,9 @@ def main():
 
                 # Очистка midjourney_results
                 config_midjourney["midjourney_results"] = {}
-                save_config_midjourney(b2_client, config_midjourney)
+                with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(config_midjourney, f, ensure_ascii=False, indent=4)
+                upload_to_b2(b2_client, os.path.dirname(CONFIG_MIDJOURNEY_PATH), CONFIG_MIDJOURNEY_LOCAL_PATH)
 
                 # Запуск b2_storage_manager.py
                 if not os.path.isfile(B2_STORAGE_MANAGER_SCRIPT):
@@ -646,8 +656,7 @@ def main():
             # Отправка задачи MidJourney
             generate_image(first_frame_description, generation_id, target_folder)
 
-            # Запуск b2_storage_manager.py (выполняется внутри generate_image после сохранения task_id)
-            # Здесь ничего не добавляем, так как generate_image уже вызывает b2_storage_manager.py
+            # Запуск b2_storage_manager.py уже внутри generate_image
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)

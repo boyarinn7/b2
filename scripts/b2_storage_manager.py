@@ -25,11 +25,19 @@ config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 logger.info("Начало выполнения b2_storage_manager")
 
-CONFIG_PUBLIC_PATH = os.getenv("CONFIG_PUBLIC_PATH", "config/config_public.json")
-CONFIG_PUBLIC_REMOTE_PATH = "config/config_public.json"
-CONFIG_GEN_PATH = "config/config_gen.json"  # Добавлено для generation_id
-CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"  # Добавлено для midjourney_results
-CONTENT_OUTPUT_PATH = "generated_content.json"  # Для интеграции медиа
+CONFIG_PUBLIC_PATH = "config/config_public.json"
+CONFIG_PUBLIC_LOCAL_PATH = "config_public.json"
+CONFIG_GEN_PATH = "config/config_gen.json"
+CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"
+CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"
+CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
+SCRIPTS_FOLDER = "scripts/"
+CONTENT_OUTPUT_PATH = "generated_content.json"
+B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
+GENERATE_CONTENT_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_content.py")
+GENERATE_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+FETCH_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
+TARGET_FOLDER = "666/"
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
 FOLDERS = [
     config.get("FILE_PATHS.folder_444", "444/"),
@@ -47,10 +55,10 @@ def load_config_public(s3):
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        s3.download_file(bucket_name, CONFIG_PUBLIC_REMOTE_PATH, local_path)
+        s3.download_file(bucket_name, CONFIG_PUBLIC_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        logger.info(f"Loaded {CONFIG_PUBLIC_REMOTE_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        logger.info(f"Loaded {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
         return data
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
@@ -70,8 +78,8 @@ def save_config_public(s3, data):
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        s3.upload_file(CONFIG_PUBLIC_PATH, bucket_name, CONFIG_PUBLIC_REMOTE_PATH)
-        logger.info(f"Saved {CONFIG_PUBLIC_REMOTE_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        s3.upload_file(CONFIG_PUBLIC_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        logger.info(f"Saved {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
 

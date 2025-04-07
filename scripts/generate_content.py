@@ -25,7 +25,17 @@ config = ConfigManager()
 
 FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
+CONFIG_GEN_PATH = "config/config_gen.json"  # Путь в B2
+CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"  # Локальный путь
+CONTENT_OUTPUT_PATH = "generated_content.json"  # Локальный путь для контента
+TOPICS_TRACKER_PATH = "config/topics_tracker.json"  # Путь в B2
+TOPICS_TRACKER_LOCAL_PATH = "config/topics_tracker.json"  # Локальный путь
+SCRIPTS_FOLDER = "scripts/"
+GENERATE_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
+B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
+TARGET_FOLDER = "666/"
 
+ensure_directory_exists("config")
 
 def download_config_public():
     """Загружает файл config_public.json из B2 в локальное хранилище."""
