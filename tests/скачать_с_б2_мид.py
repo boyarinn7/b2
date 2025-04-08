@@ -1,32 +1,66 @@
+import requests
+import logging
 import os
-import boto3
+import sys
 
-# Настройки B2
-B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
-B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
-B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
-B2_ENDPOINT = os.getenv("B2_ENDPOINT")
+# Добавляем корень проекта в sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Пути
-LOCAL_FILE_PATH = r"C:\Users\boyar\777\config_midjourney.json"
-REMOTE_FILE_PATH = "config/config_midjourney.json"
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# Инициализация клиента B2
-s3 = boto3.client(
-    "s3",
-    endpoint_url=B2_ENDPOINT,
-    aws_access_key_id=B2_ACCESS_KEY,
-    aws_secret_access_key=B2_SECRET_KEY,
-)
+# API-ключ из переменной окружения или вручную
+MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY", "e053f7ff89ce552740e9c2256a34b76cb87362ff71277806be512c606423a088")
 
-def download_file_from_b2():
-    """Скачивает файл из B2 в локальную систему."""
+
+def test_fetch_v2(task_id):
+    """Тестирует mj/v2/fetch с POST"""
+    headers = {"X-API-Key": MIDJOURNEY_API_KEY}
+    endpoint = "https://api.piapi.ai/mj/v2/fetch"
+    payload = {"task_id": task_id}
     try:
-        print(f"⬇️ Скачиваем {REMOTE_FILE_PATH} → {LOCAL_FILE_PATH}...")
-        s3.download_file(B2_BUCKET_NAME, REMOTE_FILE_PATH, LOCAL_FILE_PATH)
-        print(f"✅ Файл успешно скачан из B2: {LOCAL_FILE_PATH}")
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+        logger.info(f"ℹ️ Ответ от mj/v2/fetch: {response.status_code} - {response.text}")
+        return response.json()
     except Exception as e:
-        print(f"❌ Ошибка скачивания файла: {e}")
+        logger.error(f"❌ Ошибка mj/v2/fetch: {e}")
+        return None
+
+
+def test_task_v1(task_id):
+    """Тестирует /v1/task/<task_id> с GET"""
+    headers = {"X-API-Key": MIDJOURNEY_API_KEY}
+    endpoint = f"https://api.piapi.ai/v1/task/{task_id}"
+    try:
+        response = requests.get(endpoint, headers=headers, timeout=30)
+        logger.info(f"ℹ️ Ответ от v1/task: {response.status_code} - {response.text}")
+        return response.json()
+    except Exception as e:
+        logger.error(f"❌ Ошибка v1/task: {e}")
+        return None
+
+
+def main():
+    # Твой task_id для теста
+    task_id = "b8e497a4-35aa-4365-b0f1-2fa6543ec8b0"
+
+    logger.info("🚀 Тестирование начато")
+
+    # Тест 1: mj/v2/fetch
+    logger.info("🔍 Тест 1: Проверка mj/v2/fetch")
+    result_v2 = test_fetch_v2(task_id)
+    if result_v2 and "output" in result_v2:
+        logger.info(f"✅ URL изображения: {result_v2['output'].get('image_url')}")
+
+    # Тест 2: /v1/task/<task_id>
+    logger.info("🔍 Тест 2: Проверка v1/task")
+    result_v1 = test_task_v1(task_id)
+    if result_v1 and "data" in result_v1 and "output" in result_v1["data"]:
+        logger.info(f"✅ URL изображения: {result_v1['data']['output'].get('image_url')}")
+
+    logger.info("🏁 Тестирование завершено")
+
 
 if __name__ == "__main__":
-    download_file_from_b2()
+    main()
