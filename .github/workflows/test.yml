@@ -1,8 +1,8 @@
-name: B2 Storage Manager Workflow
+name: Test
 
 on:
   schedule:
-    - cron: '30 20 * * *'  # 20:30 UTC
+    #- cron: '30 20 * * *'  # 20:30 UTC
   workflow_dispatch:
 
 jobs:
