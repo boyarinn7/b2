@@ -52,23 +52,23 @@ def save_config_midjourney(client, data):
 
 def fetch_midjourney_result(task_id):
     headers = {"X-API-Key": MIDJOURNEY_API_KEY}
-    endpoint = MIDJOURNEY_TASK_ENDPOINT  # Теперь "https://api.piapi.ai/mj/v2/fetch"
+    endpoint = MIDJOURNEY_TASK_ENDPOINT  # "https://api.piapi.ai/mj/v2/fetch"
     payload = {"task_id": task_id}
     try:
         response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
         logger.info(f"ℹ️ Ответ от PiAPI: {response.status_code} - {response.text[:200]}")
         response.raise_for_status()
         data = response.json()
-        if data["status"] == "completed":  # Новый статус
+        if data["status"] in ["completed", "finished"]:  # Оба статуса
             output = data.get("output", {})
             if "image_url" in output and output["image_url"]:
                 image_url = output["image_url"]
                 logger.info(f"✅ Результат получен: {image_url}")
-                return [image_url]  # Основная ссылка
+                return [image_url]
             elif "temporary_image_urls" in output and isinstance(output["temporary_image_urls"], list) and output["temporary_image_urls"]:
                 image_urls = output["temporary_image_urls"]
                 logger.info(f"✅ Получено {len(image_urls)} временных URL: {image_urls}")
-                return image_urls  # Временные ссылки
+                return image_urls
             else:
                 logger.error(f"❌ Нет URL в output: {output}")
                 return None
