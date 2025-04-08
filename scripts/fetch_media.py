@@ -59,8 +59,8 @@ def fetch_midjourney_result(task_id):
         logger.info(f"ℹ️ Ответ от PiAPI: {response.status_code} - {response.text[:200]}")
         response.raise_for_status()
         data = response.json()
-        if data["code"] == 200 and data["data"]["status"] == "completed":
-            output = data["data"]["output"]
+        if data["status"] == "finished":  # Обновлено с "completed" на "finished"
+            output = data.get("output", {})  # Безопасно получаем output
             if "image_urls" in output and isinstance(output["image_urls"], list):
                 image_urls = output["image_urls"]
                 logger.info(f"✅ Получено {len(image_urls)} URL: {image_urls}")
@@ -72,7 +72,7 @@ def fetch_midjourney_result(task_id):
             else:
                 logger.error(f"❌ Нет URL в output: {output}")
                 return None
-        elif data["data"]["status"] == "pending":
+        elif data["status"] == "pending":
             logger.info("ℹ️ Задача ещё в процессе")
             return None
         else:
