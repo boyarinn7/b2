@@ -52,13 +52,12 @@ def save_config_midjourney(client, data):
 
 def fetch_midjourney_result(task_id):
     headers = {"X-API-Key": MIDJOURNEY_API_KEY}
-    endpoint = MIDJOURNEY_TASK_ENDPOINT
-    payload = {"task_id": task_id}
+    endpoint = f"https://api.piapi.ai/v1/task/{task_id}"
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-        logger.info(f"ℹ️ Ответ от PiAPI: {response.status_code} - {response.text}")  # Полный текст
+        response = requests.get(endpoint, headers=headers, timeout=30)
+        logger.info(f"ℹ️ Ответ от PiAPI: {response.status_code} - {response.text}")
         response.raise_for_status()
-        data = response.json()
+        data = response.json()["data"]  # PiAPI возвращает результат в "data"
         if data["status"] in ["completed", "finished"]:
             output = data.get("output", {})
             if "image_url" in output and output["image_url"]:
@@ -70,7 +69,7 @@ def fetch_midjourney_result(task_id):
                 logger.info(f"✅ Получено {len(image_urls)} временных URL: {image_urls}")
                 return image_urls
             else:
-                logger.error(f"❌ Нет URL в output: {data}")  # Полный data
+                logger.error(f"❌ Нет URL в output: {data}")
                 return None
         elif data["status"] == "pending":
             logger.info("ℹ️ Задача ещё в процессе")
@@ -84,7 +83,7 @@ def fetch_midjourney_result(task_id):
     except ValueError as e:
         logger.error(f"❌ Ошибка разбора JSON от PiAPI: {e}, ответ: {response.text}")
         return None
-
+    
 def main():
     logger.info("🔄 Начало проверки статуса задачи MidJourney...")
     try:
