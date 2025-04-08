@@ -9,7 +9,7 @@ import base64
 import time
 import re
 import random
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from PIL import Image
 from runwayml import RunwayML
 from moviepy.editor import ImageClip, concatenate_videoclips
@@ -60,11 +60,10 @@ MIDJOURNEY_TASK_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
 IMAGE_SELECTION_CRITERIA = config.get("VISUAL_ANALYSIS.image_selection_criteria", [])
 MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 3)
 
-B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
-
 # Установка ключей API
 openai.api_key = os.getenv("OPENAI_API_KEY")
 MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+
 if not openai.api_key:
     raise ValueError("API-ключ OpenAI не найден в переменной окружения OPENAI_API_KEY")
 if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
