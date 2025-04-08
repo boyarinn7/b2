@@ -1,5 +1,6 @@
 import os
 import boto3
+import json
 
 # Константы
 B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
@@ -8,15 +9,15 @@ B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
 
 # Пути
-LOCAL_FILE_PATH = r"C:\Users\boyar\777\topics_tracker.json"
-REMOTE_FILE_PATH = "config/topics_tracker.json"
+LOCAL_FILE_PATH = r"C:\Users\boyar\777\config_midjourney.json"
+REMOTE_FILE_PATH = "config/config_midjourney.json"
 
-# Проверяем переменные окружения
+# Проверка переменных окружения
 if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
     print("❌ Ошибка: не заданы переменные окружения B2.")
     exit(1)
 
-# Создаём клиент B2
+# Клиент B2
 s3 = boto3.client(
     "s3",
     endpoint_url=B2_ENDPOINT,
@@ -24,14 +25,24 @@ s3 = boto3.client(
     aws_secret_access_key=B2_SECRET_KEY
 )
 
-def upload_file():
-    """Загружает локальный файл в B2 в config/topics_tracker.json."""
+def reset_midjourney_task():
     try:
-        print(f"🔄 Загружаем {LOCAL_FILE_PATH} -> {REMOTE_FILE_PATH} в B2")
+        # Шаг 1: Скачивание файла
+        print(f"⬇️ Скачиваем {REMOTE_FILE_PATH} → {LOCAL_FILE_PATH}")
+        s3.download_file(B2_BUCKET_NAME, REMOTE_FILE_PATH, LOCAL_FILE_PATH)
+
+        # Шаг 2: Затираем содержимое
+        with open(LOCAL_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"midjourney_task": None}, f, ensure_ascii=False, indent=2)
+        print("🧹 Содержимое очищено и перезаписано.")
+
+        # Шаг 3: Загрузка обратно
+        print(f"🔼 Загружаем обратно в {REMOTE_FILE_PATH}")
         s3.upload_file(LOCAL_FILE_PATH, B2_BUCKET_NAME, REMOTE_FILE_PATH)
-        print(f"✅ Файл успешно загружен в B2: {REMOTE_FILE_PATH}")
+        print("✅ Готово.")
+
     except Exception as e:
-        print(f"❌ Ошибка при загрузке файла: {e}")
+        print(f"❌ Ошибка: {e}")
 
 if __name__ == "__main__":
-    upload_file()
+    reset_midjourney_task()

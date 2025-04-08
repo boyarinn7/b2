@@ -11,6 +11,7 @@ import boto3
 import io
 import random
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
 from modules.error_handler import handle_error
@@ -19,7 +20,7 @@ from modules.utils import ensure_directory_exists
 from PIL import Image, ImageDraw
 from modules.api_clients import get_b2_client
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
+
 logger = get_logger("generate_content")
 config = ConfigManager()
 
