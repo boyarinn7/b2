@@ -6,7 +6,7 @@
         },
         "midjourney": {
             "endpoint": "https://api.piapi.ai/api/v1/task",
-            "task_endpoint": "https://api.piapi.ai/midjourney/task"
+            "task_endpoint": "https://api.piapi.ai/mj/v2/fetch"
         },
         "openai": {
             "model": "gpt-4o"
