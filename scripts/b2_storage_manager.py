@@ -259,18 +259,19 @@ def any_folder_empty(s3, folders):
     return False
 
 def check_content_exists(b2_client, generation_id):
-    bucket_name = "boyarinnbotbucket"  # Указываем твой бакет напрямую
+    bucket_name = "boyarinnbotbucket"
     remote_path = f"666/{generation_id}.json"
     try:
         logger.info(f"🔍 Проверка файла {remote_path} в B2")
-        response = b2_client.list_file_names(bucket_name, start_file_name=remote_path)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        response = bucket.list_file_names(start_file_name=remote_path, max_file_count=1)
         exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
         logger.info(f"ℹ️ Файл {remote_path} {'существует' if exists else 'не найден'}")
         return exists
     except Exception as e:
         logger.error(f"❌ Ошибка проверки файла {remote_path}: {e}")
         return False
-
+    
 def main():
     b2_client = None
     SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))

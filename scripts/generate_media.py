@@ -221,7 +221,8 @@ def upload_to_b2(client, folder, file_path):
             folder += '/'
         s3_key = f"{folder}{file_name}"
         logger.info(f"🔄 Загрузка файла в B2: {file_path} -> {s3_key}")
-        client.upload_file(file_path, bucket_name, s3_key)
+        bucket = client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=file_path, file_name=s3_key)
         logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
         os.remove(file_path)
         logger.info(f"🗑️ Локальный файл {file_path} удалён после загрузки.")
