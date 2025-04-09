@@ -191,10 +191,10 @@ def download_file_from_b2(client, remote_path, local_path):
         client.download_file(bucket_name, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
     except FileNotFoundError as e:
-        handle_error(logger, "B2 Download Error", e)
+        handle_error(logger, "B2 Download Error", exception=e)
         raise
     except Exception as e:
-        handle_error(logger, "B2 Download Error", e)
+        handle_error(logger, "B2 Download Error", exception=e)
         raise
 
 def upload_to_b2(client, folder, file_path):
