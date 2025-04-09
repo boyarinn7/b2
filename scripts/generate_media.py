@@ -184,10 +184,18 @@ def download_file_from_b2(client, remote_path, local_path):
     try:
         logger.info(f"🔄 Загрузка файла из B2: {remote_path} -> {local_path}")
         ensure_directory_exists(os.path.dirname(local_path))
+        response = client.list_file_names(bucket_name, remote_path, 1)
+        if not response.get("files"):
+            logger.error(f"❌ Файл {remote_path} не найден в B2")
+            raise FileNotFoundError(f"Файл {remote_path} отсутствует в бакете {bucket_name}")
         client.download_file(bucket_name, remote_path, local_path)
         logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
+    except FileNotFoundError as e:
+        handle_error(logger, "B2 Download Error", e)
+        raise
     except Exception as e:
         handle_error(logger, "B2 Download Error", e)
+        raise
 
 def upload_to_b2(client, folder, file_path):
     try:

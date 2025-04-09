@@ -262,10 +262,13 @@ def check_content_exists(b2_client, generation_id):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     remote_path = f"666/{generation_id}.json"
     try:
-        file_info = b2_client.list_file_names(bucket_name, remote_path, 1)
-        return bool(file_info.get("files"))
+        logger.info(f"🔍 Проверка файла {remote_path} в B2")
+        response = b2_client.list_file_names(bucket_name, remote_path, 1)
+        exists = bool(response.get("files"))
+        logger.info(f"ℹ️ Файл {remote_path} {'существует' if exists else 'не найден'}")
+        return exists
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки файла 666/{generation_id}.json: {e}")
+        logger.error(f"❌ Ошибка проверки файла {remote_path}: {e}")
         return False
 
 def main():
@@ -309,7 +312,8 @@ def main():
                         generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
                         if not os.path.isfile(generate_media_path):
                             raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-                        result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id], check=True)
+                        result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id],
+                                                check=True)
                         if result.returncode == 0:
                             update_content_json(b2_client, "666/", generation_id)
                             config_midjourney["midjourney_results"] = {}
@@ -321,22 +325,30 @@ def main():
                             subprocess.run([sys.executable, __file__])
                             return
                     else:
-                        logger.warning(f"⚠️ Файл 666/{generation_id}.json не найден или generation_id отсутствует, генерируем новый")
+                        logger.warning(
+                            f"⚠️ Файл 666/{generation_id}.json не найден или generation_id отсутствует, генерируем новый")
                         generation_id = generate_file_id()
                         config_gen["generation_id"] = generation_id
                         save_config_gen(b2_client, config_gen)
                         logger.info(f"ℹ️ Новый generation_id: {generation_id}, запускаем generate_content.py")
-                        result = subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id], check=True)
-                        if result.returncode == 0:
-                            result = subprocess.run([sys.executable, GENERATE_MEDIA_SCRIPT, "--generation_id", generation_id], check=True)
+                        try:
+                            result = subprocess.run(
+                                [sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id], check=True)
                             if result.returncode == 0:
-                                tasks_processed += 1
-                                config_public["processing_lock"] = False
-                                save_config_public(b2_client, config_public)
-                                logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
-                                subprocess.run([sys.executable, __file__])
-                                return
-
+                                result = subprocess.run(
+                                    [sys.executable, GENERATE_MEDIA_SCRIPT, "--generation_id", generation_id],
+                                    check=True)
+                                if result.returncode == 0:
+                                    tasks_processed += 1
+                                    config_public["processing_lock"] = False
+                                    save_config_public(b2_client, config_public)
+                                    logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
+                                    subprocess.run([sys.executable, __file__])
+                                    return
+                        except subprocess.CalledProcessError as e:
+                            logger.error(f"❌ Ошибка запуска скрипта: {e}")
+                            raise
+                        
             midjourney_task = config_midjourney.get("midjourney_task")
             if midjourney_task:
                 fetch_media_path = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
@@ -428,6 +440,6 @@ def main():
             except Exception as e:
                 logger.error(f"❌ Ошибка при завершении работы: {e}")
         sys.exit(0)
-        
+
 if __name__ == "__main__":
     main()
