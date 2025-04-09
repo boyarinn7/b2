@@ -456,6 +456,20 @@ def resize_existing_image(image_path):
         handle_error(logger, "Image Resize Error", e)
         return False
 
+def load_content_from_b2(b2_client, generation_id):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    remote_path = f"666/{generation_id}.json"
+    local_path = f"temp_{generation_id}.json"
+    try:
+        download_file_from_b2(b2_client, remote_path, local_path)
+        with open(local_path, 'r', encoding='utf-8') as f:
+            content = json.load(f)
+        os.remove(local_path)
+        return content
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки 666/{generation_id}.json: {e}")
+        sys.exit(1)
+
 def clean_script_text(text):
     cleaned = text.replace('\n', ' ').replace('\r', ' ')
     cleaned = ' '.join(cleaned.split())
@@ -545,13 +559,8 @@ def main():
         generation_id = args.generation_id
         logger.info(f"📂 ID генерации: {generation_id}")
 
-        # Загрузка generated_content.json
-        if not os.path.exists(CONTENT_OUTPUT_PATH):
-            raise FileNotFoundError(
-                f"❌ Файл {CONTENT_OUTPUT_PATH} отсутствует. Запустите generate_content.py через b2_storage_manager.py")
-        with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
-            generated_content = json.load(f)
-
+        # Загрузка контента из B2 (666/<generation_id>.json)
+        generated_content = load_content_from_b2(b2_client, generation_id)
         topic_data = generated_content.get("topic", "")
         if isinstance(topic_data, dict):
             topic = topic_data.get("full_topic", "")
@@ -559,8 +568,12 @@ def main():
             topic = topic_data or generated_content.get("content", "")
         if not topic:
             raise ValueError("Тема или текст поста пусты!")
+        script_text = generated_content.get("script", "")
+        first_frame_description = generated_content.get("first_frame_description", "")
+        if not script_text or not first_frame_description:
+            raise ValueError(f"Сценарий или описание первого кадра отсутствуют в 666/{generation_id}.json")
 
-        # Загрузка config_midjourney.json из нового пути
+        # Загрузка config_midjourney.json из B2
         download_file_from_b2(b2_client, CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as f:
             config_midjourney = json.load(f)
@@ -582,8 +595,7 @@ def main():
                 import shutil
 
                 # Выбор лучшего изображения
-                best_image_path = select_best_image(b2_client, image_urls,
-                                                    generated_content.get("first_frame_description", topic))
+                best_image_path = select_best_image(b2_client, image_urls, first_frame_description)
                 image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
 
                 if best_image_path.startswith("http"):
@@ -608,9 +620,6 @@ def main():
                     raise ValueError("Не удалось изменить размер изображения")
 
                 # Генерация видео
-                script_text = generated_content.get("script", "")
-                if not script_text:
-                    raise ValueError("Сценарий отсутствует в generated_content.json")
                 cleaned_script = clean_script_text(script_text)
                 video_result = generate_runway_video(image_path, cleaned_script)
                 video_path = None
@@ -642,25 +651,14 @@ def main():
 
         # Сценарий 2: Нет midjourney_results
         else:
-            # Генерация сценария и кадра
-            script_text, first_frame_description = generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
-            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-                json.dump(generated_content, f, ensure_ascii=False, indent=4)
-            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
-
             # Отправка задачи MidJourney
             generate_image(first_frame_description, generation_id, target_folder)
-
             # Запуск b2_storage_manager.py уже внутри generate_image
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
+    
 if __name__ == "__main__":
     try:
         main()

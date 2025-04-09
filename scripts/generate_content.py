@@ -314,6 +314,25 @@ class ContentGenerator:
             handle_error("Sarcasm Poll Generation Error", str(e), e)
             return {}
 
+    def generate_script_and_frame(self, topic):
+        creative_prompts = self.config.get("creative_prompts")
+        selected_prompt = random.choice(creative_prompts)
+        combined_prompt = self.config.get("PROMPTS.user_prompt_combined").replace("{topic}", topic).replace(
+            "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
+            f"Затем используйте творческий подход: '{selected_prompt}'"
+        )
+        response = openai.ChatCompletion.create(
+            model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
+            messages=[{"role": "user", "content": combined_prompt}],
+            max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
+            temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
+        )
+        combined_response = response['choices'][0]['message']['content'].strip()
+        script_text = combined_response.split("First Frame Description:")[0].strip()
+        first_frame_description = combined_response.split("First Frame Description:")[1].split("End of Description")[
+            0].strip()
+        return script_text, first_frame_description
+
     def save_to_generated_content(self, stage, data):
         try:
             if not self.content_output_path:
@@ -509,13 +528,13 @@ class ContentGenerator:
                     logger.info(f"ℹ️ Используем generation_id из config_gen.json: {generation_id}")
 
             self.adapt_prompts()
-            self.clear_generated_content()
             tracker = self.load_tracker()  # Загрузка трекера для защиты от повторов
-            topic, content_data = self.generate_topic(tracker)  # Генерация темы с учетом трекера
+            topic, content_data = self.generate_topic(tracker)  # Генерация темы
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
                 return
 
+            # Генерация текста
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
                 if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
                         'CONTENT.tragic_text.enabled', True):
@@ -530,62 +549,107 @@ class ContentGenerator:
                 text_initial = ""
                 logger.info("🔕 Генерация текста отключена.")
 
+            # Генерация сарказма
+            sarcastic_comment = ""
+            sarcastic_poll = {}
             if text_initial:
                 sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
                 sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
-                self.save_to_generated_content("sarcasm", {
-                    "comment": sarcastic_comment,
-                    "poll": sarcastic_poll
-                })
 
             final_text = text_initial.strip()
-            target_folder = "666/"  # Фиксированная папка
+            target_folder = "666/"
+
+            # Генерация сценария и первого кадра
+            script_text, first_frame_description = self.generate_script_and_frame(topic)
+            if not script_text or not first_frame_description:
+                logger.error("❌ Не удалось сгенерировать сценарий или описание кадра")
+                sys.exit(1)
+            logger.info(f"✅ Сценарий сгенерирован: {script_text[:100]}...")
+            logger.info(f"✅ Описание первого кадра: {first_frame_description[:100]}...")
+
+            # Сборка полного контента
             content_dict = {
                 "topic": topic,
                 "content": final_text,
                 "sarcasm": {
                     "comment": sarcastic_comment,
                     "poll": sarcastic_poll
-                }
+                },
+                "script": script_text,
+                "first_frame_description": first_frame_description
             }
             save_to_b2(target_folder, content_dict)
+            logger.info(f"✅ Контент сохранен в B2: 666/{generation_id}.json")
 
-            # Запуск generate_media.py с полной обработкой ошибок
+            # Запуск generate_media.py
             scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
             generate_media_path = os.path.join(scripts_folder, "generate_media.py")
             if not os.path.isfile(generate_media_path):
-                handle_error("File Not Found Error", f"Скрипт не найден: {generate_media_path}", FileNotFoundError())
-                logger.warning("⚠️ Скрипт generate_media.py отсутствует, завершаем без медиа.")
-                return
+                logger.error(f"❌ Скрипт не найден: {generate_media_path}")
+                sys.exit(1)
             logger.info(f"🔄 Запуск generate_media.py с generation_id: {generation_id}")
             try:
                 result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id],
                                         check=True)
                 if result.returncode == 0:
+                    logger.info("✅ generate_media.py выполнен успешно")
                     # Запуск b2_storage_manager.py
                     b2_manager_path = os.path.join(scripts_folder, "b2_storage_manager.py")
                     if not os.path.isfile(b2_manager_path):
-                        handle_error("File Not Found Error", f"Скрипт не найден: {b2_manager_path}",
-                                     FileNotFoundError())
-                        logger.warning("⚠️ Скрипт b2_storage_manager.py отсутствует, завершаем.")
-                        return
+                        logger.error(f"❌ Скрипт не найден: {b2_manager_path}")
+                        sys.exit(1)
                     logger.info("🔄 Запуск b2_storage_manager.py для продолжения цикла")
-                    subprocess.run([sys.executable, b2_manager_path])
+                    subprocess.run([sys.executable, b2_manager_path], check=True)
                 else:
                     logger.error("❌ Ошибка при выполнении generate_media.py")
+                    sys.exit(1)
             except subprocess.CalledProcessError as e:
-                handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
-                logger.warning("⚠️ Генерация медиа не удалась, завершаем без медиа.")
-                return
-            except Exception as e:
-                handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
-                logger.warning("⚠️ Неизвестная ошибка в generate_media, завершаем.")
-                return
+                logger.error(f"❌ Ошибка запуска generate_media.py: {e}")
+                sys.exit(1)
 
             logger.info("✅ Генерация контента завершена.")
         except Exception as e:
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
+            sys.exit(1)
+
+    def generate_script_and_frame(self, topic):
+        """Генерация сценария и описания первого кадра."""
+        creative_prompts = self.config.get("creative_prompts")
+        if not creative_prompts or not isinstance(creative_prompts, list):
+            logger.error(f"❌ Ошибка: 'creative_prompts' не найден или не является списком")
+            raise ValueError("Список 'creative_prompts' не найден")
+        selected_prompt = random.choice(creative_prompts)
+        combined_prompt = self.config.get("PROMPTS.user_prompt_combined").replace("{topic}", topic).replace(
+            "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
+            f"Затем используйте творческий подход: '{selected_prompt}'"
+        )
+        for attempt in range(self.max_attempts):
+            try:
+                logger.info(f"🔎 Генерация сценария для '{topic[:100]}' (попытка {attempt + 1}/{self.max_attempts})")
+                response = openai.ChatCompletion.create(
+                    model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
+                    messages=[{"role": "user", "content": combined_prompt}],
+                    max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
+                    temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
+                )
+                combined_response = response['choices'][0]['message']['content'].strip()
+                if len(combined_response) < self.config.get("VISUAL_ANALYSIS.min_script_length", 200):
+                    logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
+                    continue
+                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+                    logger.error("❌ Маркеры кадра не найдены в ответе!")
+                    continue
+                script_text = combined_response.split("First Frame Description:")[0].strip()
+                first_frame_description = \
+                combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+                return script_text, first_frame_description
+            except Exception as e:
+                handle_error(logger, f"Ошибка генерации сценария (попытка {attempt + 1}/{self.max_attempts})", e)
+                if attempt == self.max_attempts - 1:
+                    logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
+                    return None, None
+        return None, None
 
 if __name__ == "__main__":
     generator = ContentGenerator()

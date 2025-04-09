@@ -84,7 +84,7 @@ def fetch_midjourney_result(task_id):
     except ValueError as e:
         logger.error(f"❌ Ошибка разбора JSON от PiAPI: {e}, ответ: {response.text}")
         return None
-    
+
 def main():
     logger.info("🔄 Начало проверки статуса задачи MidJourney...")
     try:
