@@ -9,6 +9,8 @@ import base64
 import time
 import re
 import random
+import logging
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from PIL import Image
 from runwayml import RunwayML
@@ -178,24 +180,36 @@ def select_best_image(b2_client, image_urls, prompt):
         return image_urls[0]
 
 def download_file_from_b2(client, remote_path, local_path):
-    bucket_name = os.getenv("B2_BUCKET_NAME")
+    bucket_name = "boyarinnbotbucket"  # Указываем твой бакет напрямую
+    import time
+    max_attempts = 3
     if not bucket_name:
-        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-    try:
-        logger.info(f"🔄 Загрузка файла из B2: {remote_path} -> {local_path}")
-        ensure_directory_exists(os.path.dirname(local_path))
-        response = client.list_file_names(bucket_name, remote_path, 1)
-        if not response.get("files"):
-            logger.error(f"❌ Файл {remote_path} не найден в B2")
-            raise FileNotFoundError(f"Файл {remote_path} отсутствует в бакете {bucket_name}")
-        client.download_file(bucket_name, remote_path, local_path)
-        logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
-    except FileNotFoundError as e:
-        handle_error(logger, "B2 Download Error", exception=e)
-        raise
-    except Exception as e:
-        handle_error(logger, "B2 Download Error", exception=e)
-        raise
+        raise ValueError("❌ Имя бакета не задано")
+    for attempt in range(max_attempts):
+        try:
+            logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
+            ensure_directory_exists(os.path.dirname(local_path))
+            # Проверка существования файла
+            response = client.list_file_names(bucket_name, start_file_name=remote_path)
+            exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
+            if not exists:
+                logger.error(f"❌ Файл {remote_path} не найден в B2")
+                raise FileNotFoundError(f"Файл {remote_path} отсутствует в бакете {bucket_name}")
+            # Загрузка файла
+            client.download_file_by_name(bucket_name, remote_path, local_path)
+            logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
+            return  # Успешно загружено, выходим из цикла
+        except FileNotFoundError as e:
+            logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
+            handle_error(logger, "B2 Download Error", exception=e)
+            raise  # Файл не найден, больше пытаться нет смысла
+        except Exception as e:
+            logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt)  # Ждем 2, 4 секунды перед следующей попыткой
+            else:
+                handle_error(logger, "B2 Download Error", exception=e)
+                raise
 
 def upload_to_b2(client, folder, file_path):
     try:

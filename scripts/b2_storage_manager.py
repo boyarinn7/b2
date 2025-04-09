@@ -259,12 +259,12 @@ def any_folder_empty(s3, folders):
     return False
 
 def check_content_exists(b2_client, generation_id):
-    bucket_name = os.getenv("B2_BUCKET_NAME")
+    bucket_name = "boyarinnbotbucket"  # Указываем твой бакет напрямую
     remote_path = f"666/{generation_id}.json"
     try:
         logger.info(f"🔍 Проверка файла {remote_path} в B2")
-        response = b2_client.list_file_names(bucket_name, remote_path, 1)
-        exists = bool(response.get("files"))
+        response = b2_client.list_file_names(bucket_name, start_file_name=remote_path)
+        exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
         logger.info(f"ℹ️ Файл {remote_path} {'существует' if exists else 'не найден'}")
         return exists
     except Exception as e:
@@ -348,7 +348,7 @@ def main():
                         except subprocess.CalledProcessError as e:
                             logger.error(f"❌ Ошибка запуска скрипта: {e}")
                             raise
-                        
+
             midjourney_task = config_midjourney.get("midjourney_task")
             if midjourney_task:
                 fetch_media_path = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
