@@ -190,18 +190,15 @@ def download_file_from_b2(b2_client, remote_path, local_path):
             logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
             ensure_directory_exists(os.path.dirname(local_path))
             bucket = b2_client.get_bucket_by_name(bucket_name)
-            response = bucket.list_file_names(start_file_name=remote_path, max_file_count=1)
-            exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
-            if not exists:
-                logger.error(f"❌ Файл {remote_path} не найден в B2")
-                raise FileNotFoundError(f"Файл {remote_path} отсутствует в бакете {bucket_name}")
-            bucket.download_file_by_name(remote_path, local_path)
-            logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
-            return
-        except FileNotFoundError as e:
-            logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
-            handle_error(logger, "B2 Download Error", e)
-            raise
+            file_info = bucket.get_file_info_by_name(remote_path)
+            file_id = file_info.id_
+            download_dest = b2_client.download_file_by_id(file_id)
+            download_dest.save_to(local_path)
+            if os.path.exists(local_path):
+                logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
+                return
+            else:
+                raise FileNotFoundError(f"Файл {local_path} не был создан")
         except Exception as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
             if attempt < max_attempts - 1:

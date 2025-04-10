@@ -497,13 +497,13 @@ class ContentGenerator:
         tracker_updated = False
         try:
             bucket = b2_client.get_bucket_by_name(bucket_name)
-            self.logger.info(f"Загружаем {b2_path} из B2 в {local_path}")
-            bucket.download_file_by_name(b2_path, local_path)
-            if os.path.exists(local_path):
-                self.logger.info(f"✅ Файл {local_path} успешно загружен и существует")
-            else:
-                self.logger.error(f"❌ Файл {local_path} не найден после загрузки")
-                raise FileNotFoundError(f"Файл {local_path} не был создан")
+            file_info = bucket.get_file_info_by_name(b2_path)
+            file_id = file_info.id_
+            download_dest = b2_client.download_file_by_id(file_id)
+            download_dest.save_to(local_path)
+            if not os.path.exists(local_path):
+                raise FileNotFoundError(f"❌ Файл {local_path} не был создан")
+            self.logger.info(f"✅ Файл {local_path} успешно загружен из B2")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {e}")
             if not os.path.exists(local_path):

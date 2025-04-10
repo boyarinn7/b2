@@ -8,8 +8,8 @@ B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
 
 # Пути
-LOCAL_FILE_PATH = r"C:\Users\boyar\777\config_public.json"
-REMOTE_FILE_PATH = "config/config_public.json"
+LOCAL_FILE_PATH = r"C:\Users\boyar\777\FailSafeVault.json"
+REMOTE_FILE_PATH = "config/FailSafeVault.json"
 
 # Инициализация клиента B2
 s3 = boto3.client(
