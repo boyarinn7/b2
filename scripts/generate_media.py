@@ -1,6 +1,5 @@
 import os
 import json
-import boto3
 import sys
 import subprocess
 import openai
@@ -10,8 +9,6 @@ import time
 import re
 import random
 import logging
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from PIL import Image
 from runwayml import RunwayML
 from moviepy.editor import ImageClip, concatenate_videoclips
@@ -20,9 +17,9 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 from modules.api_clients import get_b2_client
-from PIL import Image
 from io import BytesIO
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # === Инициализация конфигурации и логгера ===
 config = ConfigManager()
 logger = get_logger("generate_media")
@@ -109,9 +106,13 @@ def check_midjourney_results(b2_client):
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_config = "config/config_public.json"
+    temp_path = "temp_config.json"
     try:
-        config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
-        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(remote_config, temp_path)
+        with open(temp_path, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+        os.remove(temp_path)
         return config_data.get("midjourney_results", None)
     except Exception as e:
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
@@ -179,9 +180,8 @@ def select_best_image(b2_client, image_urls, prompt):
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]
 
-def download_file_from_b2(client, remote_path, local_path):
-    bucket_name = "boyarinnbotbucket"  # Указываем твой бакет напрямую
-    import time
+def download_file_from_b2(b2_client, remote_path, local_path):
+    bucket_name = "boyarinnbotbucket"
     max_attempts = 3
     if not bucket_name:
         raise ValueError("❌ Имя бакета не задано")
@@ -189,39 +189,38 @@ def download_file_from_b2(client, remote_path, local_path):
         try:
             logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
             ensure_directory_exists(os.path.dirname(local_path))
-            # Проверка существования файла
-            response = client.list_file_names(bucket_name, start_file_name=remote_path)
+            bucket = b2_client.get_bucket_by_name(bucket_name)
+            response = bucket.list_file_names(start_file_name=remote_path, max_file_count=1)
             exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
             if not exists:
                 logger.error(f"❌ Файл {remote_path} не найден в B2")
                 raise FileNotFoundError(f"Файл {remote_path} отсутствует в бакете {bucket_name}")
-            # Загрузка файла
-            client.download_file_by_name(bucket_name, remote_path, local_path)
+            bucket.download_file_by_name(remote_path, local_path)
             logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
-            return  # Успешно загружено, выходим из цикла
+            return
         except FileNotFoundError as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
-            handle_error(logger, "B2 Download Error", exception=e)
-            raise  # Файл не найден, больше пытаться нет смысла
+            handle_error(logger, "B2 Download Error", e)
+            raise
         except Exception as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)  # Ждем 2, 4 секунды перед следующей попыткой
+                time.sleep(2 ** attempt)
             else:
-                handle_error(logger, "B2 Download Error", exception=e)
+                handle_error(logger, "B2 Download Error", e)
                 raise
 
-def upload_to_b2(client, folder, file_path):
+def upload_to_b2(b2_client, folder, file_path):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         file_name = os.path.basename(file_path)
         if not folder.endswith('/'):
             folder += '/'
         s3_key = f"{folder}{file_name}"
         logger.info(f"🔄 Загрузка файла в B2: {file_path} -> {s3_key}")
-        bucket = client.get_bucket_by_name(bucket_name)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
         bucket.upload_local_file(local_file=file_path, file_name=s3_key)
         logger.info(f"✅ Файл '{file_name}' успешно загружен в B2: {s3_key}")
         os.remove(file_path)
@@ -242,7 +241,8 @@ def update_config_public(client, folder):
             config_public["empty"].remove(folder)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        bucket = client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=CONFIG_PUBLIC_LOCAL_PATH, file_name=CONFIG_PUBLIC_PATH)
         logger.info("✅ config_public.json обновлён и загружен обратно в B2.")
         os.remove(CONFIG_PUBLIC_LOCAL_PATH)
     except Exception as e:
@@ -264,9 +264,9 @@ def reset_processing_lock(client):
             logger.info("processing_lock уже сброшен.")
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(config_public, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        bucket = client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=CONFIG_PUBLIC_LOCAL_PATH, file_name=CONFIG_PUBLIC_PATH)
         logger.info("✅ processing_lock успешно сброшен в config_public.json")
-        # Проверка: повторно загружаем файл и логируем новое состояние
         download_file_from_b2(client, CONFIG_PUBLIC_PATH, CONFIG_PUBLIC_LOCAL_PATH)
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
             new_config = json.load(file)
@@ -314,24 +314,26 @@ def generate_script_and_frame(topic):
                 return None, None
     return None, None
 
-def load_config_public(client):
+def load_config_public(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     local_path = CONFIG_PUBLIC_LOCAL_PATH
     try:
+        bucket = b2_client.get_bucket_by_name(bucket_name)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        client.download_file(bucket_name, CONFIG_PUBLIC_PATH, local_path)
+        bucket.download_file_by_name(CONFIG_PUBLIC_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             return json.load(file)
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки config_public.json: {e}")
         return {}
 
-def save_config_public(client, data):
+def save_config_public(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     try:
         with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_PUBLIC_LOCAL_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=CONFIG_PUBLIC_LOCAL_PATH, file_name=CONFIG_PUBLIC_PATH)
         logger.info("✅ config_public.json сохранён в B2.")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения config_public.json: {e}")
@@ -339,19 +341,21 @@ def save_config_public(client, data):
 def load_config_midjourney(client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     try:
-        client.download_file(bucket_name, CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
+        bucket = client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as file:
             return json.load(file)
     except Exception as e:
         logger.warning(f"⚠️ Конфиг {CONFIG_MIDJOURNEY_PATH} не найден, создаём новый: {e}")
         return {"midjourney_task": None}
 
-def save_config_midjourney(client, data):
+def save_config_midjourney(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     try:
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        client.upload_file(CONFIG_MIDJOURNEY_LOCAL_PATH, bucket_name, CONFIG_MIDJOURNEY_PATH)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=CONFIG_MIDJOURNEY_LOCAL_PATH, file_name=CONFIG_MIDJOURNEY_PATH)
         logger.info(f"✅ config_midjourney.json сохранён в B2: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения config_midjourney.json: {e}")
@@ -415,18 +419,22 @@ def generate_image_with_midjourney(prompt, generation_id, target_folder):
 def remove_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     remote_config = "config/config_public.json"
+    temp_path = "temp_config.json"
     try:
-        # Загружаем текущую конфигурацию из B2
-        config_obj = b2_client.get_object(Bucket=bucket_name, Key=remote_config)
-        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(remote_config, temp_path)
+        with open(temp_path, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
         if "midjourney_results" in config_data:
             logger.info("Удаляем ключ midjourney_results из config_public.")
             del config_data["midjourney_results"]
-            updated_config = json.dumps(config_data, ensure_ascii=False, indent=4).encode('utf-8')
-            b2_client.put_object(Bucket=bucket_name, Key=remote_config, Body=updated_config)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            bucket.upload_local_file(local_file=temp_path, file_name=remote_config)
             logger.info("✅ Ключ midjourney_results удалён из config_public.")
         else:
             logger.info("Ключ midjourney_results отсутствует в config_public, ничего не удаляем.")
+        os.remove(temp_path)
     except Exception as e:
         logger.error(f"Ошибка при удалении midjourney_results: {e}")
 

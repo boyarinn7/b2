@@ -4,8 +4,9 @@ import logging
 import subprocess
 import re
 import sys
+
 from datetime import datetime
-from botocore.exceptions import ClientError
+from b2sdk.v2 import B2Api, InMemoryAccountInfo
 
 script_dir = os.path.dirname(__file__)
 parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
@@ -48,37 +49,33 @@ ARCHIVE_FOLDER = config.get("FILE_PATHS.archive_folder", "archive/")
 GENERATE_CONTENT_SCRIPT = os.path.join(config.get("FILE_PATHS.scripts_folder", "scripts"), "generate_content.py")
 FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
-def load_config_public(s3):
+def load_config_public(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_PUBLIC_LOCAL_PATH
     try:
-        local_path = CONFIG_PUBLIC_PATH
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+        bucket = b2_client.get_bucket_by_name(bucket_name)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        s3.download_file(bucket_name, CONFIG_PUBLIC_PATH, local_path)
+        bucket.download_file_by_name(CONFIG_PUBLIC_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
         logger.info(f"Loaded {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
         return data
-    except ClientError as e:
-        if e.response['Error']['Code'] == '404':
+    except Exception as e:  # Заменил ClientError на Exception
+        if "not found" in str(e).lower():  # Проверка на отсутствие файла
             logger.warning("⚠️ Конфиг не найден, создаём новый.")
-            new_data = {"processing_lock": False, "empty": [], "generation_id": []}
-            return new_data
-        logger.error(f"❌ Ошибка загрузки конфига: {e}")
-        return {}
-    except Exception as e:
+            return {"processing_lock": False, "empty": [], "generation_id": []}
         logger.error(f"❌ Неизвестная ошибка при загрузке конфига: {e}")
         return {}
 
-def save_config_public(s3, data):
+def save_config_public(b2_client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-        with open(CONFIG_PUBLIC_PATH, 'w', encoding='utf-8') as file:
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-        s3.upload_file(CONFIG_PUBLIC_PATH, bucket_name, CONFIG_PUBLIC_PATH)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=CONFIG_PUBLIC_LOCAL_PATH, file_name=CONFIG_PUBLIC_PATH)
         logger.info(f"Saved {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
@@ -95,17 +92,24 @@ def load_config_gen(s3):
         logger.warning(f"Config {CONFIG_GEN_PATH} not found or invalid: {e}")
         return {}
 
-def save_config_gen(s3, data):
-    local_path = "config_gen.json"
-    with open(local_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-    s3.upload_file(local_path, os.getenv("B2_BUCKET_NAME"), CONFIG_GEN_PATH)
-    logger.info(f"Saved {CONFIG_GEN_PATH}: {json.dumps(data, ensure_ascii=False)}")
-
-def load_config_midjourney(s3):
+def save_config_gen(b2_client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_GEN_LOCAL_PATH
     try:
-        local_path = "config_midjourney.json"
-        s3.download_file(os.getenv("B2_BUCKET_NAME"), CONFIG_MIDJOURNEY_PATH, local_path)
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=local_path, file_name=CONFIG_GEN_PATH)
+        logger.info(f"Saved {CONFIG_GEN_PATH}: {json.dumps(data, ensure_ascii=False)}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения конфига: {e}")
+
+def load_config_midjourney(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH  # "config_midjourney.json"
+    try:
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(CONFIG_MIDJOURNEY_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         logger.info(f"Loaded {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
@@ -114,22 +118,29 @@ def load_config_midjourney(s3):
         logger.warning(f"Config {CONFIG_MIDJOURNEY_PATH} not found or invalid: {e}")
         return {}
 
-def save_config_midjourney(s3, data):
-    local_path = "config_midjourney.json"
-    with open(local_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-    s3.upload_file(local_path, os.getenv("B2_BUCKET_NAME"), CONFIG_MIDJOURNEY_PATH)
-    logger.info(f"Saved {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
+def save_config_midjourney(b2_client, data):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH
+    try:
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=local_path, file_name=CONFIG_MIDJOURNEY_PATH)
+        logger.info(f"Saved {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения конфига: {e}")
 
 def generate_file_id():
     now = datetime.utcnow()
     return f"{now.strftime('%Y%m%d-%H%M')}"
 
-def update_content_json(s3, target_folder, generation_id):
+def update_content_json(b2_client, target_folder, generation_id):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
     json_path = f"{target_folder}{generation_id}.json"
     local_json = "temp_content.json"
     try:
-        s3.download_file(os.getenv("B2_BUCKET_NAME"), json_path, local_json)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(json_path, local_json)
         with open(local_json, 'r', encoding='utf-8') as f:
             content_dict = json.load(f)
         with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
@@ -139,7 +150,7 @@ def update_content_json(s3, target_folder, generation_id):
         content_dict["video_url"] = f"{target_folder}{generation_id}.mp4"
         with open(local_json, 'w', encoding='utf-8') as f:
             json.dump(content_dict, f, indent=4, ensure_ascii=False)
-        s3.upload_file(local_json, os.getenv("B2_BUCKET_NAME"), json_path)
+        bucket.upload_local_file(local_file=local_json, file_name=json_path)
         logger.info(f"Updated {json_path}: {json.dumps(content_dict, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Failed to update {json_path}: {e}")
@@ -155,7 +166,7 @@ def list_files_in_folder(s3, folder_prefix):
             if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty')
                and FILE_NAME_PATTERN.match(os.path.basename(obj['Key']))
         ]
-    except ClientError as e:
+    except Exception as e:
         logger.error(f"Ошибка получения списка файлов: {e}")
         return []
 
@@ -171,21 +182,30 @@ def get_ready_groups(files):
         if all(f"{group_id}{ext}" in file_list for ext in FILE_EXTENSIONS)
     ]
 
-def move_group(s3, src_folder, dst_folder, group_id):
+def move_group(b2_client, src_folder, dst_folder, group_id):
     bucket_name = os.getenv("B2_BUCKET_NAME")
+    bucket = b2_client.get_bucket_by_name(bucket_name)
     for ext in FILE_EXTENSIONS:
         src_key = f"{src_folder}{group_id}{ext}"
         dst_key = f"{dst_folder}{group_id}{ext}"
         try:
-            s3.head_object(Bucket=bucket_name, Key=src_key)
-            s3.copy_object(Bucket=bucket_name, CopySource={"Bucket": bucket_name, "Key": src_key}, Key=dst_key)
-            s3.delete_object(Bucket=bucket_name, Key=src_key)
+            # Проверка существования файла
+            response = bucket.list_file_names(start_file_name=src_key, max_file_count=1)
+            file_info = next((f for f in response['files'] if f['fileName'] == src_key), None)
+            if not file_info:
+                continue  # Файл не найден, пропускаем
+            # Копирование: скачать и загрузить
+            temp_path = f"temp_{group_id}{ext}"
+            bucket.download_file_by_name(src_key, temp_path)
+            bucket.upload_local_file(local_file=temp_path, file_name=dst_key)
+            # Удаление исходного файла
+            bucket.delete_file(file_info['fileId'], src_key)
+            os.remove(temp_path)
             logger.info(f"✅ Перемещено: {src_key} -> {dst_key}")
-        except ClientError as e:
-            if e.response['Error']['Code'] != "NoSuchKey":
-                logger.error(f"Ошибка перемещения {src_key}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка перемещения {src_key}: {e}")
 
-def process_folders(s3, folders):
+def process_folders(b2_client, folders):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     empty_folders = set()
     changes_made = True
@@ -196,23 +216,24 @@ def process_folders(s3, folders):
             dst_folder = folders[i - 1]
             if src_folder in empty_folders:
                 continue
-            src_files = list_files_in_folder(s3, src_folder)
-            dst_files = list_files_in_folder(s3, dst_folder)
+            src_files = list_files_in_folder(b2_client, src_folder)
+            dst_files = list_files_in_folder(b2_client, dst_folder)
             src_ready = get_ready_groups(src_files)
             dst_ready = get_ready_groups(dst_files)
             for group_id in src_ready:
                 if len(dst_ready) < 1:
-                    move_group(s3, src_folder, dst_folder, group_id)
+                    move_group(b2_client, src_folder, dst_folder, group_id)
                     changes_made = True
             if not src_ready:
                 empty_folders.add(src_folder)
-    config_data = load_config_public(s3)
+    config_data = load_config_public(b2_client)
     config_data["empty"] = list(empty_folders)
-    save_config_public(s3, config_data)
+    save_config_public(b2_client, config_data)
     logger.info(f"📂 Обновлены пустые папки: {config_data.get('empty')}")
 
-def handle_publish(s3, config_data):
+def handle_publish(b2_client, config_data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
+    bucket = b2_client.get_bucket_by_name(bucket_name)
     generation_ids = config_data.get("generation_id", [])
     if not generation_ids:
         logger.info("📂 Нет generation_id для архивации.")
@@ -222,7 +243,7 @@ def handle_publish(s3, config_data):
     archived_ids = []
     for generation_id in generation_ids:
         logger.info(f"🔄 Архивируем группу: {generation_id}")
-        files_exist = any(list_files_in_folder(s3, folder) for folder in FOLDERS)
+        files_exist = any(list_files_in_folder(b2_client, folder) for folder in FOLDERS)
         if not files_exist:
             logger.error(f"❌ Файлы группы {generation_id} не найдены!")
             continue
@@ -232,26 +253,30 @@ def handle_publish(s3, config_data):
                 src_key = f"{folder}{generation_id}{ext}"
                 dst_key = f"{ARCHIVE_FOLDER}{generation_id}{ext}"
                 try:
-                    s3.head_object(Bucket=bucket_name, Key=src_key)
-                    s3.copy_object(Bucket=bucket_name, CopySource={"Bucket": bucket_name, "Key": src_key}, Key=dst_key)
-                    s3.delete_object(Bucket=bucket_name, Key=src_key)
-                    logger.info(f"✅ Успешно перемещено: {src_key} -> {dst_key}")
-                except ClientError as e:
-                    if e.response['Error']['Code'] != '404':
-                        logger.error(f"❌ Ошибка архивации {src_key}: {e}")
-                        success = False
+                    response = bucket.list_file_names(start_file_name=src_key, max_file_count=1)
+                    file_info = next((f for f in response['files'] if f['fileName'] == src_key), None)
+                    if file_info:
+                        temp_path = f"temp_{generation_id}{ext}"
+                        bucket.download_file_by_name(src_key, temp_path)
+                        bucket.upload_local_file(local_file=temp_path, file_name=dst_key)
+                        bucket.delete_file(file_info['fileId'], src_key)
+                        os.remove(temp_path)
+                        logger.info(f"✅ Успешно перемещено: {src_key} -> {dst_key}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка архивации {src_key}: {e}")
+                    success = False
         if success:
             archived_ids.append(generation_id)
     if archived_ids:
         config_data["generation_id"] = [gid for gid in generation_ids if gid not in archived_ids]
         if not config_data["generation_id"]:
             del config_data["generation_id"]
-        save_config_public(s3, config_data)
+        save_config_public(b2_client, config_data)
         logger.info(f"✅ Успешно заархивированы: {archived_ids}")
 
-def any_folder_empty(s3, folders):
+def any_folder_empty(b2_client, folders):
     for folder in folders:
-        files = list_files_in_folder(s3, folder)
+        files = list_files_in_folder(b2_client, folder)
         ready_groups = get_ready_groups(files)
         if not ready_groups:
             logger.info(f"Папка {folder} считается пустой (нет полных групп).")
@@ -271,7 +296,7 @@ def check_content_exists(b2_client, generation_id):
     except Exception as e:
         logger.error(f"❌ Ошибка проверки файла {remote_path}: {e}")
         return False
-    
+
 def main():
     b2_client = None
     SCRIPTS_FOLDER = os.path.abspath(config.get("FILE_PATHS.scripts_folder", "scripts"))
