@@ -20,7 +20,8 @@ logger = get_logger("generate_content")
 config = ConfigManager()
 
 FAILSAFE_PATH = "config/FailSafeVault.json"
-TRACKER_PATH = "data/topics_tracker.json"
+TRACKER_PATH = "config/topics_tracker.json"  # Локальный путь
+TRACKER_B2_PATH = "config/topics_tracker.json"  # Путь в B2
 CONFIG_GEN_PATH = "config/config_gen.json"  # Путь в B2
 CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"  # Локальный путь
 CONTENT_OUTPUT_PATH = "generated_content.json"  # Локальный путь для контента
@@ -225,14 +226,16 @@ class ContentGenerator:
     def sync_tracker_to_b2(self):
         b2_client = get_b2_client()
         bucket_name = os.getenv("B2_BUCKET_NAME")
+        local_path = TRACKER_PATH  # "config/topics_tracker.json"
+        b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         try:
             bucket = b2_client.get_bucket_by_name(bucket_name)
-            bucket.upload_local_file(local_file=TRACKER_PATH, file_name="data/topics_tracker.json")
-            self.logger.info("✅ topics_tracker.json синхронизирован с B2")
+            bucket.upload_local_file(local_file=local_path, file_name=b2_path)
+            self.logger.info(f"✅ {b2_path} синхронизирован с B2")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
+            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} в B2: {e}")
 
     def request_openai(self, prompt):
         try:
@@ -485,17 +488,20 @@ class ContentGenerator:
         bucket_name = os.getenv("B2_BUCKET_NAME")
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-        os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
+        local_path = TRACKER_PATH  # "config/topics_tracker.json"
+        b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаём папку config/
         b2_client = get_b2_client()
         tracker_updated = False
         try:
             bucket = b2_client.get_bucket_by_name(bucket_name)
-            bucket.download_file_by_name("data/topics_tracker.json", TRACKER_PATH)
-            self.logger.info("✅ Загружен topics_tracker.json из B2")
+            bucket.download_file_by_name(b2_path, local_path)
+            self.logger.info(f"✅ Загружен {b2_path} из B2 в {local_path}")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
-            if not os.path.exists(TRACKER_PATH):
+            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {e}")
+            if not os.path.exists(local_path):
                 self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
                     failsafe = json.load(f)
                 tracker = {
@@ -503,10 +509,10 @@ class ContentGenerator:
                     "used_focuses": [],
                     "focus_data": {}
                 }
-                with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+                with open(local_path, 'w', encoding='utf-8') as f:
                     json.dump(tracker, f, ensure_ascii=False, indent=4)
                 tracker_updated = True
-        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
+        with open(local_path, 'r', encoding='utf-8') as f:
             tracker = json.load(f)
         if "all_focuses" not in tracker:
             self.logger.info("Обновляем старый трекер: добавляем all_focuses")
@@ -515,7 +521,7 @@ class ContentGenerator:
             tracker["all_focuses"] = failsafe["focuses"]
             tracker.setdefault("used_focuses", [])
             tracker.setdefault("focus_data", {})
-            with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+            with open(local_path, 'w', encoding='utf-8') as f:
                 json.dump(tracker, f, ensure_ascii=False, indent=4)
             tracker_updated = True
         if tracker_updated:
