@@ -50,6 +50,7 @@ jobs:
 
     - name: Запуск b2_storage_manager.py
       run: |
+        export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
         python -u scripts/b2_storage_manager.py --zero-delay > b2_storage_manager.log 2>&1 || {
           echo "Ошибка выполнения b2_storage_manager.py, см. логи ниже:"
           cat b2_storage_manager.log

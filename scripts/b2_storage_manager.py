@@ -35,7 +35,6 @@ CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
 SCRIPTS_FOLDER = "scripts/"
 CONTENT_OUTPUT_PATH = "generated_content.json"
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
-GENERATE_CONTENT_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_content.py")
 GENERATE_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
 FETCH_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
 TARGET_FOLDER = "666/"
@@ -51,7 +50,9 @@ FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 def load_config_public(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_PUBLIC_LOCAL_PATH or "config_public.json"
+    local_path = CONFIG_PUBLIC_LOCAL_PATH or "config_public.json"  # Значение по умолчанию
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_public.json не задан")
     try:
         bucket = b2_client.get_bucket_by_name(bucket_name)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -69,21 +70,35 @@ def load_config_public(b2_client):
 
 def save_config_public(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_PUBLIC_LOCAL_PATH or "config_public.json"  # Дефолтный локальный путь
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_public.json не задан")
+    if not CONFIG_PUBLIC_PATH:
+        raise ValueError("❌ Путь в B2 для config_public.json не задан")
     try:
-        with open(CONFIG_PUBLIC_LOCAL_PATH, 'w', encoding='utf-8') as file:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаём папку, если её нет
+        with open(local_path, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         bucket = b2_client.get_bucket_by_name(bucket_name)
-        bucket.upload_local_file(local_file=CONFIG_PUBLIC_LOCAL_PATH, file_name=CONFIG_PUBLIC_PATH)
+        bucket.upload_local_file(local_file=local_path, file_name=CONFIG_PUBLIC_PATH)
         logger.info(f"Saved {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
 
-def load_config_gen(s3):
+def load_config_gen(b2_client):
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    local_path = CONFIG_GEN_LOCAL_PATH or "config/config_gen.json"  # Дефолтный локальный путь
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_gen.json не задан")
+    if not CONFIG_GEN_PATH:
+        raise ValueError("❌ Путь в B2 для config_gen.json не задан")
     try:
-        local_path = "config_gen.json"
-        s3.download_file(os.getenv("B2_BUCKET_NAME"), CONFIG_GEN_PATH, local_path)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.download_file_by_name(CONFIG_GEN_PATH, local_path)
         with open(local_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         logger.info(f"Loaded {CONFIG_GEN_PATH}: {json.dumps(data, ensure_ascii=False)}")
@@ -94,8 +109,15 @@ def load_config_gen(s3):
 
 def save_config_gen(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_GEN_LOCAL_PATH or "config/config_gen.json"
+    local_path = CONFIG_GEN_LOCAL_PATH or "config/config_gen.json"  # Дефолтный локальный путь
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_gen.json не задан")
+    if not CONFIG_GEN_PATH:
+        raise ValueError("❌ Путь в B2 для config_gen.json не задан")
     try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         bucket = b2_client.get_bucket_by_name(bucket_name)
@@ -106,7 +128,13 @@ def save_config_gen(b2_client, data):
 
 def load_config_midjourney(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"  # Дефолтный локальный путь
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_midjourney.json не задан")
+    if not CONFIG_MIDJOURNEY_PATH:
+        raise ValueError("❌ Путь в B2 для config_midjourney.json не задан")
     try:
         bucket = b2_client.get_bucket_by_name(bucket_name)
         bucket.download_file_by_name(CONFIG_MIDJOURNEY_PATH, local_path)
@@ -120,8 +148,15 @@ def load_config_midjourney(b2_client):
 
 def save_config_midjourney(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"  # Дефолтный локальный путь
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для config_midjourney.json не задан")
+    if not CONFIG_MIDJOURNEY_PATH:
+        raise ValueError("❌ Путь в B2 для config_midjourney.json не задан")
     try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         bucket = b2_client.get_bucket_by_name(bucket_name)
@@ -129,7 +164,7 @@ def save_config_midjourney(b2_client, data):
         logger.info(f"Saved {CONFIG_MIDJOURNEY_PATH}: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
-
+        
 def generate_file_id():
     now = datetime.utcnow()
     return f"{now.strftime('%Y%m%d-%H%M')}"
@@ -161,12 +196,11 @@ def list_files_in_folder(b2_client, folder_prefix):
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
         bucket = b2_client.get_bucket_by_name(bucket_name)
-        response = bucket.list_file_names(start_file_name=folder_prefix, max_file_count=1000)
-        return [
-            file_info['fileName'] for file_info in response.get('files', [])
-            if file_info['fileName'] != folder_prefix and not file_info['fileName'].endswith('.bzEmpty')
-            and FILE_NAME_PATTERN.match(os.path.basename(file_info['fileName']))
-        ]
+        # Используем ls для перебора файлов
+        files = [file_info.file_name for file_info, _ in bucket.ls(folder_prefix, recursive=False)
+                 if file_info.file_name != folder_prefix and not file_info.file_name.endswith('.bzEmpty')
+                 and FILE_NAME_PATTERN.match(os.path.basename(file_info.file_name))]
+        return files
     except Exception as e:
         logger.error(f"Ошибка получения списка файлов: {e}")
         return []
