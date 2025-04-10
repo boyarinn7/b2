@@ -51,7 +51,7 @@ FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 def load_config_public(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_PUBLIC_LOCAL_PATH
+    local_path = CONFIG_PUBLIC_LOCAL_PATH or "config_public.json"
     try:
         bucket = b2_client.get_bucket_by_name(bucket_name)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -60,8 +60,8 @@ def load_config_public(b2_client):
             data = json.load(file)
         logger.info(f"Loaded {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
         return data
-    except Exception as e:  # Заменил ClientError на Exception
-        if "not found" in str(e).lower():  # Проверка на отсутствие файла
+    except Exception as e:
+        if "not found" in str(e).lower():
             logger.warning("⚠️ Конфиг не найден, создаём новый.")
             return {"processing_lock": False, "empty": [], "generation_id": []}
         logger.error(f"❌ Неизвестная ошибка при загрузке конфига: {e}")
@@ -94,7 +94,7 @@ def load_config_gen(s3):
 
 def save_config_gen(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_GEN_LOCAL_PATH
+    local_path = CONFIG_GEN_LOCAL_PATH or "config/config_gen.json"
     try:
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -106,7 +106,7 @@ def save_config_gen(b2_client, data):
 
 def load_config_midjourney(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH  # "config_midjourney.json"
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"
     try:
         bucket = b2_client.get_bucket_by_name(bucket_name)
         bucket.download_file_by_name(CONFIG_MIDJOURNEY_PATH, local_path)
@@ -120,7 +120,7 @@ def load_config_midjourney(b2_client):
 
 def save_config_midjourney(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH
+    local_path = CONFIG_MIDJOURNEY_LOCAL_PATH or "config_midjourney.json"
     try:
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -155,16 +155,17 @@ def update_content_json(b2_client, target_folder, generation_id):
     except Exception as e:
         logger.error(f"Failed to update {json_path}: {e}")
 
-def list_files_in_folder(s3, folder_prefix):
+def list_files_in_folder(b2_client, folder_prefix):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     try:
-        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_prefix)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        response = bucket.list_file_names(start_file_name=folder_prefix, max_file_count=1000)
         return [
-            obj['Key'] for obj in response.get('Contents', [])
-            if obj['Key'] != folder_prefix and not obj['Key'].endswith('.bzEmpty')
-               and FILE_NAME_PATTERN.match(os.path.basename(obj['Key']))
+            file_info['fileName'] for file_info in response.get('files', [])
+            if file_info['fileName'] != folder_prefix and not file_info['fileName'].endswith('.bzEmpty')
+            and FILE_NAME_PATTERN.match(os.path.basename(file_info['fileName']))
         ]
     except Exception as e:
         logger.error(f"Ошибка получения списка файлов: {e}")
@@ -189,16 +190,13 @@ def move_group(b2_client, src_folder, dst_folder, group_id):
         src_key = f"{src_folder}{group_id}{ext}"
         dst_key = f"{dst_folder}{group_id}{ext}"
         try:
-            # Проверка существования файла
             response = bucket.list_file_names(start_file_name=src_key, max_file_count=1)
             file_info = next((f for f in response['files'] if f['fileName'] == src_key), None)
             if not file_info:
-                continue  # Файл не найден, пропускаем
-            # Копирование: скачать и загрузить
+                continue
             temp_path = f"temp_{group_id}{ext}"
             bucket.download_file_by_name(src_key, temp_path)
             bucket.upload_local_file(local_file=temp_path, file_name=dst_key)
-            # Удаление исходного файла
             bucket.delete_file(file_info['fileId'], src_key)
             os.remove(temp_path)
             logger.info(f"✅ Перемещено: {src_key} -> {dst_key}")
@@ -206,7 +204,6 @@ def move_group(b2_client, src_folder, dst_folder, group_id):
             logger.error(f"Ошибка перемещения {src_key}: {e}")
 
 def process_folders(b2_client, folders):
-    bucket_name = os.getenv("B2_BUCKET_NAME")
     empty_folders = set()
     changes_made = True
     while changes_made:

@@ -23,6 +23,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
 
+    - name: Очистка кэша pip
+      run: |
+        rm -rf ~/.cache/pip
+
     - name: Установка зависимостей Python
       run: |
         python -m pip install --upgrade pip

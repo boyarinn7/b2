@@ -1,5 +1,5 @@
-import json
 import os
+import json
 import sys
 import requests
 import openai
@@ -7,20 +7,15 @@ import textstat
 import spacy
 import re
 import subprocess
-import boto3
-import io
 import random
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from datetime import datetime
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
 from modules.error_handler import handle_error
-from datetime import datetime
 from modules.utils import ensure_directory_exists
-from PIL import Image, ImageDraw
 from modules.api_clients import get_b2_client
 
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 logger = get_logger("generate_content")
 config = ConfigManager()
 
@@ -39,18 +34,18 @@ TARGET_FOLDER = "666/"
 ensure_directory_exists("config")
 
 def download_config_public():
-    """Загружает файл config_public.json из B2 в локальное хранилище."""
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    local_path = config.get("FILE_PATHS.config_public", "config_public.json")
     try:
-        s3 = get_b2_client()
-        config_public_path = config.get("FILE_PATHS.config_public")
-        os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
-        s3.download_file(bucket_name, "config/config_public.json", config_public_path)
-        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
+        b2_client = get_b2_client()
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        bucket.download_file_by_name("config/config_public.json", local_path)
+        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {local_path}")
     except Exception as e:
-        handle_error("Download Config Public Error", str(e), e)
+        handle_error(logger, "Download Config Public Error", e)
 
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
@@ -75,7 +70,7 @@ def save_to_b2(folder, content):
         file_id = generate_file_id()
         save_generation_id_to_config(file_id)
         logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
-        s3 = get_b2_client()
+        b2_client = get_b2_client()
         bucket_name = os.getenv("B2_BUCKET_NAME")
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
@@ -99,12 +94,15 @@ def save_to_b2(folder, content):
                 logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
                 sarcasm_data["poll"] = {}
         content["sarcasm"] = sarcasm_data
-        json_bytes = io.BytesIO(json.dumps(content, ensure_ascii=False, indent=4).encode("utf-8"))
-        s3.upload_fileobj(json_bytes, bucket_name, s3_key)
+        temp_path = f"temp_{file_id}"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(content, f, ensure_ascii=False, indent=4)
+        bucket = b2_client.get_bucket_by_name(bucket_name)
+        bucket.upload_local_file(local_file=temp_path, file_name=s3_key)
+        os.remove(temp_path)
         logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
     except Exception as e:
-        handle_error("B2 Upload Error", str(e), e)
-        # Резервное сохранение
+        handle_error(logger, "B2 Upload Error", e)
         failed_path = f"failed_{file_id}"
         with open(failed_path, "w", encoding="utf-8") as f:
             json.dump(content, f, ensure_ascii=False, indent=4)
@@ -225,12 +223,13 @@ class ContentGenerator:
         self.sync_tracker_to_b2()
 
     def sync_tracker_to_b2(self):
-        s3 = get_b2_client()
+        b2_client = get_b2_client()
         bucket_name = os.getenv("B2_BUCKET_NAME")
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         try:
-            s3.upload_file(TRACKER_PATH, bucket_name, "data/topics_tracker.json")
+            bucket = b2_client.get_bucket_by_name(bucket_name)
+            bucket.upload_local_file(local_file=TRACKER_PATH, file_name="data/topics_tracker.json")
             self.logger.info("✅ topics_tracker.json синхронизирован с B2")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
@@ -315,23 +314,42 @@ class ContentGenerator:
             return {}
 
     def generate_script_and_frame(self, topic):
+        """Генерация сценария и описания первого кадра."""
         creative_prompts = self.config.get("creative_prompts")
+        if not creative_prompts or not isinstance(creative_prompts, list):
+            logger.error(f"❌ Ошибка: 'creative_prompts' не найден или не является списком")
+            raise ValueError("Список 'creative_prompts' не найден")
         selected_prompt = random.choice(creative_prompts)
         combined_prompt = self.config.get("PROMPTS.user_prompt_combined").replace("{topic}", topic).replace(
             "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
             f"Затем используйте творческий подход: '{selected_prompt}'"
         )
-        response = openai.ChatCompletion.create(
-            model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
-            messages=[{"role": "user", "content": combined_prompt}],
-            max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
-            temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
-        )
-        combined_response = response['choices'][0]['message']['content'].strip()
-        script_text = combined_response.split("First Frame Description:")[0].strip()
-        first_frame_description = combined_response.split("First Frame Description:")[1].split("End of Description")[
-            0].strip()
-        return script_text, first_frame_description
+        for attempt in range(self.max_attempts):
+            try:
+                logger.info(f"🔎 Генерация сценария для '{topic[:100]}' (попытка {attempt + 1}/{self.max_attempts})")
+                response = openai.ChatCompletion.create(
+                    model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
+                    messages=[{"role": "user", "content": combined_prompt}],
+                    max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
+                    temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
+                )
+                combined_response = response['choices'][0]['message']['content'].strip()
+                if len(combined_response) < self.config.get("VISUAL_ANALYSIS.min_script_length", 200):
+                    logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
+                    continue
+                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+                    logger.error("❌ Маркеры кадра не найдены в ответе!")
+                    continue
+                script_text = combined_response.split("First Frame Description:")[0].strip()
+                first_frame_description = \
+                    combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+                return script_text, first_frame_description
+            except Exception as e:
+                handle_error(logger, f"Ошибка генерации сценария (попытка {attempt + 1}/{self.max_attempts})", e)
+                if attempt == self.max_attempts - 1:
+                    logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
+                    return None, None
+        return None, None
 
     def save_to_generated_content(self, stage, data):
         try:
@@ -468,10 +486,11 @@ class ContentGenerator:
         if not bucket_name:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
-        s3 = get_b2_client()
+        b2_client = get_b2_client()
         tracker_updated = False
         try:
-            s3.download_file(bucket_name, "data/topics_tracker.json", TRACKER_PATH)
+            bucket = b2_client.get_bucket_by_name(bucket_name)
+            bucket.download_file_by_name("data/topics_tracker.json", TRACKER_PATH)
             self.logger.info("✅ Загружен topics_tracker.json из B2")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
@@ -612,44 +631,6 @@ class ContentGenerator:
             handle_error(self.logger, "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
             sys.exit(1)
-
-    def generate_script_and_frame(self, topic):
-        """Генерация сценария и описания первого кадра."""
-        creative_prompts = self.config.get("creative_prompts")
-        if not creative_prompts or not isinstance(creative_prompts, list):
-            logger.error(f"❌ Ошибка: 'creative_prompts' не найден или не является списком")
-            raise ValueError("Список 'creative_prompts' не найден")
-        selected_prompt = random.choice(creative_prompts)
-        combined_prompt = self.config.get("PROMPTS.user_prompt_combined").replace("{topic}", topic).replace(
-            "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
-            f"Затем используйте творческий подход: '{selected_prompt}'"
-        )
-        for attempt in range(self.max_attempts):
-            try:
-                logger.info(f"🔎 Генерация сценария для '{topic[:100]}' (попытка {attempt + 1}/{self.max_attempts})")
-                response = openai.ChatCompletion.create(
-                    model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
-                    messages=[{"role": "user", "content": combined_prompt}],
-                    max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
-                    temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
-                )
-                combined_response = response['choices'][0]['message']['content'].strip()
-                if len(combined_response) < self.config.get("VISUAL_ANALYSIS.min_script_length", 200):
-                    logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
-                    continue
-                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-                    logger.error("❌ Маркеры кадра не найдены в ответе!")
-                    continue
-                script_text = combined_response.split("First Frame Description:")[0].strip()
-                first_frame_description = \
-                combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-                return script_text, first_frame_description
-            except Exception as e:
-                handle_error(logger, f"Ошибка генерации сценария (попытка {attempt + 1}/{self.max_attempts})", e)
-                if attempt == self.max_attempts - 1:
-                    logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
-                    return None, None
-        return None, None
 
 if __name__ == "__main__":
     generator = ContentGenerator()
