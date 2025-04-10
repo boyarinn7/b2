@@ -490,18 +490,25 @@ class ContentGenerator:
             raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
         local_path = TRACKER_PATH  # "config/topics_tracker.json"
         b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаём папку config/
+        config_dir = os.path.dirname(local_path)  # "config"
+        self.logger.info(f"Создаём директорию {config_dir} для локального файла")
+        os.makedirs(config_dir, exist_ok=True)  # Создаём папку config/
         b2_client = get_b2_client()
         tracker_updated = False
         try:
             bucket = b2_client.get_bucket_by_name(bucket_name)
+            self.logger.info(f"Загружаем {b2_path} из B2 в {local_path}")
             bucket.download_file_by_name(b2_path, local_path)
-            self.logger.info(f"✅ Загружен {b2_path} из B2 в {local_path}")
+            if os.path.exists(local_path):
+                self.logger.info(f"✅ Файл {local_path} успешно загружен и существует")
+            else:
+                self.logger.error(f"❌ Файл {local_path} не найден после загрузки")
+                raise FileNotFoundError(f"Файл {local_path} не был создан")
         except Exception as e:
             self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {e}")
             if not os.path.exists(local_path):
                 self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                os.makedirs(config_dir, exist_ok=True)
                 with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
                     failsafe = json.load(f)
                 tracker = {
@@ -527,7 +534,7 @@ class ContentGenerator:
         if tracker_updated:
             self.sync_tracker_to_b2()
         return tracker
-
+    
     def run(self):
         """Основной процесс генерации контента."""
         logger.info(">>> Начало генерации контента (метод run)")
