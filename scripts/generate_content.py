@@ -38,7 +38,7 @@ def download_config_public():
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-    local_path = config.get("FILE_PATHS.config_public", "config_public.json")
+    local_path = "config/config_public.json"  # Исправлено
     try:
         b2_client = get_b2_client()
         bucket = b2_client.get_bucket_by_name(bucket_name)
@@ -56,13 +56,15 @@ def generate_file_id():
     return f"{date_part}-{time_part}.json"
 
 def save_generation_id_to_config(file_id):
-    """Сохраняет ID генерации в файл config_gen.json."""
     config_gen_path = os.path.join("config", "config_gen.json")
     os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
     try:
         with open(config_gen_path, "w", encoding="utf-8") as file:
             json.dump({"generation_id": file_id}, file, ensure_ascii=False, indent=4)
-        logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
+        b2_client = get_b2_client()
+        bucket = b2_client.get_bucket_by_name(os.getenv("B2_BUCKET_NAME"))
+        bucket.upload_local_file(local_file=config_gen_path, file_name=CONFIG_GEN_PATH)
+        logger.info(f"✅ ID генерации '{file_id}' сохранён в config_gen.json и загружен в B2")
     except Exception as e:
         handle_error("Save Generation ID Error", str(e), e)
 
@@ -492,9 +494,12 @@ class ContentGenerator:
         b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
         config_dir = os.path.dirname(local_path)  # "config"
         self.logger.info(f"Создаём директорию {config_dir} для локального файла")
-        os.makedirs(config_dir, exist_ok=True)  # Создаём папку config/
+        os.makedirs(config_dir, exist_ok=True)
         b2_client = get_b2_client()
         tracker_updated = False
+
+        # Шаг 1: Пытаемся загрузить topics_tracker.json из B2
+        self.logger.info(f"🔄 Попытка загрузить {b2_path} из B2")
         try:
             bucket = b2_client.get_bucket_by_name(bucket_name)
             file_info = bucket.get_file_info_by_name(b2_path)
@@ -502,39 +507,65 @@ class ContentGenerator:
             download_dest = b2_client.download_file_by_id(file_id)
             download_dest.save_to(local_path)
             if not os.path.exists(local_path):
-                raise FileNotFoundError(f"❌ Файл {local_path} не был создан")
-            self.logger.info(f"✅ Файл {local_path} успешно загружен из B2")
+                raise FileNotFoundError(f"❌ Файл {local_path} не был создан после загрузки")
+            self.logger.info(f"✅ Успешно загружен {b2_path} из B2 в {local_path}")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {e}")
-            if not os.path.exists(local_path):
-                self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
-                os.makedirs(config_dir, exist_ok=True)
+            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {str(e)}")
+            # Шаг 2: Проверяем локальный файл
+            if os.path.exists(local_path):
+                self.logger.info(f"ℹ️ Используем существующий локальный файл {local_path}")
+            else:
+                # Шаг 3: Форс-мажор — создаем из FailSafeVault.json
+                self.logger.info(f"ℹ️ Локальный файл {local_path} отсутствует, создаём из {FAILSAFE_PATH}")
+                try:
+                    with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
+                        failsafe = json.load(f)
+                    tracker = {
+                        "all_focuses": failsafe["focuses"],
+                        "used_focuses": [],
+                        "focus_data": {}
+                    }
+                    with open(local_path, 'w', encoding='utf-8') as f:
+                        json.dump(tracker, f, ensure_ascii=False, indent=4)
+                    tracker_updated = True
+                    self.logger.info(f"✅ Создан новый {local_path} на основе {FAILSAFE_PATH}")
+                except Exception as e:
+                    self.logger.error(f"❌ Не удалось создать файл из {FAILSAFE_PATH}: {str(e)}")
+                    raise RuntimeError(
+                        f"Форс-мажор: невозможно загрузить topics_tracker.json и FailSafeVault.json недоступен")
+
+        # Читаем трекер из локального файла
+        try:
+            with open(local_path, 'r', encoding='utf-8') as f:
+                tracker = json.load(f)
+            self.logger.info(f"✅ Файл {local_path} успешно прочитан")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка чтения {local_path}: {str(e)}")
+            raise RuntimeError(f"Не удалось прочитать topics_tracker.json: {str(e)}")
+
+        # Проверка и обновление структуры трекера
+        if "all_focuses" not in tracker or "used_focuses" not in tracker or "focus_data" not in tracker:
+            self.logger.warning(f"⚠️ Файл {local_path} имеет некорректную структуру, обновляем из {FAILSAFE_PATH}")
+            try:
                 with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
                     failsafe = json.load(f)
-                tracker = {
-                    "all_focuses": failsafe["focuses"],
-                    "used_focuses": [],
-                    "focus_data": {}
-                }
+                tracker["all_focuses"] = failsafe["focuses"]
+                tracker.setdefault("used_focuses", [])
+                tracker.setdefault("focus_data", {})
                 with open(local_path, 'w', encoding='utf-8') as f:
                     json.dump(tracker, f, ensure_ascii=False, indent=4)
                 tracker_updated = True
-        with open(local_path, 'r', encoding='utf-8') as f:
-            tracker = json.load(f)
-        if "all_focuses" not in tracker:
-            self.logger.info("Обновляем старый трекер: добавляем all_focuses")
-            with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
-                failsafe = json.load(f)
-            tracker["all_focuses"] = failsafe["focuses"]
-            tracker.setdefault("used_focuses", [])
-            tracker.setdefault("focus_data", {})
-            with open(local_path, 'w', encoding='utf-8') as f:
-                json.dump(tracker, f, ensure_ascii=False, indent=4)
-            tracker_updated = True
+                self.logger.info(f"✅ Структура трекера обновлена")
+            except Exception as e:
+                self.logger.error(f"❌ Не удалось обновить структуру трекера из {FAILSAFE_PATH}: {str(e)}")
+                raise RuntimeError(f"Не удалось исправить структуру topics_tracker.json: {str(e)}")
+
+        # Синхронизация с B2, если файл был обновлен
         if tracker_updated:
             self.sync_tracker_to_b2()
-        return tracker
 
+        return tracker
+    
     def run(self):
         """Основной процесс генерации контента."""
         logger.info(">>> Начало генерации контента (метод run)")

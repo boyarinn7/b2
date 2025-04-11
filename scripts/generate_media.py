@@ -19,7 +19,6 @@ from modules.config_manager import ConfigManager
 from modules.api_clients import get_b2_client
 from io import BytesIO
 
-
 logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -37,7 +36,7 @@ sys.path.insert(0, parent_dir)
 # Пути к файлам
 CONFIG_GEN_PATH = "config/config_gen.json"
 CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"
-CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"  # Было CONFIG_MIDJOURNEY_REMOTE_PATH
+CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"
 CONFIG_MIDJOURNEY_LOCAL_PATH = "config/config_midjourney.json"
 CONTENT_OUTPUT_PATH = "generated_content.json"
 SCRIPTS_FOLDER = "scripts/"
@@ -73,37 +72,28 @@ if MIDJOURNEY_ENABLED and not MIDJOURNEY_API_KEY:
 
 def split_midjourney_grid(url):
     try:
-        # Скачиваем изображение
         response = requests.get(url, stream=True)
         response.raise_for_status()
         img = Image.open(BytesIO(response.content))
-
-        # Предполагаем, что сетка 2x2 равных частей
         width, height = img.size
         w, h = width // 2, height // 2
-
-        # Делим на 4 части
         images = [
-            img.crop((0, 0, w, h)),  # Верхний левый
-            img.crop((w, 0, width, h)),  # Верхний правый
-            img.crop((0, h, w, height)),  # Нижний левый
-            img.crop((w, h, width, height))  # Нижний правый
+            img.crop((0, 0, w, h)),
+            img.crop((w, 0, width, h)),
+            img.crop((0, h, w, height)),
+            img.crop((w, h, width, height))
         ]
-
-        # Сохраняем временные файлы и возвращаем пути
         temp_paths = []
         for i, sub_img in enumerate(images):
             temp_path = f"temp_midjourney_{i}.png"
             sub_img.save(temp_path)
             temp_paths.append(temp_path)
-
         logger.info("✅ Сетка MidJourney разделена на 4 части")
         return temp_paths
     except Exception as e:
         handle_error(logger, "Ошибка при разделении сетки MidJourney", e)
         return None
 
-# === Вспомогательные функции ===
 def check_midjourney_results(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
@@ -130,7 +120,6 @@ def select_best_image(b2_client, image_urls, prompt):
         criteria_text = ", ".join([f"{c['name']} (weight: {c['weight']})" for c in criteria])
         full_prompt = selection_prompt.format(prompt=prompt, criteria=criteria_text)
 
-        # Если один URL, предполагаем, что это сетка
         if len(image_urls) == 1:
             logger.info("Обнаружен один URL, разделяем сетку MidJourney")
             image_paths = split_midjourney_grid(image_urls[0])
@@ -138,11 +127,10 @@ def select_best_image(b2_client, image_urls, prompt):
                 logger.error("Не удалось разделить сетку, выбираем первый URL")
                 return image_urls[0]
         else:
-            image_paths = image_urls  # Если уже отдельные URL, используем их
+            image_paths = image_urls
 
         for attempt in range(MAX_ATTEMPTS):
             try:
-                # Отправляем локальные файлы в OpenAI
                 message_content = [{"type": "text", "text": full_prompt}]
                 for path in image_paths:
                     with open(path, "rb") as img_file:
@@ -151,7 +139,6 @@ def select_best_image(b2_client, image_urls, prompt):
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{base64_image}"}
                         })
-
                 gpt_response = openai.ChatCompletion.create(
                     model=OPENAI_MODEL,
                     messages=[{"role": "user", "content": message_content}],
@@ -164,7 +151,6 @@ def select_best_image(b2_client, image_urls, prompt):
                     best_index = int(best_index_match.group(1)) - 1
                     if best_index in range(len(image_paths)):
                         best_url = image_urls[0] if len(image_urls) == 1 else image_paths[best_index]
-                        # Очистка временных файлов
                         if len(image_urls) == 1:
                             for path in image_paths:
                                 if path != image_paths[best_index]:
@@ -183,18 +169,19 @@ def select_best_image(b2_client, image_urls, prompt):
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]
 
-
 def download_file_from_b2(b2_client, remote_path, local_path):
-    bucket_name = "boyarinnbotbucket"  # Убедитесь, что это ваш бакет
-    max_attempts = 3
+    bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Имя бакета не задано")
+    if not remote_path:
+        raise ValueError("❌ Удаленный путь (remote_path) не задан")
     if not local_path:
-        raise ValueError("❌ Локальный путь для файла не задан")
+        raise ValueError("❌ Локальный путь (local_path) не задан")
+    max_attempts = 3
     for attempt in range(max_attempts):
         try:
             logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаем папку, если ее нет
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
             bucket = b2_client.get_bucket_by_name(bucket_name)
             file_info = bucket.get_file_info_by_name(remote_path)
             file_id = file_info.id_
@@ -208,10 +195,10 @@ def download_file_from_b2(b2_client, remote_path, local_path):
         except Exception as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)  # Ждем перед следующей попыткой
+                time.sleep(2 ** attempt)
             else:
                 logger.error(f"❌ Не удалось загрузить файл после {max_attempts} попыток: {str(e)}")
-                raise  # Поднимаем ошибку для дальнейшей обработки
+                raise
 
 def upload_to_b2(b2_client, folder, file_path):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -364,7 +351,6 @@ def save_config_midjourney(b2_client, data):
         logger.error(f"❌ Ошибка сохранения config_midjourney.json: {e}")
         raise
 
-# Обновленная функция generate_image_with_midjourney с расписанием
 def generate_image_with_midjourney(prompt, generation_id, target_folder):
     b2_client = get_b2_client()
     try:
@@ -397,7 +383,6 @@ def generate_image_with_midjourney(prompt, generation_id, target_folder):
         save_config_midjourney(b2_client, config_midjourney)
         logger.info(f"✅ Задача {task_id} отправлена в MidJourney и сохранена в config_midjourney.json")
 
-        # Запуск b2_storage_manager.py
         if not os.path.isfile(B2_STORAGE_MANAGER_SCRIPT):
             raise FileNotFoundError(f"❌ Скрипт {B2_STORAGE_MANAGER_SCRIPT} не найден")
         logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
@@ -466,7 +451,6 @@ def generate_image_with_dalle(prompt, generation_id):
                 return None
     return None
 
-# Обновленная функция generate_image для передачи target_folder
 def generate_image(prompt, generation_id, target_folder):
     if MIDJOURNEY_ENABLED:
         logger.info("🎨 Используем Midjourney для генерации изображения")
@@ -492,16 +476,25 @@ def resize_existing_image(image_path):
 
 def load_content_from_b2(b2_client, generation_id):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    remote_path = f"666/{generation_id}.json"
-    local_path = f"temp_{generation_id}.json"
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+    # Убираем .json, если оно есть, и добавляем его явно
+    clean_generation_id = generation_id.replace(".json", "")
+    remote_path = f"666/{clean_generation_id}.json"
+    local_path = f"temp_{clean_generation_id}"
+    logger.info(f"🔍 Проверка путей: remote_path={remote_path}, local_path={local_path}")
+    if not remote_path or not local_path:
+        logger.error(f"❌ Один из путей пустой: remote_path={remote_path}, local_path={local_path}")
+        raise ValueError("Пuti пустые или некорректные")
     try:
         download_file_from_b2(b2_client, remote_path, local_path)
         with open(local_path, 'r', encoding='utf-8') as f:
             content = json.load(f)
         os.remove(local_path)
+        logger.info(f"✅ Контент загружен из {remote_path}")
         return content
     except Exception as e:
-        logger.error(f"❌ Ошибка загрузки 666/{generation_id}.json: {e}")
+        logger.error(f"❌ Ошибка загрузки {remote_path}: {str(e)}")
         sys.exit(1)
 
 def clean_script_text(text):
@@ -547,7 +540,7 @@ def generate_runway_video(image_path, script_text):
             status = client.tasks.retrieve(task.id)
             if status.status == "SUCCEEDED":
                 logger.info("✅ Видео успешно сгенерировано")
-                return status.output[0]  # URL настоящего видео
+                return status.output[0]
             elif status.status == "FAILED":
                 logger.error("❌ Ошибка генерации видео в Runway")
                 return None
@@ -577,7 +570,6 @@ def download_video(url, output_path):
         handle_error(logger, "Video Download Error", e)
         return False
 
-# === Основная функция ===
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
     import argparse
@@ -590,10 +582,14 @@ def main():
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
 
-        generation_id = args.generation_id
+        # Нормализуем generation_id, убирая .json если оно есть
+        generation_id = args.generation_id.replace(".json", "")
+        if not generation_id or generation_id.strip() == "":
+            logger.error("❌ generation_id пустой или некорректный")
+            raise ValueError("generation_id не задан")
         logger.info(f"📂 ID генерации: {generation_id}")
 
-        # Загрузка контента из B2 (666/<generation_id>.json)
+        # Загружаем контент из B2 с нормализованным generation_id
         generated_content = load_content_from_b2(b2_client, generation_id)
         topic_data = generated_content.get("topic", "")
         if isinstance(topic_data, dict):
@@ -605,18 +601,16 @@ def main():
         script_text = generated_content.get("script", "")
         first_frame_description = generated_content.get("first_frame_description", "")
         if not script_text or not first_frame_description:
-            raise ValueError(f"Сценарий или описание первого кадра отсутствуют в 666/{generation_id}.json")
+            raise ValueError(f"Сценарий или описание первого кадра отсутствуют в 666/{generation_id}")
 
-        # Загрузка config_midjourney.json из B2
+        # Загружаем config_midjourney.json
         download_file_from_b2(b2_client, CONFIG_MIDJOURNEY_PATH, CONFIG_MIDJOURNEY_LOCAL_PATH)
         with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'r', encoding='utf-8') as f:
             config_midjourney = json.load(f)
         midjourney_results = config_midjourney.get("midjourney_results", {})
 
-        # Используем фиксированный TARGET_FOLDER
         target_folder = TARGET_FOLDER
 
-        # Сценарий 1: Есть midjourney_results
         if midjourney_results and "image_urls" in midjourney_results:
             image_urls = midjourney_results.get("image_urls", [])
             if not image_urls or not all(isinstance(url, str) and url.startswith("http") for url in image_urls):
@@ -627,8 +621,6 @@ def main():
                 upload_to_b2(b2_client, os.path.dirname(CONFIG_MIDJOURNEY_PATH), CONFIG_MIDJOURNEY_LOCAL_PATH)
             else:
                 import shutil
-
-                # Выбор лучшего изображения
                 best_image_path = select_best_image(b2_client, image_urls, first_frame_description)
                 image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
 
@@ -642,18 +634,16 @@ def main():
 
                 logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
 
-                # Удаление временных файлов
+                # Очистка временных файлов
                 for i in range(4):
                     temp_path = f"temp_midjourney_{i}.png"
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
                         logger.info(f"🗑️ Удалён временный файл: {temp_path}")
 
-                # Изменение размера изображения
                 if not resize_existing_image(image_path):
                     raise ValueError("Не удалось изменить размер изображения")
 
-                # Генерация видео
                 cleaned_script = clean_script_text(script_text)
                 video_result = generate_runway_video(image_path, cleaned_script)
                 video_path = None
@@ -666,12 +656,12 @@ def main():
                         video_path = video_result
                         logger.info(f"🔄 Используем имитацию видео: {video_path}")
 
-                # Загрузка в B2
+                # Загрузка результатов в B2
                 upload_to_b2(b2_client, target_folder, image_path)
                 if video_path and os.path.exists(video_path):
                     upload_to_b2(b2_client, target_folder, video_path)
 
-                # Очистка midjourney_results
+                # Очистка midjourney_results после обработки
                 config_midjourney["midjourney_results"] = {}
                 with open(CONFIG_MIDJOURNEY_LOCAL_PATH, 'w', encoding='utf-8') as f:
                     json.dump(config_midjourney, f, ensure_ascii=False, indent=4)
@@ -683,11 +673,9 @@ def main():
                 logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
                 subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 
-        # Сценарий 2: Нет midjourney_results
         else:
-            # Отправка задачи MidJourney
+            # Генерация изображения, если нет результатов MidJourney
             generate_image(first_frame_description, generation_id, target_folder)
-            # Запуск b2_storage_manager.py уже внутри generate_image
 
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
