@@ -169,7 +169,7 @@ def select_best_image(b2_client, image_urls, prompt):
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]
 
-def download_file_from_b2(b2_client, remote_path, local_path):
+def download_file_from_b2(b2_client, remote_path, local_path, max_attempts=3):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Имя бакета не задано")
@@ -177,25 +177,22 @@ def download_file_from_b2(b2_client, remote_path, local_path):
         raise ValueError("❌ Удаленный путь (remote_path) не задан")
     if not local_path:
         raise ValueError("❌ Локальный путь (local_path) не задан")
-    max_attempts = 3
+
+    bucket = b2_client.get_bucket_by_name(bucket_name)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создание директорий
+
     for attempt in range(max_attempts):
         try:
-            logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            bucket = b2_client.get_bucket_by_name(bucket_name)
-            file_info = bucket.get_file_info_by_name(remote_path)
-            file_id = file_info.id_
-            download_dest = b2_client.download_file_by_id(file_id)
-            download_dest.save_to(local_path)
-            if os.path.exists(local_path):
-                logger.info(f"✅ Файл '{remote_path}' успешно загружен в {local_path}")
-                return
-            else:
-                raise FileNotFoundError(f"Файл {local_path} не был создан")
+            logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки: {remote_path} -> {local_path}")
+            bucket.download_file_by_name(remote_path, local_path)  # Упрощенный метод
+            if not os.path.exists(local_path):
+                raise FileNotFoundError(f"Файл {local_path} не создан")
+            logger.info(f"✅ Файл '{remote_path}' загружен в {local_path}")
+            return
         except Exception as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt)  # Экспоненциальная задержка
             else:
                 logger.error(f"❌ Не удалось загрузить файл после {max_attempts} попыток: {str(e)}")
                 raise
@@ -478,7 +475,6 @@ def load_content_from_b2(b2_client, generation_id):
     bucket_name = os.getenv("B2_BUCKET_NAME")
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-    # Убираем .json, если оно есть, и добавляем его явно
     clean_generation_id = generation_id.replace(".json", "")
     remote_path = f"666/{clean_generation_id}.json"
     local_path = f"temp_{clean_generation_id}"
@@ -486,6 +482,14 @@ def load_content_from_b2(b2_client, generation_id):
     if not remote_path or not local_path:
         logger.error(f"❌ Один из путей пустой: remote_path={remote_path}, local_path={local_path}")
         raise ValueError("Пuti пустые или некорректные")
+    # Проверка существования файла в B2
+    bucket = b2_client.get_bucket_by_name(bucket_name)
+    try:
+        bucket.get_file_info_by_name(remote_path)
+        logger.info(f"✅ Файл {remote_path} найден в B2")
+    except Exception:
+        logger.error(f"❌ Файл {remote_path} не существует в B2")
+        sys.exit(1)
     try:
         download_file_from_b2(b2_client, remote_path, local_path)
         with open(local_path, 'r', encoding='utf-8') as f:
@@ -496,7 +500,7 @@ def load_content_from_b2(b2_client, generation_id):
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки {remote_path}: {str(e)}")
         sys.exit(1)
-
+        
 def clean_script_text(text):
     cleaned = text.replace('\n', ' ').replace('\r', ' ')
     cleaned = ' '.join(cleaned.split())
