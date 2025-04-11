@@ -19,6 +19,9 @@ from modules.config_manager import ConfigManager
 from modules.api_clients import get_b2_client
 from io import BytesIO
 
+
+logger = logging.getLogger(__name__)
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # === Инициализация конфигурации и логгера ===
 config = ConfigManager()
@@ -180,15 +183,18 @@ def select_best_image(b2_client, image_urls, prompt):
         logger.error(f"Ошибка в select_best_image: {e}")
         return image_urls[0]
 
+
 def download_file_from_b2(b2_client, remote_path, local_path):
-    bucket_name = "boyarinnbotbucket"
+    bucket_name = "boyarinnbotbucket"  # Убедитесь, что это ваш бакет
     max_attempts = 3
     if not bucket_name:
         raise ValueError("❌ Имя бакета не задано")
+    if not local_path:
+        raise ValueError("❌ Локальный путь для файла не задан")
     for attempt in range(max_attempts):
         try:
             logger.info(f"🔄 Попытка {attempt + 1}/{max_attempts} загрузки файла из B2: {remote_path} -> {local_path}")
-            ensure_directory_exists(os.path.dirname(local_path))
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаем папку, если ее нет
             bucket = b2_client.get_bucket_by_name(bucket_name)
             file_info = bucket.get_file_info_by_name(remote_path)
             file_id = file_info.id_
@@ -202,10 +208,10 @@ def download_file_from_b2(b2_client, remote_path, local_path):
         except Exception as e:
             logger.error(f"❌ Ошибка на попытке {attempt + 1}: {str(e)}")
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt)  # Ждем перед следующей попыткой
             else:
-                handle_error(logger, "B2 Download Error", e)
-                raise
+                logger.error(f"❌ Не удалось загрузить файл после {max_attempts} попыток: {str(e)}")
+                raise  # Поднимаем ошибку для дальнейшей обработки
 
 def upload_to_b2(b2_client, folder, file_path):
     bucket_name = os.getenv("B2_BUCKET_NAME")

@@ -534,7 +534,7 @@ class ContentGenerator:
         if tracker_updated:
             self.sync_tracker_to_b2()
         return tracker
-    
+
     def run(self):
         """Основной процесс генерации контента."""
         logger.info(">>> Начало генерации контента (метод run)")

@@ -22,6 +22,7 @@ from modules.logger import get_logger
 from modules.error_handler import handle_error
 from modules.config_manager import ConfigManager
 
+logger = logging.getLogger(__name__)
 config = ConfigManager()
 logger = get_logger("b2_storage_manager")
 logger.info("Начало выполнения b2_storage_manager")
@@ -50,45 +51,45 @@ FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}\.\w+$")
 
 def load_config_public(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_PUBLIC_LOCAL_PATH  # "config_public.json"
+    local_path = "config/config_public.json"  # Явно задаем путь
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     if not local_path:
         raise ValueError("❌ Локальный путь для config_public.json не задан")
     try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаем папку config
         bucket = b2_client.get_bucket_by_name(bucket_name)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        file_info = bucket.get_file_info_by_name(CONFIG_PUBLIC_PATH)
+        file_info = bucket.get_file_info_by_name("config/config_public.json")
         file_id = file_info.id_
         download_dest = b2_client.download_file_by_id(file_id)
         download_dest.save_to(local_path)
         with open(local_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        logger.info(f"Loaded {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        logger.info(f"✅ Загружен config_public.json: {json.dumps(data, ensure_ascii=False)}")
         return data
     except Exception as e:
         if "not found" in str(e).lower():
-            logger.warning("⚠️ Конфиг не найден, создаём новый.")
+            logger.warning("⚠️ Конфиг не найден, создаем новый.")
             return {"processing_lock": False, "empty": [], "generation_id": []}
-        logger.error(f"❌ Неизвестная ошибка при загрузке конфига: {e}")
+        logger.error(f"❌ Ошибка при загрузке config_public.json: {str(e)}")
         return {}
 
 def save_config_public(b2_client, data):
     bucket_name = os.getenv("B2_BUCKET_NAME")
-    local_path = CONFIG_PUBLIC_LOCAL_PATH  # "config_public.json"
+    local_path = "config/config_public.json"  # Явно задаем путь
     if not bucket_name:
         raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     if not local_path:
         raise ValueError("❌ Локальный путь для config_public.json не задан")
     try:
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)  # Создаем папку config
         with open(local_path, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         bucket = b2_client.get_bucket_by_name(bucket_name)
-        bucket.upload_local_file(local_file=local_path, file_name=CONFIG_PUBLIC_PATH)
-        logger.info(f"Saved {CONFIG_PUBLIC_PATH}: {json.dumps(data, ensure_ascii=False)}")
+        bucket.upload_local_file(local_file=local_path, file_name="config/config_public.json")
+        logger.info(f"✅ Сохранен config_public.json: {json.dumps(data, ensure_ascii=False)}")
     except Exception as e:
-        logger.error(f"Ошибка сохранения конфига: {e}")
+        logger.error(f"❌ Ошибка сохранения config_public.json: {str(e)}")
 
 def load_config_gen(b2_client):
     bucket_name = os.getenv("B2_BUCKET_NAME")
@@ -336,6 +337,7 @@ def main():
     try:
         b2_client = get_b2_client()
         logger.info("Клиент B2 успешно создан.")
+        logger.info(f"Путь к config_public.json: {'config/config_public.json'}")
         config_public = load_config_public(b2_client)
         config_gen = load_config_gen(b2_client)
         config_midjourney = load_config_midjourney(b2_client)
