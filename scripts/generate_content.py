@@ -25,6 +25,25 @@ B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
 FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
 
+def run_generate_media(generation_id):
+    try:
+        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
+        script_path = os.path.join(scripts_folder, "generate_media.py")
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError(f"Скрипт generate_media.py не найден: {script_path}")
+        logger.info(f"Запуск: {script_path} с generation_id: {generation_id}")
+        subprocess.run(["python", script_path, generation_id], check=True)
+        logger.info(f"Скрипт {script_path} выполнен.")
+    except subprocess.CalledProcessError as e:
+        handle_error("Script Error", "Ошибка generate_media.py", e)
+        logger.warning("Генерация медиа не удалась, продолжаем.")
+    except FileNotFoundError as e:
+        handle_error("File Error", f"Скрипт не найден: {script_path}", e)
+        logger.warning("generate_media.py отсутствует, продолжаем.")
+    except Exception as e:
+        handle_error("Unknown Error", "Ошибка запуска generate_media.py", e)
+        logger.warning("Неизвестная ошибка, продолжаем.")
+
 def get_b2_client():
     """Создает клиент для работы с Backblaze B2."""
     try:
@@ -505,26 +524,6 @@ class ContentGenerator:
             handle_error("Run Error", "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
             sys.exit(1)
-
-    def run_generate_media(generation_id):
-        """Запускает скрипт generate_media.py по локальному пути с generation_id."""
-        try:
-            scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-            script_path = os.path.join(scripts_folder, "generate_media.py")
-            if not os.path.isfile(script_path):
-                raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
-            logger.info(f"🔄 Запуск скрипта: {script_path} с generation_id: {generation_id}")
-            subprocess.run(["python", script_path, generation_id], check=True)
-            logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
-        except subprocess.CalledProcessError as e:
-            handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
-            logger.warning("⚠️ Генерация медиа не удалась, продолжаем без медиа.")
-        except FileNotFoundError as e:
-            handle_error("File Not Found Error", f"Скрипт не найден: {script_path}", e)
-            logger.warning("⚠️ Скрипт generate_media.py отсутствует, продолжаем без медиа.")
-        except Exception as e:
-            handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
-            logger.warning("⚠️ Неизвестная ошибка в generate_media, продолжаем без медиа.")
 
 if __name__ == "__main__":
     generator = ContentGenerator()
