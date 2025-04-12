@@ -228,13 +228,15 @@ def handle_publish(s3, config_data):
 def check_midjourney_results(b2_client):
     remote_config = "config/config_public.json"
     try:
-        config_obj = b2_client.get_object(Bucket=B2_BUCKET_NAME, Key=remote_config)
-        config_data = json.loads(config_obj['Body'].read().decode('utf-8'))
+        local_path = "config_public_temp.json"
+        b2_client.download_file(B2_BUCKET_NAME, remote_config, local_path)
+        with open(local_path, 'r', encoding='utf-8') as file:
+            config_data = json.load(file)
+        os.remove(local_path)
         return config_data.get("midjourney_results", None)
     except Exception as e:
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
         return None
-
 
 def main():
     """

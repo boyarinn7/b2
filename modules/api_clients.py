@@ -41,6 +41,7 @@ def get_runwayml_client():
 
 # === B2 Client ===
 def get_b2_client():
+    """Возвращает клиент boto3 для работы с Backblaze B2."""
     access_key = os.getenv("B2_ACCESS_KEY")
     secret_key = os.getenv("B2_SECRET_KEY")
     if not all([access_key, secret_key]):
@@ -48,11 +49,14 @@ def get_b2_client():
         logger.error(f"❌ Не заданы переменные окружения для B2: {', '.join(missing_vars)}")
         raise ValueError(f"Не заданы переменные окружения: {', '.join(missing_vars)}")
     try:
-        info = InMemoryAccountInfo()
-        b2_api = B2Api(info)
-        b2_api.authorize_account("production", access_key, secret_key)
-        logger.info("✅ Клиент B2 успешно создан")
-        return b2_api
+        client = boto3.client(
+            's3',
+            endpoint_url=config.get("API_KEYS.b2.endpoint"),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
+        )
+        logger.info("✅ Клиент B2 (boto3) успешно создан")
+        return client
     except Exception as e:
-        handle_error(logger, "B2 Client Initialization Error", e)
+        handle_error("B2 Client Initialization Error", e)
         return None
