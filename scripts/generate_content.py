@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import sys
 import requests
 import openai
@@ -7,46 +7,47 @@ import textstat
 import spacy
 import re
 import subprocess
+import boto3
+import io
 import random
-from datetime import datetime
+
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
 from modules.error_handler import handle_error
+from datetime import datetime
 from modules.utils import ensure_directory_exists
-from modules.api_clients import get_b2_client
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
 logger = get_logger("generate_content")
 config = ConfigManager()
 
+B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
 FAILSAFE_PATH = "config/FailSafeVault.json"
-TRACKER_PATH = "config/topics_tracker.json"  # Локальный путь
-TRACKER_B2_PATH = "config/topics_tracker.json"  # Путь в B2
-CONFIG_GEN_PATH = "config/config_gen.json"  # Путь в B2
-CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"  # Локальный путь
-CONTENT_OUTPUT_PATH = "generated_content.json"  # Локальный путь для контента
-TOPICS_TRACKER_PATH = "config/topics_tracker.json"  # Путь в B2
-TOPICS_TRACKER_LOCAL_PATH = "config/topics_tracker.json"  # Локальный путь
-SCRIPTS_FOLDER = "scripts/"
-GENERATE_MEDIA_SCRIPT = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
-B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
-TARGET_FOLDER = "666/"
+TRACKER_PATH = "data/topics_tracker.json"
 
-ensure_directory_exists("config")
+def get_b2_client():
+    """Создает клиент для работы с Backblaze B2."""
+    try:
+        return boto3.client(
+            's3',
+            endpoint_url=config.get("API_KEYS.b2.endpoint"),
+            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
+            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
+        )
+    except Exception as e:
+        handle_error("B2 Client Initialization Error", str(e), e)
 
 def download_config_public():
-    bucket_name = os.getenv("B2_BUCKET_NAME")
-    if not bucket_name:
-        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-    local_path = "config/config_public.json"  # Исправлено
+    """Загружает файл config_public.json из B2 в локальное хранилище."""
     try:
-        b2_client = get_b2_client()
-        bucket = b2_client.get_bucket_by_name(bucket_name)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        bucket.download_file_by_name("config/config_public.json", local_path)
-        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {local_path}")
+        s3 = get_b2_client()
+        bucket_name = config.get("API_KEYS.b2.bucket_name")
+        config_public_path = config.get("FILE_PATHS.config_public")
+        os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
+        s3.download_file(bucket_name, config_public_path, config_public_path)
+        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
     except Exception as e:
-        handle_error(logger, "Download Config Public Error", e)
+        handle_error("Download Config Public Error", str(e), e)
 
 def generate_file_id():
     """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
@@ -56,44 +57,49 @@ def generate_file_id():
     return f"{date_part}-{time_part}.json"
 
 def save_generation_id_to_config(file_id):
+    """Сохраняет ID генерации в файл config_gen.json."""
     config_gen_path = os.path.join("config", "config_gen.json")
     os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
     try:
         with open(config_gen_path, "w", encoding="utf-8") as file:
             json.dump({"generation_id": file_id}, file, ensure_ascii=False, indent=4)
-        b2_client = get_b2_client()
-        bucket = b2_client.get_bucket_by_name(os.getenv("B2_BUCKET_NAME"))
-        bucket.upload_local_file(local_file=config_gen_path, file_name=CONFIG_GEN_PATH)
-        logger.info(f"✅ ID генерации '{file_id}' сохранён в config_gen.json и загружен в B2")
+        logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
     except Exception as e:
         handle_error("Save Generation ID Error", str(e), e)
 
 def save_to_b2(folder, content):
+    """Сохраняет контент в B2 без двойного кодирования JSON."""
     try:
         file_id = generate_file_id()
         save_generation_id_to_config(file_id)
         logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
-        b2_client = get_b2_client()
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+        s3 = get_b2_client()
+        bucket_name = config.get("API_KEYS.b2.bucket_name")
         s3_key = f"{folder.rstrip('/')}/{file_id}"
         if not isinstance(content, dict):
             logger.error("❌ Ошибка: Контент должен быть словарём!")
             return
-        temp_path = f"temp_{file_id}"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(content, f, ensure_ascii=False, indent=4)
-        bucket = b2_client.get_bucket_by_name(bucket_name)
-        bucket.upload_local_file(local_file=temp_path, file_name=s3_key)
-        logger.info(f"✅ Файл {s3_key} успешно загружен в B2")  # Добавлено
-        os.remove(temp_path)
+        sarcasm_data = content.get("sarcasm", {})
+        if isinstance(sarcasm_data, str):
+            try:
+                sarcasm_data = json.loads(sarcasm_data)
+                logger.warning("⚠️ Поле 'sarcasm' было строкой, исправляем...")
+            except json.JSONDecodeError:
+                logger.error("❌ Ошибка: Поле 'sarcasm' имеет неверный формат!")
+                return
+        if "poll" in sarcasm_data and isinstance(sarcasm_data["poll"], str):
+            try:
+                sarcasm_data["poll"] = json.loads(sarcasm_data["poll"])
+                logger.warning("⚠️ Поле 'poll' было строкой, исправляем...")
+            except json.JSONDecodeError:
+                logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
+                sarcasm_data["poll"] = {}
+        content["sarcasm"] = sarcasm_data
+        json_bytes = io.BytesIO(json.dumps(content, ensure_ascii=False, indent=4).encode("utf-8"))
+        s3.upload_fileobj(json_bytes, bucket_name, s3_key)
+        logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
     except Exception as e:
-        handle_error(logger, "B2 Upload Error", e)
-        failed_path = f"failed_{file_id}"
-        with open(failed_path, "w", encoding="utf-8") as f:
-            json.dump(content, f, ensure_ascii=False, indent=4)
-        logger.warning(f"⚠️ Сохранена резервная копия в {failed_path}")
+        handle_error("B2 Upload Error", str(e), e)
 
 class ContentGenerator:
     def __init__(self):
@@ -141,51 +147,24 @@ class ContentGenerator:
             handle_error("Clear Content Error", str(e), e)
 
     def generate_topic(self, tracker):
-        """
-        Генерирует уникальную тему на основе доступных фокусов из трекера.
-
-        Args:
-            tracker (dict): Словарь с данными о предыдущих темах и фокусах.
-
-        Returns:
-            tuple: (full_topic, content_data) - сгенерированная тема и связанные данные.
-
-        Raises:
-            ValueError: Если фокусы недоступны или ответ OpenAI некорректен.
-        """
         valid_focuses = self.get_valid_focus_areas(tracker)
         if not valid_focuses:
             self.logger.error("❌ Нет доступных фокусов")
             raise ValueError("Все фокусы использованы")
-
         selected_focus = random.choice(valid_focuses)
         used_labels = tracker["focus_data"].get(selected_focus, [])
-
-        # Используем get() вместо прямого доступа
-        prompt_template = self.config.get("CONTENT", {}).get("topic", {}).get("prompt_template", "")
-        if not prompt_template:
-            self.logger.error("❌ Шаблон промпта для темы не найден в конфигурации")
-            raise ValueError("Шаблон промпта для темы не найден")
-
-        prompt = prompt_template.format(
+        prompt = self.config["CONTENT"]["topic"]["prompt_template"].format(
             focus_areas=selected_focus,
             exclusions=", ".join(used_labels)
         )
         topic_response = self.request_openai(prompt)
-
-        # Парсинг ответа OpenAI (учитываем, что JSON не гарантирован)
         try:
             topic_data = json.loads(topic_response)
             full_topic = topic_data["full_topic"]
             short_topic = topic_data["short_topic"]
         except json.JSONDecodeError:
-            self.logger.warning("⚠️ OpenAI вернул не JSON, парсим вручную")
-            # Предполагаем формат: "Full topic: текст\nShort topic: текст" или просто строка
-            lines = topic_response.strip().split("\n")
-            full_topic = lines[0].replace("Full topic:", "").strip() if "Full topic:" in lines[0] else lines[0].strip()
-            short_topic = lines[1].replace("Short topic:", "").strip() if len(lines) > 1 and "Short topic:" in lines[
-                1] else full_topic[:50]
-
+            self.logger.error("❌ OpenAI вернул не JSON")
+            raise ValueError("Ошибка формата ответа OpenAI")
         self.update_tracker(selected_focus, short_topic)
         self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
         return full_topic, {"theme": "tragic" if "(т)" in selected_focus else "normal"}
@@ -210,18 +189,12 @@ class ContentGenerator:
         self.sync_tracker_to_b2()
 
     def sync_tracker_to_b2(self):
-        b2_client = get_b2_client()
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        local_path = TRACKER_PATH  # "config/topics_tracker.json"
-        b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
+        s3 = get_b2_client()
         try:
-            bucket = b2_client.get_bucket_by_name(bucket_name)
-            bucket.upload_local_file(local_file=local_path, file_name=b2_path)
-            self.logger.info(f"✅ {b2_path} синхронизирован с B2")
+            s3.upload_file(TRACKER_PATH, B2_BUCKET_NAME, "data/topics_tracker.json")
+            self.logger.info("✅ topics_tracker.json синхронизирован с B2")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} в B2: {e}")
+            self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
 
     def request_openai(self, prompt):
         try:
@@ -301,44 +274,6 @@ class ContentGenerator:
         except Exception as e:
             handle_error("Sarcasm Poll Generation Error", str(e), e)
             return {}
-
-    def generate_script_and_frame(self, topic):
-        """Генерация сценария и описания первого кадра."""
-        creative_prompts = self.config.get("creative_prompts")
-        if not creative_prompts or not isinstance(creative_prompts, list):
-            logger.error(f"❌ Ошибка: 'creative_prompts' не найден или не является списком")
-            raise ValueError("Список 'creative_prompts' не найден")
-        selected_prompt = random.choice(creative_prompts)
-        combined_prompt = self.config.get("PROMPTS.user_prompt_combined").replace("{topic}", topic).replace(
-            "Затем выберите один творческий подход из 'creative_prompts' в конфиге",
-            f"Затем используйте творческий подход: '{selected_prompt}'"
-        )
-        for attempt in range(self.max_attempts):
-            try:
-                logger.info(f"🔎 Генерация сценария для '{topic[:100]}' (попытка {attempt + 1}/{self.max_attempts})")
-                response = openai.ChatCompletion.create(
-                    model=self.config.get("OPENAI_SETTINGS.model", "gpt-4o"),
-                    messages=[{"role": "user", "content": combined_prompt}],
-                    max_tokens=self.config.get("OPENAI_SETTINGS.max_tokens", 1000),
-                    temperature=self.config.get("OPENAI_SETTINGS.temperature", 0.7),
-                )
-                combined_response = response['choices'][0]['message']['content'].strip()
-                if len(combined_response) < self.config.get("VISUAL_ANALYSIS.min_script_length", 200):
-                    logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
-                    continue
-                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-                    logger.error("❌ Маркеры кадра не найдены в ответе!")
-                    continue
-                script_text = combined_response.split("First Frame Description:")[0].strip()
-                first_frame_description = \
-                    combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-                return script_text, first_frame_description
-            except Exception as e:
-                handle_error(logger, f"Ошибка генерации сценария (попытка {attempt + 1}/{self.max_attempts})", e)
-                if attempt == self.max_attempts - 1:
-                    logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
-                    return None, None
-        return None, None
 
     def save_to_generated_content(self, stage, data):
         try:
@@ -471,196 +406,126 @@ class ContentGenerator:
             return None
 
     def load_tracker(self):
-        bucket_name = os.getenv("B2_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
-        local_path = TRACKER_PATH  # "config/topics_tracker.json"
-        b2_path = TRACKER_B2_PATH  # "config/topics_tracker.json"
-        config_dir = os.path.dirname(local_path)  # "config"
-        self.logger.info(f"Создаём директорию {config_dir} для локального файла")
-        os.makedirs(config_dir, exist_ok=True)
-        b2_client = get_b2_client()
+        os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
+        s3 = get_b2_client()
         tracker_updated = False
-
-        # Шаг 1: Пытаемся загрузить topics_tracker.json из B2
-        self.logger.info(f"🔄 Попытка загрузить {b2_path} из B2")
         try:
-            bucket = b2_client.get_bucket_by_name(bucket_name)
-            file_info = bucket.get_file_info_by_name(b2_path)
-            file_id = file_info.id_
-            download_dest = b2_client.download_file_by_id(file_id)
-            download_dest.save_to(local_path)
-            if not os.path.exists(local_path):
-                raise FileNotFoundError(f"❌ Файл {local_path} не был создан после загрузки")
-            self.logger.info(f"✅ Успешно загружен {b2_path} из B2 в {local_path}")
+            s3.download_file(B2_BUCKET_NAME, "data/topics_tracker.json", TRACKER_PATH)
+            self.logger.info("✅ Загружен topics_tracker.json из B2")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить {b2_path} из B2: {str(e)}")
-            # Шаг 2: Проверяем локальный файл
-            if os.path.exists(local_path):
-                self.logger.info(f"ℹ️ Используем существующий локальный файл {local_path}")
-            else:
-                # Шаг 3: Форс-мажор — создаем из FailSafeVault.json
-                self.logger.info(f"ℹ️ Локальный файл {local_path} отсутствует, создаём из {FAILSAFE_PATH}")
-                try:
-                    with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
-                        failsafe = json.load(f)
-                    tracker = {
-                        "all_focuses": failsafe["focuses"],
-                        "used_focuses": [],
-                        "focus_data": {}
-                    }
-                    with open(local_path, 'w', encoding='utf-8') as f:
-                        json.dump(tracker, f, ensure_ascii=False, indent=4)
-                    tracker_updated = True
-                    self.logger.info(f"✅ Создан новый {local_path} на основе {FAILSAFE_PATH}")
-                except Exception as e:
-                    self.logger.error(f"❌ Не удалось создать файл из {FAILSAFE_PATH}: {str(e)}")
-                    raise RuntimeError(
-                        f"Форс-мажор: невозможно загрузить topics_tracker.json и FailSafeVault.json недоступен")
-
-        # Читаем трекер из локального файла
-        try:
-            with open(local_path, 'r', encoding='utf-8') as f:
-                tracker = json.load(f)
-            self.logger.info(f"✅ Файл {local_path} успешно прочитан")
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка чтения {local_path}: {str(e)}")
-            raise RuntimeError(f"Не удалось прочитать topics_tracker.json: {str(e)}")
-
-        # Проверка и обновление структуры трекера
-        if "all_focuses" not in tracker or "used_focuses" not in tracker or "focus_data" not in tracker:
-            self.logger.warning(f"⚠️ Файл {local_path} имеет некорректную структуру, обновляем из {FAILSAFE_PATH}")
-            try:
+            self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
+            if not os.path.exists(TRACKER_PATH):
+                self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
                 with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
                     failsafe = json.load(f)
-                tracker["all_focuses"] = failsafe["focuses"]
-                tracker.setdefault("used_focuses", [])
-                tracker.setdefault("focus_data", {})
-                with open(local_path, 'w', encoding='utf-8') as f:
+                tracker = {
+                    "all_focuses": failsafe["focuses"],
+                    "used_focuses": [],
+                    "focus_data": {}
+                }
+                with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
                     json.dump(tracker, f, ensure_ascii=False, indent=4)
                 tracker_updated = True
-                self.logger.info(f"✅ Структура трекера обновлена")
-            except Exception as e:
-                self.logger.error(f"❌ Не удалось обновить структуру трекера из {FAILSAFE_PATH}: {str(e)}")
-                raise RuntimeError(f"Не удалось исправить структуру topics_tracker.json: {str(e)}")
-
-        # Синхронизация с B2, если файл был обновлен
+        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
+            tracker = json.load(f)
+        # Проверка и обновление структуры
+        if "all_focuses" not in tracker:
+            self.logger.info("Обновляем старый трекер: добавляем all_focuses")
+            with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
+                failsafe = json.load(f)
+            tracker["all_focuses"] = failsafe["focuses"]
+            # Сохраняем существующие данные
+            tracker.setdefault("used_focuses", [])
+            tracker.setdefault("focus_data", {})
+            with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
+                json.dump(tracker, f, ensure_ascii=False, indent=4)
+            tracker_updated = True
         if tracker_updated:
             self.sync_tracker_to_b2()
-
         return tracker
 
     def run(self):
-        logger.info(">>> Начало генерации контента (метод run)")
-        import argparse
-        parser = argparse.ArgumentParser(description="Generate Content")
-        parser.add_argument("--generation_id", type=str, help="ID for content generation")
-        args = parser.parse_args()
+        """Основной процесс генерации контента."""
         try:
-            if args.generation_id:
-                generation_id = args.generation_id
-                logger.info(f"ℹ️ Используем переданный generation_id: {generation_id}")
-            else:
-                try:
-                    with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                        config_gen_content = json.load(gen_file)
-                        generation_id = config_gen_content.get("generation_id")
-                except FileNotFoundError:
-                    generation_id = generate_file_id()
-                    save_generation_id_to_config(generation_id)
-                    logger.info(f"ℹ️ Сгенерирован новый generation_id: {generation_id}")
-                if not generation_id:
-                    generation_id = generate_file_id()
-                    save_generation_id_to_config(generation_id)
-                    logger.info(f"ℹ️ Сгенерирован новый generation_id: {generation_id}")
-                else:
-                    logger.info(f"ℹ️ Используем generation_id из config_gen.json: {generation_id}")
-
+            if not self.config.get('CONTENT.topic.enabled', True):
+                logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
+                sys.exit(1)
+            download_config_public()
+            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
+                config_public = json.load(file)
+            empty_folders = config_public.get("empty", [])
+            if not empty_folders:
+                logger.info("✅ Нет пустых папок. Процесс завершён.")
+                return
             self.adapt_prompts()
+            self.clear_generated_content()
             tracker = self.load_tracker()  # Загрузка трекера для защиты от повторов
-            topic, content_data = self.generate_topic(tracker)  # Генерация темы
+            topic, content_data = self.generate_topic(tracker)  # Передаём трекер
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
-                return
-
-            # Генерация текста
+                sys.exit(1)
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
                 if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
                         'CONTENT.tragic_text.enabled', True):
                     text_initial = self.request_openai(
-                        self.config.get('CONTENT.tragic_text.prompt_template', "").format(topic=topic))
+                        self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
                 else:
                     text_initial = self.request_openai(
-                        self.config.get('CONTENT.text.prompt_template', "").format(topic=topic))
+                        self.config.get('CONTENT.text.prompt_template').format(topic=topic))
                 critique = self.critique_content(text_initial, topic)
                 self.save_to_generated_content("critique", {"critique": critique})
             else:
                 text_initial = ""
                 logger.info("🔕 Генерация текста отключена.")
-
-            # Генерация сарказма
-            sarcastic_comment = ""
-            sarcastic_poll = {}
             if text_initial:
                 sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
                 sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
-
+                self.save_to_generated_content("sarcasm", {
+                    "comment": sarcastic_comment,
+                    "poll": sarcastic_poll
+                })
             final_text = text_initial.strip()
-            target_folder = "666/"
-
-            # Генерация сценария и первого кадра
-            script_text, first_frame_description = self.generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                logger.error("❌ Не удалось сгенерировать сценарий или описание кадра")
-                sys.exit(1)
-            logger.info(f"✅ Сценарий сгенерирован: {script_text[:100]}...")
-            logger.info(f"✅ Описание первого кадра: {first_frame_description[:100]}...")
-
-            # Сборка полного контента
+            target_folder = empty_folders[0]
             content_dict = {
                 "topic": topic,
                 "content": final_text,
                 "sarcasm": {
                     "comment": sarcastic_comment,
                     "poll": sarcastic_poll
-                },
-                "script": script_text,
-                "first_frame_description": first_frame_description
+                }
             }
             save_to_b2(target_folder, content_dict)
-            logger.info(f"✅ Контент сохранен в B2: 666/{generation_id}.json")
-
-            # Запуск generate_media.py
-            scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-            generate_media_path = os.path.join(scripts_folder, "generate_media.py")
-            if not os.path.isfile(generate_media_path):
-                logger.error(f"❌ Скрипт не найден: {generate_media_path}")
-                sys.exit(1)
-            logger.info(f"🔄 Запуск generate_media.py с generation_id: {generation_id}")
-            try:
-                result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id],
-                                        check=True)
-                if result.returncode == 0:
-                    logger.info("✅ generate_media.py выполнен успешно")
-                    # Запуск b2_storage_manager.py
-                    b2_manager_path = os.path.join(scripts_folder, "b2_storage_manager.py")
-                    if not os.path.isfile(b2_manager_path):
-                        logger.error(f"❌ Скрипт не найден: {b2_manager_path}")
-                        sys.exit(1)
-                    logger.info("🔄 Запуск b2_storage_manager.py для продолжения цикла")
-                    subprocess.run([sys.executable, b2_manager_path], check=True)
-                else:
-                    logger.error("❌ Ошибка при выполнении generate_media.py")
-                    sys.exit(1)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Ошибка запуска generate_media.py: {e}")
-                sys.exit(1)
-
-            logger.info("✅ Генерация контента завершена.")
+            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+                config_gen_content = json.load(gen_file)
+                generation_id = config_gen_content["generation_id"]
+            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
+            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
+            run_generate_media()  # Выполняется, но не прерывает процесс при ошибке
+            self.logger.info("✅ Генерация контента завершена.")
         except Exception as e:
-            handle_error(self.logger, "Ошибка в основном процессе генерации", e)
+            handle_error("Run Error", "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
             sys.exit(1)
+
+def run_generate_media():
+    """Запускает скрипт generate_media.py по локальному пути."""
+    try:
+        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
+        script_path = os.path.join(scripts_folder, "generate_media.py")
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
+        logger.info(f"🔄 Запуск скрипта: {script_path}")
+        subprocess.run(["python", script_path], check=True)
+        logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
+    except subprocess.CalledProcessError as e:
+        handle_error("Script Execution Error", "Ошибка при выполнении generate_media.py", e)
+        logger.warning("⚠️ Генерация медиа не удалась, продолжаем без медиа.")
+    except FileNotFoundError as e:
+        handle_error("File Not Found Error", f"Скрипт не найден: {script_path}", e)
+        logger.warning("⚠️ Скрипт generate_media.py отсутствует, продолжаем без медиа.")
+    except Exception as e:
+        handle_error("Unknown Error", "Неизвестная ошибка при запуске generate_media.py", e)
+        logger.warning("⚠️ Неизвестная ошибка в generate_media, продолжаем без медиа.")
 
 if __name__ == "__main__":
     generator = ContentGenerator()
