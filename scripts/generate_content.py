@@ -153,9 +153,8 @@ class ContentGenerator:
             raise ValueError("Все фокусы использованы")
         selected_focus = random.choice(valid_focuses)
         used_labels = tracker["focus_data"].get(selected_focus, [])
-        prompt = self.config["CONTENT"]["topic"]["prompt_template"].format(
-            focus_areas=selected_focus,
-            exclusions=", ".join(used_labels)
+        prompt = self.config.get("CONTENT.topic.prompt_template").format(
+            focus_areas=selected_focus, exclusions=", ".join(used_labels)
         )
         topic_response = self.request_openai(prompt)
         try:
