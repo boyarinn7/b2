@@ -81,29 +81,13 @@ def save_to_b2(folder, content):
         if not isinstance(content, dict):
             logger.error("❌ Ошибка: Контент должен быть словарём!")
             return
-        sarcasm_data = content.get("sarcasm", {})
-        if isinstance(sarcasm_data, str):
-            try:
-                sarcasm_data = json.loads(sarcasm_data)
-                logger.warning("⚠️ Поле 'sarcasm' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'sarcasm' имеет неверный формат!")
-                return
-        if "poll" in sarcasm_data and isinstance(sarcasm_data["poll"], str):
-            try:
-                sarcasm_data["poll"] = json.loads(sarcasm_data["poll"])
-                logger.warning("⚠️ Поле 'poll' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
-                sarcasm_data["poll"] = {}
-        content["sarcasm"] = sarcasm_data
         temp_path = f"temp_{file_id}"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(content, f, ensure_ascii=False, indent=4)
         bucket = b2_client.get_bucket_by_name(bucket_name)
         bucket.upload_local_file(local_file=temp_path, file_name=s3_key)
+        logger.info(f"✅ Файл {s3_key} успешно загружен в B2")  # Добавлено
         os.remove(temp_path)
-        logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
     except Exception as e:
         handle_error(logger, "B2 Upload Error", e)
         failed_path = f"failed_{file_id}"
@@ -567,22 +551,24 @@ class ContentGenerator:
         return tracker
 
     def run(self):
-        """Основной процесс генерации контента."""
         logger.info(">>> Начало генерации контента (метод run)")
         import argparse
         parser = argparse.ArgumentParser(description="Generate Content")
         parser.add_argument("--generation_id", type=str, help="ID for content generation")
         args = parser.parse_args()
-
         try:
-            # Проверка и получение generation_id
             if args.generation_id:
                 generation_id = args.generation_id
                 logger.info(f"ℹ️ Используем переданный generation_id: {generation_id}")
             else:
-                with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                    config_gen_content = json.load(gen_file)
-                    generation_id = config_gen_content.get("generation_id")
+                try:
+                    with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
+                        config_gen_content = json.load(gen_file)
+                        generation_id = config_gen_content.get("generation_id")
+                except FileNotFoundError:
+                    generation_id = generate_file_id()
+                    save_generation_id_to_config(generation_id)
+                    logger.info(f"ℹ️ Сгенерирован новый generation_id: {generation_id}")
                 if not generation_id:
                     generation_id = generate_file_id()
                     save_generation_id_to_config(generation_id)

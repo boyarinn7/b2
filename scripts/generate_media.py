@@ -500,7 +500,7 @@ def load_content_from_b2(b2_client, generation_id):
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки {remote_path}: {str(e)}")
         sys.exit(1)
-        
+
 def clean_script_text(text):
     cleaned = text.replace('\n', ' ').replace('\r', ' ')
     cleaned = ' '.join(cleaned.split())
