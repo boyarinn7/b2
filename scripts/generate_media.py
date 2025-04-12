@@ -125,19 +125,31 @@ def select_best_image(b2_client, image_urls, prompt):
 
 # === Функции работы с Backblaze B2 ===
 def get_b2_client():
-    """Создаёт и возвращает клиент B2 (S3) на основе настроек из конфига."""
+    """Создаёт клиент boto3 для B2."""
     try:
-        client = boto3.client(
+        return boto3.client(
             's3',
-            endpoint_url=B2_ENDPOINT,
-            aws_access_key_id=B2_ACCESS_KEY,
-            aws_secret_access_key=B2_SECRET_KEY
+            endpoint_url=os.getenv("B2_ENDPOINT"),
+            aws_access_key_id=os.getenv("B2_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("B2_SECRET_KEY")
         )
-        return client
     except Exception as e:
-        handle_error(logger, "B2 Client Initialization Error", e)
-        return None
+        logger.error(f"❌ Ошибка создания клиента B2: {e}")
+        raise
 
+def find_file(generation_id):
+    """Ищет файл в папках 666/ или 555/."""
+    s3 = get_b2_client()
+    bucket_name = config.get("API_KEYS.b2.bucket_name")
+    folders = ["666/", "555/"]
+    for folder in folders:
+        try:
+            s3.head_object(Bucket=bucket_name, Key=f"{folder}{generation_id}.json")
+            return folder
+        except:
+            continue
+    logger.error(f"❌ Файл {generation_id}.json не найден в 666/ или 555/")
+    return None
 
 def download_file_from_b2(client, remote_path, local_path):
     """Загружает файл из B2 (S3) в локальное хранилище."""
@@ -408,78 +420,78 @@ def download_video(url, output_path):
 def main():
     logger.info("🔄 Начало процесса генерации медиа...")
     try:
-        with open(CONFIG_GEN_PATH, 'r', encoding='utf-8') as file:
-            config_gen = json.load(file)
-        generation_id = config_gen["generation_id"].split('.')[0]
+        # Проверка аргумента generation_id
+        if len(sys.argv) < 2:
+            logger.error("❌ Не указан generation_id")
+            raise ValueError("Требуется generation_id как аргумент командной строки")
+        generation_id = sys.argv[1].replace(".json", "")  # Удаляем .json, если передан
         logger.info(f"📂 ID генерации: {generation_id}")
 
+        # Поиск файла в B2
         b2_client = get_b2_client()
         if not b2_client:
             raise Exception("Не удалось создать клиент B2")
+        folder = find_file(generation_id)
+        if not folder:
+            raise ValueError(f"Файл {generation_id}.json не найден в 666/ или 555/")
+        file_key = f"{folder}{generation_id}.json"
+        local_path = f"temp_{generation_id}.json"
+        logger.info(f"🔄 Загрузка файла: {file_key}")
+        b2_client.download_file(B2_BUCKET_NAME, file_key, local_path)
 
-        # Загружаем generated_content.json для получения first_frame_description
-        with open(CONTENT_OUTPUT_PATH, 'r', encoding='utf-8') as f:
-            generated_content = json.load(f)
-        topic_data = generated_content.get("topic", "")
-        if isinstance(topic_data, dict):
-            topic = topic_data.get("topic", "")
-        else:
-            topic = topic_data or generated_content.get("content", "")
-        if not topic:
+        # Чтение содержимого файла
+        with open(local_path, 'r', encoding='utf-8') as f:
+            content = json.load(f)
+        os.remove(local_path)
+        topic = content.get("topic", "")
+        text = content.get("content", "")
+        if not topic or not text:
+            logger.error("❌ Тема или текст поста пусты!")
             raise ValueError("Тема или текст поста пусты!")
+
         logger.info(f"📝 Тема: {topic[:100]}...")
 
-        # Извлекаем first_frame_description или генерируем, если его нет
-        first_frame_description = generated_content.get("first_frame_description", "")
-        if not first_frame_description:
-            script_text, first_frame_description = generate_script_and_frame(topic)
-            if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
-            with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-                json.dump(generated_content, f, ensure_ascii=False, indent=4)
-            logger.info(f"✅ JSON обновлён с новым сценарием: {CONTENT_OUTPUT_PATH}")
+        # Загрузка config_public.json
+        download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
+        with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
+            config_public = json.load(file)
+        if "empty" in config_public and config_public["empty"]:
+            target_folder = config_public["empty"][0]
+            logger.info(f"🎯 Выбрана папка: {target_folder}")
+        else:
+            raise ValueError("Список 'empty' пуст или отсутствует")
 
         # Проверка midjourney_results
         midjourney_results = check_midjourney_results(b2_client)
         if midjourney_results:
             image_urls = midjourney_results["image_urls"]
-            best_image_url = select_best_image(b2_client, image_urls, first_frame_description)
+            best_image_url = select_best_image(b2_client, image_urls, topic)
             image_path = f"{generation_id}.{OUTPUT_IMAGE_FORMAT}"
             response = requests.get(best_image_url, stream=True)
             response.raise_for_status()
             with open(image_path, "wb") as f:
                 f.write(response.content)
             logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
-            remove_midjourney_results(b2_client)  # Удаление ключа
+            remove_midjourney_results(b2_client)
         else:
-            download_file_from_b2(b2_client, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH)
-            with open(CONFIG_PUBLIC_LOCAL_PATH, 'r', encoding='utf-8') as file:
-                config_public = json.load(file)
-
-            if "empty" in config_public and config_public["empty"]:
-                target_folder = config_public["empty"][0]
-                logger.info(f"🎯 Выбрана папка: {target_folder}")
-            else:
-                raise ValueError("Список 'empty' пуст или отсутствует")
-
+            # Генерация сценария и первого кадра
             script_text, first_frame_description = generate_script_and_frame(topic)
             if not script_text or not first_frame_description:
                 raise ValueError("Не удалось сгенерировать сценарий или описание")
 
-            generated_content["script"] = script_text
-            generated_content["first_frame_description"] = first_frame_description
+            # Сохранение сценария и описания
+            generated_content = {"topic": topic, "script": script_text, "first_frame_description": first_frame_description}
             with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:
                 json.dump(generated_content, f, ensure_ascii=False, indent=4)
             logger.info(f"✅ JSON сохранён: {CONTENT_OUTPUT_PATH}")
 
-            image_path = generate_image(first_frame_description, generation_id)  # Запрос к Midjourney с завершением
+            image_path = generate_image(first_frame_description, generation_id)
 
-        # Продолжение старой логики с image_path
-        if not resize_existing_image(image_path):
-            raise ValueError("Не удалось изменить размер изображения")
+        # Изменение размера изображения
+        if not image_path or not resize_existing_image(image_path):
+            raise ValueError("Не удалось сгенерировать или изменить размер изображения")
 
+        # Генерация видео
         cleaned_script = clean_script_text(script_text)
         video_result = generate_runway_video(image_path, cleaned_script)
         video_path = None
@@ -492,20 +504,24 @@ def main():
                 video_path = video_result
                 logger.info(f"🔄 Используем имитацию видео: {video_path}")
 
+        # Загрузка файлов в B2
         upload_to_b2(b2_client, target_folder, image_path)
         if video_path and os.path.exists(video_path):
             upload_to_b2(b2_client, target_folder, video_path)
 
+        # Обновление конфигурации
         update_config_public(b2_client, target_folder)
         reset_processing_lock(b2_client)
 
+        # Запуск b2_storage_manager.py
         logger.info(f"🔄 Запуск скрипта: {B2_STORAGE_MANAGER_SCRIPT}")
         subprocess.run([sys.executable, B2_STORAGE_MANAGER_SCRIPT], check=True)
 
+        logger.info("✅ Генерация медиа завершена")
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-
+    
 if __name__ == "__main__":
     try:
         main()
