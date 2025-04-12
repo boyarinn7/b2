@@ -521,7 +521,7 @@ def main():
     except Exception as e:
         handle_error(logger, "Ошибка в процессе генерации", e)
         raise
-    
+
 if __name__ == "__main__":
     try:
         main()
