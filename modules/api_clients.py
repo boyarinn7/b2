@@ -42,8 +42,8 @@ def get_runwayml_client():
 # === B2 Client ===
 def get_b2_client():
     """Возвращает клиент boto3 для работы с Backblaze B2."""
-    access_key = config.get("API_KEYS.b2.access_key")
-    secret_key = config.get("API_KEYS.b2.secret_key")
+    access_key = os.getenv("B2_ACCESS_KEY")
+    secret_key = os.getenv("B2_SECRET_KEY")
     if not all([access_key, secret_key]):
         missing_vars = [var for var, val in [("B2_ACCESS_KEY", access_key), ("B2_SECRET_KEY", secret_key)] if not val]
         logger.error(f"❌ Не заданы ключи для B2: {', '.join(missing_vars)}")
@@ -51,7 +51,7 @@ def get_b2_client():
     try:
         client = boto3.client(
             's3',
-            endpoint_url=config.get("API_KEYS.b2.endpoint"),
+            endpoint_url=os.getenv("B2_ENDPOINT"),
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key
         )
