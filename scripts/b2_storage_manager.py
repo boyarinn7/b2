@@ -28,11 +28,11 @@ logger = get_logger("b2_storage_manager")
 logger.info("Начало выполнения b2_storage_manager")
 
 CONFIG_PUBLIC_PATH = "config/config_public.json"
-CONFIG_PUBLIC_LOCAL_PATH = "config_public.json"
+CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"
 CONFIG_GEN_PATH = "config/config_gen.json"
 CONFIG_GEN_LOCAL_PATH = "config/config_gen.json"
 CONFIG_MIDJOURNEY_PATH = "config/config_midjourney.json"
-CONFIG_MIDJOURNEY_LOCAL_PATH = "config_midjourney.json"
+CONFIG_MIDJOURNEY_LOCAL_PATH = "config/config_midjourney.json"
 SCRIPTS_FOLDER = "scripts/"
 CONTENT_OUTPUT_PATH = "generated_content.json"
 B2_STORAGE_MANAGER_SCRIPT = os.path.join(SCRIPTS_FOLDER, "b2_storage_manager.py")
@@ -311,17 +311,18 @@ def any_folder_empty(b2_client, folders):
     return False
 
 def check_content_exists(b2_client, generation_id):
-    bucket_name = "boyarinnbotbucket"
+    bucket_name = os.getenv("B2_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("❌ Переменная окружения B2_BUCKET_NAME не задана")
     remote_path = f"666/{generation_id}.json"
     try:
         logger.info(f"🔍 Проверка файла {remote_path} в B2")
         bucket = b2_client.get_bucket_by_name(bucket_name)
-        response = bucket.list_file_names(start_file_name=remote_path, max_file_count=1)
-        exists = any(file_info['fileName'] == remote_path for file_info in response.get('files', []))
-        logger.info(f"ℹ️ Файл {remote_path} {'существует' if exists else 'не найден'}")
-        return exists
+        bucket.get_file_info_by_name(remote_path)  # Проверяем существование
+        logger.info(f"ℹ️ Файл {remote_path} существует")
+        return True
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки файла {remote_path}: {e}")
+        logger.error(f"❌ Файл {remote_path} не найден: {str(e)}")
         return False
 
 def main():
@@ -337,7 +338,6 @@ def main():
     try:
         b2_client = get_b2_client()
         logger.info("Клиент B2 успешно создан.")
-        logger.info(f"Путь к config_public.json: {'config/config_public.json'}")
         config_public = load_config_public(b2_client)
         config_gen = load_config_gen(b2_client)
         config_midjourney = load_config_midjourney(b2_client)
@@ -357,6 +357,14 @@ def main():
             midjourney_results = config_midjourney.get("midjourney_results")
             generation_id = config_gen.get("generation_id")
 
+            # Проверяем актуальность generation_id
+            if generation_id and not check_content_exists(b2_client, generation_id):
+                logger.warning(f"⚠️ Файл 666/{generation_id}.json не существует, генерируем новый generation_id")
+                generation_id = generate_file_id()
+                config_gen["generation_id"] = generation_id
+                save_config_gen(b2_client, config_gen)
+                logger.info(f"ℹ️ Новый generation_id: {generation_id}")
+
             if midjourney_results and "image_urls" in midjourney_results:
                 image_urls = midjourney_results.get("image_urls", [])
                 if image_urls and all(isinstance(url, str) and url.startswith("http") for url in image_urls):
@@ -366,43 +374,43 @@ def main():
                         generate_media_path = os.path.join(SCRIPTS_FOLDER, "generate_media.py")
                         if not os.path.isfile(generate_media_path):
                             raise FileNotFoundError(f"❌ Файл {generate_media_path} не найден")
-                        result = subprocess.run([sys.executable, generate_media_path, "--generation_id", generation_id],
-                                                check=True)
-                        if result.returncode == 0:
+                        try:
+                            result = subprocess.run(
+                                [sys.executable, generate_media_path, "--generation_id", generation_id],
+                                check=True
+                            )
                             update_content_json(b2_client, "666/", generation_id)
                             config_midjourney["midjourney_results"] = {}
                             save_config_midjourney(b2_client, config_midjourney)
                             tasks_processed += 1
-                            config_public["processing_lock"] = False
-                            save_config_public(b2_client, config_public)
-                            logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
-                            subprocess.run([sys.executable, __file__])
-                            return
+                        except subprocess.CalledProcessError as e:
+                            logger.error(f"❌ Ошибка запуска generate_media.py: {e}")
+                            raise
                     else:
-                        logger.warning(
-                            f"⚠️ Файл 666/{generation_id}.json не найден или generation_id отсутствует, генерируем новый")
+                        logger.warning(f"⚠️ Файл 666/{generation_id}.json не найден, запускаем generate_content.py")
                         generation_id = generate_file_id()
                         config_gen["generation_id"] = generation_id
                         save_config_gen(b2_client, config_gen)
-                        logger.info(f"ℹ️ Новый generation_id: {generation_id}, запускаем generate_content.py")
+                        logger.info(f"ℹ️ Новый generation_id: {generation_id}")
                         try:
                             result = subprocess.run(
-                                [sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id], check=True)
-                            if result.returncode == 0:
-                                result = subprocess.run(
-                                    [sys.executable, GENERATE_MEDIA_SCRIPT, "--generation_id", generation_id],
-                                    check=True)
-                                if result.returncode == 0:
-                                    tasks_processed += 1
-                                    config_public["processing_lock"] = False
-                                    save_config_public(b2_client, config_public)
-                                    logger.info("🔓 Блокировка снята перед запуском b2_storage_manager.py")
-                                    subprocess.run([sys.executable, __file__])
-                                    return
+                                [sys.executable, GENERATE_CONTENT_SCRIPT, "--generation_id", generation_id],
+                                check=True
+                            )
+                            result = subprocess.run(
+                                [sys.executable, GENERATE_MEDIA_SCRIPT, "--generation_id", generation_id],
+                                check=True
+                            )
+                            tasks_processed += 1
                         except subprocess.CalledProcessError as e:
                             logger.error(f"❌ Ошибка запуска скрипта: {e}")
                             raise
+                else:
+                    logger.warning("⚠️ Некорректные image_urls, очищаем midjourney_results")
+                    config_midjourney["midjourney_results"] = {}
+                    save_config_midjourney(b2_client, config_midjourney)
 
+            # Остальная часть функции остается без изменений...
             midjourney_task = config_midjourney.get("midjourney_task")
             if midjourney_task:
                 fetch_media_path = os.path.join(SCRIPTS_FOLDER, "fetch_media.py")
