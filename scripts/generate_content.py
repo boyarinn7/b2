@@ -465,6 +465,9 @@ class ContentGenerator:
     def run(self):
         """Основной процесс генерации контента."""
         try:
+            if len(config.get("empty_folders", [])) > 1:
+                config["empty_folders"] = config["empty_folders"][:1]
+                logger.info("Ограничение до одной генерации: только первая пустая папка")
             if not self.config.get('CONTENT.topic.enabled', True):
                 logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
                 sys.exit(1)
