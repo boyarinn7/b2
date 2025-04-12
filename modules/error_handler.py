@@ -1,7 +1,7 @@
-# core/modules/error_handler.py
-
 import logging
 from modules.logger import get_logger
+
+logger = get_logger("error_handler")
 
 def handle_error(context, message, exception=None):
     """Обрабатывает и логирует ошибки."""

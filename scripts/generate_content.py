@@ -30,9 +30,9 @@ def get_b2_client():
     try:
         return boto3.client(
             's3',
-            endpoint_url=config.get("API_KEYS.b2.endpoint"),
-            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
-            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
+            endpoint_url=os.getenv("B2_ENDPOINT"),
+            aws_access_key_id=os.getenv("B2_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("B2_SECRET_KEY")
         )
     except Exception as e:
         handle_error("B2 Client Initialization Error", str(e), e)
