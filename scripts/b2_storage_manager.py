@@ -215,7 +215,7 @@ def main():
     """Основной процесс управления B2-хранилищем."""
     b2_client = None
     generation_count = 0
-    MAX_GENERATIONS = 3
+    MAX_GENERATIONS = 1
 
     try:
         b2_client = get_b2_client()
