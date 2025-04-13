@@ -212,41 +212,6 @@ def reset_processing_lock(client):
     except Exception as e:
         handle_error(logger, "Processing Lock Reset Error", e)
 
-
-# === Функции генерации сценария и видео ===
-def generate_script_and_frame(topic):
-    """Генерирует сценарий и описание первого кадра для видео с повторными попытками."""
-    for attempt in range(MAX_ATTEMPTS):
-        try:
-            combined_prompt = USER_PROMPT_COMBINED.replace("{topic}", topic)
-            logger.info(f"🔎 Попытка {attempt + 1}/{MAX_ATTEMPTS}: Генерация сценария для '{topic[:100]}'...")
-            response = openai.ChatCompletion.create(
-                model=OPENAI_MODEL,
-                messages=[{"role": "user", "content": combined_prompt}],
-                max_tokens=OPENAI_MAX_TOKENS,
-                temperature=OPENAI_TEMPERATURE,
-            )
-            combined_response = response['choices'][0]['message']['content'].strip()
-            if len(combined_response) < MIN_SCRIPT_LENGTH:
-                logger.error(f"❌ Ответ слишком короткий: {len(combined_response)} символов")
-                continue
-            if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-                logger.error("❌ Маркеры кадра не найдены в ответе!")
-                continue
-            script_text = combined_response.split("First Frame Description:")[0].strip()
-            first_frame_description = \
-            combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-            logger.info(f"🎬 Сценарий: {script_text[:100]}...")
-            logger.info(f"🖼️ Описание первого кадра: {first_frame_description[:100]}...")
-            return script_text, first_frame_description
-        except Exception as e:
-            handle_error(logger, f"Script Generation Error (попытка {attempt + 1}/{MAX_ATTEMPTS})", e)
-            if attempt == MAX_ATTEMPTS - 1:
-                logger.error("❌ Превышено максимальное количество попыток генерации сценария.")
-                return None, None
-    return None, None
-
-
 def generate_image_with_midjourney(prompt, generation_id):
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -418,6 +383,7 @@ def download_video(url, output_path):
 
 # === Основная функция ===
 def main():
+    content_output_path = config.get("FILE_PATHS.content_output", "generated_content.json")
     logger.info("🔄 Начало процесса генерации медиа...")
     try:
         # Проверка аргумента generation_id
@@ -474,11 +440,13 @@ def main():
             logger.info(f"✅ Лучшее изображение сохранено: {image_path}")
             remove_midjourney_results(b2_client)
         else:
-            # Генерация сценария и первого кадра
-            script_text, first_frame_description = generate_script_and_frame(topic)
+            with open(content_output_path, 'r', encoding='utf-8') as f:
+                content_dict = json.load(f)
+            script_text = content_dict.get("script", "")
+            first_frame_description = content_dict.get("first_frame_description", "")
             if not script_text or not first_frame_description:
-                raise ValueError("Не удалось сгенерировать сценарий или описание")
-
+                logger.error("Сценарий или описание отсутствуют в generated_content.json")
+                sys.exit(1)
             # Сохранение сценария и описания
             generated_content = {"topic": topic, "script": script_text, "first_frame_description": first_frame_description}
             with open(CONTENT_OUTPUT_PATH, 'w', encoding='utf-8') as f:

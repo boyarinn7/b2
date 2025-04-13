@@ -120,6 +120,53 @@ def save_to_b2(folder, content):
     except Exception as e:
         handle_error("B2 Upload Error", str(e), e)
 
+def generate_script_and_frame(topic):
+    """Генерирует сценарий и описание первого кадра для видео."""
+    with open("config/config_gen.json", "r", encoding="utf-8") as f:
+        config = json.load(f)
+    USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
+    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
+    OPENAI_MAX_TOKENS = config.get("OPENAI_SETTINGS.max_tokens", 1000)
+    OPENAI_TEMPERATURE = config.get("OPENAI_SETTINGS.temperature", 0.7)
+    MIN_SCRIPT_LENGTH = config.get("VISUAL_ANALYSIS.min_script_length", 200)
+    for attempt in range(3):
+        try:
+            combined_prompt = (
+                USER_PROMPT_COMBINED.replace("{topic}", topic) +
+                "\n\n**Strict Format**:\n- Script (500 chars max).\n- 'First Frame Description:'\n- Description (500 chars max).\n- 'End of Description'."
+            )
+            logger.info(f"Попытка {attempt + 1}/3: Генерация для '{topic[:100]}'...")
+            response = openai.ChatCompletion.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "user", "content": combined_prompt}],
+                max_tokens=OPENAI_MAX_TOKENS,
+                temperature=OPENAI_TEMPERATURE + 0.1 * attempt
+            )
+            combined_response = response['choices'][0]['message']['content'].strip()
+            logger.debug(f"OpenAI response: {combined_response}")
+            with open(f"logs/openai_response_{topic[:50].replace(' ', '_')}.txt", "w", encoding="utf-8") as f:
+                f.write(combined_response)
+            if len(combined_response) < MIN_SCRIPT_LENGTH:
+                logger.error(f"Ответ короткий: {len(combined_response)}")
+                continue
+            if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+                logger.error("Маркеры не найдены!")
+                continue
+            script_text = combined_response.split("First Frame Description:")[0].strip()
+            first_frame_description = (
+                combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+            )
+            if not script_text or not first_frame_description:
+                logger.error("Сценарий или описание пусты")
+                continue
+            logger.info(f"Сценарий: {script_text[:100]}...")
+            logger.info(f"Описание: {first_frame_description[:100]}...")
+            return script_text, first_frame_description
+        except Exception as e:
+            handle_error(logger, f"Ошибка (попытка {attempt + 1}/3)", e)
+    logger.error("Превышено число попыток.")
+    return None, None
+
 class ContentGenerator:
     def __init__(self):
         self.topic_threshold = config.get('GENERATE.topic_threshold', 7)
@@ -465,9 +512,16 @@ class ContentGenerator:
     def run(self):
         """Основной процесс генерации контента."""
         try:
-            if len(config.get("empty_folders", [])) > 1:
-                config["empty_folders"] = config["empty_folders"][:1]
-                logger.info("Ограничение до одной генерации: только первая пустая папка")
+            with open("config/config_gen.json", "r", encoding="utf-8") as f:
+                config = json.load(f)
+            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
+                config_public = json.load(file)
+            empty_folders = config_public.get("empty", [])
+            if len(empty_folders) > 1:
+                config_public["empty"] = [empty_folders[0]]
+                with open(config.get("FILE_PATHS.config_public"), "w", encoding="utf-8") as file:
+                    json.dump(config_public, file, ensure_ascii=False, indent=4)
+                logger.info("Лимит: одна генерация, взята папка %s", empty_folders[0])
             if not self.config.get('CONTENT.topic.enabled', True):
                 logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
                 sys.exit(1)
@@ -516,6 +570,15 @@ class ContentGenerator:
                 }
             }
             save_to_b2(target_folder, content_dict)
+            script_text, first_frame_description = generate_script_and_frame(content_dict["topic"])
+            if script_text and first_frame_description:
+                content_dict["script"] = script_text
+                content_dict["first_frame_description"] = first_frame_description
+                with open(self.content_output_path, 'w', encoding='utf-8') as f:
+                    json.dump(content_dict, f, ensure_ascii=False, indent=4)
+                logger.info("✅ Сценарий и описание кадра сохранены в %s", self.content_output_path)
+            else:
+                logger.warning("⚠️ Не удалось сгенерировать сценарий или описание, продолжаем без них")
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
