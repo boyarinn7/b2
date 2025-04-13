@@ -135,20 +135,18 @@ def save_to_b2(folder, content):
     except Exception as e:
         handle_error("B2 Upload Error", str(e), e)
         return False
-    
+
 def generate_script_and_frame(topic):
     """Генерирует сценарий и описание первого кадра для видео."""
     try:
-        with open("config/config_gen.json", "r", encoding="utf-8") as f:
-            config_data = json.load(f)
-        USER_PROMPT_COMBINED = config_data.get("PROMPTS.user_prompt_combined")
-        OPENAI_MODEL = config_data.get("OPENAI_SETTINGS.model", "gpt-4o")
-        OPENAI_MAX_TOKENS = config_data.get("OPENAI_SETTINGS.max_tokens", 1000)
-        OPENAI_TEMPERATURE = config_data.get("OPENAI_SETTINGS.temperature", 0.7)
-        MIN_SCRIPT_LENGTH = config_data.get("VISUAL_ANALYSIS.min_script_length", 200)
+        USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
+        OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
+        OPENAI_MAX_TOKENS = config.get("OPENAI_SETTINGS.max_tokens", 1000)
+        OPENAI_TEMPERATURE = config.get("OPENAI_SETTINGS.temperature", 0.7)
+        MIN_SCRIPT_LENGTH = config.get("VISUAL_ANALYSIS.min_script_length", 200)
 
         if not USER_PROMPT_COMBINED:
-            logger.error("Промпт USER_PROMPT_COMBINED не найден в config_gen.json")
+            logger.error("Промпт USER_PROMPT_COMBINED не найден в config.json")
             return None, None
 
         for attempt in range(3):
@@ -178,7 +176,6 @@ def generate_script_and_frame(topic):
                 combined_response = combined_response.strip()
                 logger.debug(f"OpenAI response: {combined_response}")
 
-                # Сохраняем ответ для отладки
                 with open(f"logs/openai_response_{topic[:50].replace(' ', '_')}_{attempt+1}.txt", "w", encoding="utf-8") as f:
                     f.write(combined_response)
 
@@ -211,7 +208,7 @@ def generate_script_and_frame(topic):
         return None, None
 
     except Exception as e:
-        logger.error(f"Ошибка загрузки config_gen.json: {str(e)}")
+        logger.error(f"Ошибка загрузки конфигурации: {str(e)}")
         return None, None
 
 class ContentGenerator:
@@ -564,18 +561,15 @@ class ContentGenerator:
         """Основной процесс генерации контента."""
         lock_file = "config/processing.lock"
 
-        # Проверяем наличие лок-файла
         if os.path.exists(lock_file):
             logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
             return
 
         try:
-            # Создаём лок-файл
             os.makedirs(os.path.dirname(lock_file), exist_ok=True)
             with open(lock_file, "w") as f:
                 f.write("")
 
-            # Загружаем config_public.json из B2
             download_config_public()
             if not os.path.exists(CONFIG_PUBLIC_LOCAL_PATH):
                 logger.error(f"❌ Файл {CONFIG_PUBLIC_LOCAL_PATH} не загружен из B2, создаём пустой config_public")
@@ -639,7 +633,6 @@ class ContentGenerator:
                 "sarcasm": {"comment": sarcastic_comment, "poll": sarcastic_poll}
             }
 
-            # Сохраняем в B2 однократно
             if not save_to_b2(target_folder, content_dict):
                 logger.error(f"❌ Не удалось сохранить контент в B2: {target_folder}")
                 return
@@ -654,24 +647,25 @@ class ContentGenerator:
             else:
                 logger.warning("⚠️ Не удалось сгенерировать сценарий или описание, продолжаем без них")
 
-            # Читаем generation_id
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
 
-            # Логируем конфиги однократно
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
 
-            # Запускаем generate_media.py
-            run_generate_media(generation_id)
+            try:
+                run_generate_media(generation_id)
+                logger.info("✅ Медиа успешно сгенерированы")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Ошибка запуска generate_media.py: {str(e)}")
+                logger.warning("Продолжаем без медиа")
+
             logger.info("✅ Генерация контента завершена.")
 
         except Exception as e:
-            handle_error("Run Error", "Ошибка в основном процессе генерации", e)
-            logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
+            logger.error(f"❌ Ошибка в процессе генерации: {str(e)}")
         finally:
-            # Удаляем лок-файл
             if os.path.exists(lock_file):
                 os.remove(lock_file)
                 logger.info("🔓 Лок-файл удалён.")

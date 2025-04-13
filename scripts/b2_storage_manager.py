@@ -211,16 +211,28 @@ def check_midjourney_results(b2_client):
         logger.error(f"Ошибка при проверке midjourney_results: {e}")
         return None
 
+
 def main():
     """Основной процесс управления B2-хранилищем."""
+    lock_file = "config/b2_processing.lock"
+
+    if os.path.exists(lock_file):
+        logger.info("🔒 Процесс B2 уже выполняется. Завершаем работу.")
+        return
+
     b2_client = None
     generation_count = 0
     MAX_GENERATIONS = 1
 
     try:
+        os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+        with open(lock_file, "w") as f:
+            f.write("")
+
         b2_client = get_b2_client()
         if not b2_client:
-            raise Exception("Не удалось создать клиент B2")
+            logger.error("❌ Не удалось создать клиент B2")
+            return
 
         midjourney_results = check_midjourney_results(b2_client)
         if midjourney_results:
@@ -229,20 +241,22 @@ def main():
             return
 
         config_public = load_config_public(b2_client)
+        if not config_public:
+            logger.error("❌ Не удалось загрузить config_public.json")
+            return
 
         if not config_public.get("generation_id") and not config_public.get("empty"):
             logger.info("🚦 Нет записей о публикациях и пустых папок. Скрипт завершает работу.")
             return
 
         if config_public.get("processing_lock"):
-            logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
+            logger.info("🔒 Процесс уже выполняется (config_public). Завершаем работу.")
             return
 
         config_public["processing_lock"] = True
         save_config_public(b2_client, config_public)
         logger.info("🔒 Блокировка установлена.")
 
-        config_public = load_config_public(b2_client)
         if config_public.get("generation_id"):
             handle_publish(b2_client, config_public)
 
@@ -250,29 +264,34 @@ def main():
 
         config_public = load_config_public(b2_client)
         while config_public.get("empty") and generation_count < MAX_GENERATIONS:
-            logger.info(f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
+            logger.info(
+                f"⚠️ Обнаружены пустые папки ({config_public['empty']}), генерация #{generation_count + 1} из {MAX_GENERATIONS}...")
             subprocess.run([sys.executable, GENERATE_CONTENT_SCRIPT], check=True)
             generation_count += 1
             config_public = load_config_public(b2_client)
             logger.info(f"✅ Завершена генерация #{generation_count}. Пустые папки: {config_public.get('empty', [])}")
 
         if generation_count >= MAX_GENERATIONS:
-            logger.info(f"🚫 Достигнут лимит генераций ({MAX_GENERATIONS}). Завершаем работу, даже если остались пустые папки: {config_public.get('empty', [])}")
+            logger.info(
+                f"🚫 Достигнут лимит генераций ({MAX_GENERATIONS}). Завершаем работу, даже если остались пустые папки: {config_public.get('empty', [])}")
         elif not config_public.get("empty"):
             logger.info("✅ Нет пустых папок – генерация контента завершена.")
 
     except Exception as e:
         handle_error("Main Error", str(e), e)
     finally:
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            logger.info("🔓 Лок-файл B2 удалён.")
         if b2_client:
             try:
                 config_public = load_config_public(b2_client)
                 if config_public.get("processing_lock"):
                     config_public["processing_lock"] = False
                     save_config_public(b2_client, config_public)
-                    logger.info("🔓 Блокировка снята.")
+                    logger.info("🔓 Блокировка config_public снята.")
             except Exception as e:
                 handle_error("Unlock Error", str(e), e)
-
+                
 if __name__ == "__main__":
     main()
