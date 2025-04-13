@@ -90,6 +90,7 @@ def save_generation_id_to_config(file_id):
     except Exception as e:
         handle_error("Save Generation ID Error", str(e), e)
 
+
 def save_to_b2(folder, content):
     """Сохраняет контент в B2 без двойного кодирования JSON."""
     try:
@@ -98,12 +99,16 @@ def save_to_b2(folder, content):
         logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
         s3 = get_b2_client()
         if not s3:
-            raise Exception("Не удалось создать клиент B2")
+            logger.error("❌ Не удалось создать клиент B2")
+            return False
+
         bucket_name = config.get("API_KEYS.b2.bucket_name", B2_BUCKET_NAME)
         s3_key = f"{folder.rstrip('/')}/{file_id}"
+
         if not isinstance(content, dict):
             logger.error("❌ Ошибка: Контент должен быть словарём!")
-            return
+            return False
+
         sarcasm_data = content.get("sarcasm", {})
         if isinstance(sarcasm_data, str):
             try:
@@ -111,7 +116,8 @@ def save_to_b2(folder, content):
                 logger.warning("⚠️ Поле 'sarcasm' было строкой, исправляем...")
             except json.JSONDecodeError:
                 logger.error("❌ Ошибка: Поле 'sarcasm' имеет неверный формат!")
-                return
+                return False
+
         if "poll" in sarcasm_data and isinstance(sarcasm_data["poll"], str):
             try:
                 sarcasm_data["poll"] = json.loads(sarcasm_data["poll"])
@@ -119,59 +125,94 @@ def save_to_b2(folder, content):
             except json.JSONDecodeError:
                 logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
                 sarcasm_data["poll"] = {}
+
         content["sarcasm"] = sarcasm_data
         json_bytes = io.BytesIO(json.dumps(content, ensure_ascii=False, indent=4).encode("utf-8"))
         s3.upload_fileobj(json_bytes, bucket_name, s3_key)
         logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
+        return True
+
     except Exception as e:
         handle_error("B2 Upload Error", str(e), e)
-
+        return False
+    
 def generate_script_and_frame(topic):
     """Генерирует сценарий и описание первого кадра для видео."""
-    with open("config/config_gen.json", "r", encoding="utf-8") as f:
-        config_data = json.load(f)
-    USER_PROMPT_COMBINED = config_data.get("PROMPTS.user_prompt_combined")
-    OPENAI_MODEL = config_data.get("OPENAI_SETTINGS.model", "gpt-4o")
-    OPENAI_MAX_TOKENS = config_data.get("OPENAI_SETTINGS.max_tokens", 1000)
-    OPENAI_TEMPERATURE = config_data.get("OPENAI_SETTINGS.temperature", 0.7)
-    MIN_SCRIPT_LENGTH = config_data.get("VISUAL_ANALYSIS.min_script_length", 200)
-    for attempt in range(3):
-        try:
-            combined_prompt = (
-                USER_PROMPT_COMBINED.replace("{topic}", topic) +
-                "\n\n**Strict Format**:\n- Script (500 chars max).\n- 'First Frame Description:'\n- Description (500 chars max).\n- 'End of Description'."
-            )
-            logger.info(f"Попытка {attempt + 1}/3: Генерация для '{topic[:100]}'...")
-            response = openai.ChatCompletion.create(
-                model=OPENAI_MODEL,
-                messages=[{"role": "user", "content": combined_prompt}],
-                max_tokens=OPENAI_MAX_TOKENS,
-                temperature=OPENAI_TEMPERATURE + 0.1 * attempt
-            )
-            combined_response = response['choices'][0]['message']['content'].strip()
-            logger.debug(f"OpenAI response: {combined_response}")
-            with open(f"logs/openai_response_{topic[:50].replace(' ', '_')}.txt", "w", encoding="utf-8") as f:
-                f.write(combined_response)
-            if len(combined_response) < MIN_SCRIPT_LENGTH:
-                logger.error(f"Ответ короткий: {len(combined_response)}")
+    try:
+        with open("config/config_gen.json", "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        USER_PROMPT_COMBINED = config_data.get("PROMPTS.user_prompt_combined")
+        OPENAI_MODEL = config_data.get("OPENAI_SETTINGS.model", "gpt-4o")
+        OPENAI_MAX_TOKENS = config_data.get("OPENAI_SETTINGS.max_tokens", 1000)
+        OPENAI_TEMPERATURE = config_data.get("OPENAI_SETTINGS.temperature", 0.7)
+        MIN_SCRIPT_LENGTH = config_data.get("VISUAL_ANALYSIS.min_script_length", 200)
+
+        if not USER_PROMPT_COMBINED:
+            logger.error("Промпт USER_PROMPT_COMBINED не найден в config_gen.json")
+            return None, None
+
+        for attempt in range(3):
+            try:
+                combined_prompt = (
+                    USER_PROMPT_COMBINED.replace("{topic}", topic) +
+                    "\n\n**Strict Format**:\n- Script (500 chars max).\n- 'First Frame Description:'\n- Description (500 chars max).\n- 'End of Description'."
+                )
+                logger.info(f"Попытка {attempt + 1}/3: Генерация для '{topic[:100]}'...")
+
+                response = openai.ChatCompletion.create(
+                    model=OPENAI_MODEL,
+                    messages=[{"role": "user", "content": combined_prompt}],
+                    max_tokens=OPENAI_MAX_TOKENS,
+                    temperature=OPENAI_TEMPERATURE + 0.1 * attempt
+                )
+
+                if not response or not response.get("choices") or not response["choices"][0].get("message"):
+                    logger.warning("⚠️ OpenAI не вернул валидный ответ")
+                    continue
+
+                combined_response = response["choices"][0]["message"]["content"]
+                if not combined_response:
+                    logger.warning("⚠️ OpenAI вернул пустой контент")
+                    continue
+
+                combined_response = combined_response.strip()
+                logger.debug(f"OpenAI response: {combined_response}")
+
+                # Сохраняем ответ для отладки
+                with open(f"logs/openai_response_{topic[:50].replace(' ', '_')}_{attempt+1}.txt", "w", encoding="utf-8") as f:
+                    f.write(combined_response)
+
+                if len(combined_response) < MIN_SCRIPT_LENGTH:
+                    logger.error(f"Ответ короткий: {len(combined_response)}")
+                    continue
+
+                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
+                    logger.error("Маркеры не найдены!")
+                    continue
+
+                script_text = combined_response.split("First Frame Description:")[0].strip()
+                first_frame_description = (
+                    combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
+                )
+
+                if not script_text or not first_frame_description:
+                    logger.error("Сценарий или описание пусты")
+                    continue
+
+                logger.info(f"Сценарий: {script_text[:100]}...")
+                logger.info(f"Описание: {first_frame_description[:100]}...")
+                return script_text, first_frame_description
+
+            except Exception as e:
+                logger.error(f"Ошибка (попытка {attempt + 1}/3): {str(e)}")
                 continue
-            if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-                logger.error("Маркеры не найдены!")
-                continue
-            script_text = combined_response.split("First Frame Description:")[0].strip()
-            first_frame_description = (
-                combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-            )
-            if not script_text or not first_frame_description:
-                logger.error("Сценарий или описание пусты")
-                continue
-            logger.info(f"Сценарий: {script_text[:100]}...")
-            logger.info(f"Описание: {first_frame_description[:100]}...")
-            return script_text, first_frame_description
-        except Exception as e:
-            handle_error(logger, f"Ошибка (попытка {attempt + 1}/3)", e)
-    logger.error("Превышено число попыток.")
-    return None, None
+
+        logger.error("Превышено число попыток.")
+        return None, None
+
+    except Exception as e:
+        logger.error(f"Ошибка загрузки config_gen.json: {str(e)}")
+        return None, None
 
 class ContentGenerator:
     def __init__(self):
@@ -521,10 +562,21 @@ class ContentGenerator:
 
     def run(self):
         """Основной процесс генерации контента."""
+        lock_file = "config/processing.lock"
+
+        # Проверяем наличие лок-файла
+        if os.path.exists(lock_file):
+            logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
+            return
+
         try:
+            # Создаём лок-файл
+            os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+            with open(lock_file, "w") as f:
+                f.write("")
+
             # Загружаем config_public.json из B2
             download_config_public()
-            # Проверяем наличие файла
             if not os.path.exists(CONFIG_PUBLIC_LOCAL_PATH):
                 logger.error(f"❌ Файл {CONFIG_PUBLIC_LOCAL_PATH} не загружен из B2, создаём пустой config_public")
                 config_public = {"empty": ["666/"]}
@@ -544,7 +596,7 @@ class ContentGenerator:
 
             if not self.config.get('CONTENT.topic.enabled', True):
                 logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
-                sys.exit(1)
+                return
 
             if not empty_folders:
                 logger.info("✅ Нет пустых папок. Процесс завершён.")
@@ -556,19 +608,24 @@ class ContentGenerator:
             topic, content_data = self.generate_topic(tracker)
             if not topic:
                 logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
-                sys.exit(1)
+                return
 
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
-                if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get('CONTENT.tragic_text.enabled', True):
-                    text_initial = self.request_openai(self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
+                if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
+                        'CONTENT.tragic_text.enabled', True):
+                    text_initial = self.request_openai(
+                        self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
                 else:
-                    text_initial = self.request_openai(self.config.get('CONTENT.text.prompt_template').format(topic=topic))
+                    text_initial = self.request_openai(
+                        self.config.get('CONTENT.text.prompt_template').format(topic=topic))
                 critique = self.critique_content(text_initial, topic)
                 self.save_to_generated_content("critique", {"critique": critique})
             else:
                 text_initial = ""
                 logger.info("🔕 Генерация текста отключена.")
 
+            sarcastic_comment = None
+            sarcastic_poll = None
             if text_initial:
                 sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
                 sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
@@ -581,7 +638,11 @@ class ContentGenerator:
                 "content": final_text,
                 "sarcasm": {"comment": sarcastic_comment, "poll": sarcastic_poll}
             }
-            save_to_b2(target_folder, content_dict)
+
+            # Сохраняем в B2 однократно
+            if not save_to_b2(target_folder, content_dict):
+                logger.error(f"❌ Не удалось сохранить контент в B2: {target_folder}")
+                return
 
             script_text, first_frame_description = generate_script_and_frame(content_dict["topic"])
             if script_text and first_frame_description:
@@ -593,17 +654,27 @@ class ContentGenerator:
             else:
                 logger.warning("⚠️ Не удалось сгенерировать сценарий или описание, продолжаем без них")
 
+            # Читаем generation_id
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
                 generation_id = config_gen_content["generation_id"]
+
+            # Логируем конфиги однократно
             logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
             logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
+
+            # Запускаем generate_media.py
             run_generate_media(generation_id)
-            self.logger.info("✅ Генерация контента завершена.")
+            logger.info("✅ Генерация контента завершена.")
+
         except Exception as e:
             handle_error("Run Error", "Ошибка в основном процессе генерации", e)
             logger.error("❌ Процесс генерации контента прерван из-за критической ошибки.")
-            sys.exit(1)
+        finally:
+            # Удаляем лок-файл
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+                logger.info("🔓 Лок-файл удалён.")
 
 if __name__ == "__main__":
     generator = ContentGenerator()
