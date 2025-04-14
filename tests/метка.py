@@ -8,9 +8,18 @@ B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
 
-# Пути
-LOCAL_FILE_PATH = r"C:\Users\boyar\777\config_midjourney.json"
-REMOTE_FILE_PATH = "config/config_midjourney.json"
+# Список файлов и нужные значения
+CONFIG_FILES = {
+    "config/config_gen.json": {"generation_id": None},
+    "config/config_midjourney.json": {
+        "midjourney_task": None,
+        "midjourney_results": {},
+        "generation": False
+    },
+    "config/config_public.json": {"processing_lock": False}
+}
+
+LOCAL_DIR = r"C:\Users\boyar\777"  # ты уж сам проверь, что папка существует
 
 # Проверка переменных окружения
 if not all([B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME, B2_ENDPOINT]):
@@ -25,24 +34,43 @@ s3 = boto3.client(
     aws_secret_access_key=B2_SECRET_KEY
 )
 
-def reset_midjourney_task():
+def process_config(file_key, desired_values):
+    local_path = os.path.join(LOCAL_DIR, os.path.basename(file_key))
+
     try:
-        # Шаг 1: Скачивание файла
-        print(f"⬇️ Скачиваем {REMOTE_FILE_PATH} → {LOCAL_FILE_PATH}")
-        s3.download_file(B2_BUCKET_NAME, REMOTE_FILE_PATH, LOCAL_FILE_PATH)
+        print(f"\n⬇️ Скачиваем {file_key} → {local_path}")
+        s3.download_file(B2_BUCKET_NAME, file_key, local_path)
 
-        # Шаг 2: Затираем содержимое
-        with open(LOCAL_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump({"midjourney_task": None}, f, ensure_ascii=False, indent=2)
-        print("🧹 Содержимое очищено и перезаписано.")
+        with open(local_path, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                print("⚠️ Файл пустой или битый. Создаём новый.")
+                data = {}
 
-        # Шаг 3: Загрузка обратно
-        print(f"🔼 Загружаем обратно в {REMOTE_FILE_PATH}")
-        s3.upload_file(LOCAL_FILE_PATH, B2_BUCKET_NAME, REMOTE_FILE_PATH)
-        print("✅ Готово.")
+        updated = False
+        for k, v in desired_values.items():
+            if data.get(k) != v:
+                data[k] = v
+                updated = True
+
+        if updated:
+            with open(local_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print("📝 Обновлены нужные поля.")
+        else:
+            print("✅ Всё уже настроено правильно.")
+
+        print(f"🔼 Загружаем обратно в {file_key}")
+        s3.upload_file(local_path, B2_BUCKET_NAME, file_key)
+        print("☑️ Готово.")
+
+        print(f"\n📄 Финальный вид {file_key}:")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
 
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка обработки {file_key}: {e}")
 
 if __name__ == "__main__":
-    reset_midjourney_task()
+    for config_path, values in CONFIG_FILES.items():
+        process_config(config_path, values)
