@@ -49,16 +49,12 @@ jobs:
         ls -la scripts || echo "Каталог scripts не найден"
 
     # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-    - name: Запуск b2_storage_manager.py 
+    - name: Запуск b2_storage_manager.py
       run: |
-          echo "--- GITHUB ACTION: Setting PYTHONPATH ---"
-          export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
-          echo "--- GITHUB ACTION: PYTHONPATH Set. Executing Python Script (Direct Output) ---"
-          # Запускаем Python БЕЗ перенаправления в файл
-          python -u scripts/b2_storage_manager.py --zero-delay || {
-          echo "--- GITHUB ACTION: Python script failed! ---"
-          exit 1 }
-          echo "--- GITHUB ACTION: Python script finished (Direct Output). ---"
+        echo "--- GITHUB ACTION: Preparing to run Python ---"
+        # Запускаем Python НАПРЯМУЮ, без export и без || {...}
+        python -u scripts/b2_storage_manager.py --zero-delay
+        echo "--- GITHUB ACTION: Python finished (or failed silently) ---"
     
 
     - name: Загрузка логов как артефакта
