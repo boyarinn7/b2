@@ -50,7 +50,8 @@ jobs:
 
     # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
     - name: Запуск b2_storage_manager.py # Имя шага то же
-      run: echo "--- CHECK: Step Runner is Alive ---" # <-- ВСЯ СЕКЦИЯ run: ЗАМЕНЕНА НА ЭТОТ ECHO
+      run: |
+        echo "--- CHECK: Step Runner is Alive ---"
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     - name: Загрузка логов как артефакта
