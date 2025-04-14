@@ -1,3 +1,4 @@
+print("--- SCRIPT START ---", flush=True)
 import os
 import json
 import logging
@@ -20,11 +21,15 @@ try:
 except ImportError:
     print("Ошибка: Необходима библиотека boto3. Установите ее: pip install boto3")
     sys.exit(1)
-
+print("--- IMPORTS DONE ---", flush=True)
 # === Инициализация конфигурации и логирования ===
 config = ConfigManager()
-logger = get_logger("b2_storage_manager")
+print("--- CONFIG MANAGER INIT DONE ---", flush=True)
 
+logger = get_logger("b2_storage_manager")
+print("--- LOGGER INIT DONE ---", flush=True)
+
+logger.info("Logger is now active.") # Проверим, работает ли logger здесь
 # === Константы ===
 B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', 'boyarinnbotbucket')
 CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"  # Фиксированный локальный путь
