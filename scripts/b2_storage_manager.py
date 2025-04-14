@@ -484,7 +484,22 @@ def main():
                 # 3. Проверяем папку 666/
                 logger.info("Проверка состояния папки 666/...")
                 # Убедитесь, что is_folder_empty импортирована и работает
-                if is_folder_empty(b2_client, bucket_name, FOLDERS[-1]):  # FOLDERS[-1] это '666/'
+                # ... после process_folders ...
+                logger.info("Проверка наличия ГОТОВЫХ ГРУПП в папке 666/...")
+                # Получаем список файлов в 666/
+                files_in_666 = list_files_in_folder(b2_client, bucket_name, FOLDERS[-1])  # FOLDERS[-1] это '666/'
+                # Получаем список ID готовых групп
+                ready_groups_in_666 = get_ready_groups(files_in_666)
+
+                # НОВОЕ УСЛОВИЕ: Генерируем новый контент, ЕСЛИ НЕТ готовых групп
+                if not ready_groups_in_666:  # <<<--- ЗАМЕНА УСЛОВИЯ
+                    logger.info(
+                        f"⚠️ В папке 666/ нет готовых групп ({len(files_in_666)} файлов всего). Запуск генерации нового контента...")
+                    # ... код генерации ID и вызова generate_content ... (остается как есть)
+                else:
+                    logger.info(
+                        f"В папке 666/ есть готовые группы ({len(ready_groups_in_666)} шт.). Генерация нового контента не требуется. Завершение цикла.")
+                    break  # Есть готовые группы, которые должны быть перемещены или обработаны
                     # ВНУТРИ if is_folder_empty(b2_client, bucket_name, FOLDERS[-1]):
                     logger.info("⚠️ Папка 666/ пуста. Запуск генерации нового контента...")
                     try:
@@ -555,8 +570,8 @@ def main():
                     except Exception as gen_err:
                         logger.error(f"Ошибка при генерации нового ID или вызове generate_content: {gen_err}")
                         break  # Выходим при ошибке
-                else:
-                    logger.info("Папка 666/ не пуста и нет активных задач Midjourney. Завершение цикла.")
+                    else:
+                        logger.info("Папка 666/ не пуста и нет активных задач Midjourney. Завершение цикла.")
                     break  # Папка не пуста, новых задач нет - выходим из while
 
             # Конец проверки if/elif/else для состояний
