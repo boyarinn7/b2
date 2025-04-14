@@ -487,7 +487,7 @@ def main():
                 # ... после process_folders ...
                 logger.info("Проверка наличия ГОТОВЫХ ГРУПП в папке 666/...")
                 # Получаем список файлов в 666/
-                files_in_666 = list_files_in_folder(b2_client, bucket_name, FOLDERS[-1])  # FOLDERS[-1] это '666/'
+                files_in_666 = list_files_in_folder(b2_client, FOLDERS[-1])  # FOLDERS[-1] это '666/'
                 # Получаем список ID готовых групп
                 ready_groups_in_666 = get_ready_groups(files_in_666)
 
