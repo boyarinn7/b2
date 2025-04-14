@@ -851,6 +851,78 @@ class ContentGenerator:
 
                 # Далее должен идти Шаг 1.4 - установка флага generation:true
                 # --- Конец Шага 1.3.5 ---
+            # --- Начало Шага 1.4: Установка флага generation: true ---
+            try:
+                logger.info(f"Обновление config_midjourney.json для ID: {generation_id}")
+                # --- Получение B2 клиента ---
+                # Убедитесь, что функция get_b2_client() импортирована/доступна
+                s3_client = get_b2_client()
+                if not s3_client:
+                    raise ConnectionError("Не удалось создать клиент B2 для обновления config_midjourney")
+
+                # --- Константы и переменные ---
+                config_mj_remote_path = "config/config_midjourney.json"
+                # Используем ID в имени временного файла для потокобезопасности, если скрипт вдруг будет запускаться параллельно
+                config_mj_local_path = f"config_midjourney_{generation_id}_temp.json"
+                # Убедитесь, что B2_BUCKET_NAME определен (из os.getenv или конфига)
+                bucket_name = os.getenv("B2_BUCKET_NAME")  # Пример
+
+                # --- Загрузка текущего config_midjourney.json из B2 ---
+                config_mj = {}  # Словарь по умолчанию
+                try:
+                    # Убедитесь, что ensure_directory_exists доступна/импортирована
+                    ensure_directory_exists(os.path.dirname(config_mj_local_path))
+                    logger.debug(f"Загрузка {config_mj_remote_path} из B2 в {config_mj_local_path}")
+                    s3_client.download_file(bucket_name, config_mj_remote_path, config_mj_local_path)
+                    with open(config_mj_local_path, 'r', encoding='utf-8') as f:
+                        if os.path.getsize(config_mj_local_path) > 0:  # Проверка на пустоту файла
+                            config_mj = json.load(f)
+                        else:
+                            logger.warning(f"Загруженный файл {config_mj_local_path} пуст.")
+                    logger.info(f"Загружен {config_mj_remote_path} из B2.")
+                except s3_client.exceptions.NoSuchKey:
+                    logger.warning(f"{config_mj_remote_path} не найден в B2. Будет создан новый.")
+                    config_mj = {}  # Создать пустой словарь, если файл не найден
+                except json.JSONDecodeError as json_err:
+                    logger.error(
+                        f"Ошибка парсинга JSON из {config_mj_local_path}: {json_err}. Используем пустой конфиг.")
+                    config_mj = {}
+                except Exception as download_err:
+                    logger.error(f"Ошибка загрузки {config_mj_remote_path}: {download_err}")
+                    # Считаем эту ошибку критичной, так как не можем обновить статус
+                    raise Exception(
+                        f"Критическая ошибка: не удалось загрузить {config_mj_remote_path}") from download_err
+
+                # --- Обновление данных ---
+                config_mj['generation'] = True
+                config_mj['midjourney_task'] = None  # Очистка ID задачи
+                config_mj['midjourney_results'] = {}  # Очистка результатов
+                logger.info("Данные для config_midjourney.json подготовлены: generation=True, task/results очищены.")
+
+                # --- Сохранение локально ---
+                with open(config_mj_local_path, 'w', encoding='utf-8') as f:
+                    json.dump(config_mj, f, ensure_ascii=False, indent=4)
+                logger.debug(f"Обновленный config_mj сохранен локально в {config_mj_local_path}")
+
+                # --- Загрузка обратно в B2 ---
+                s3_client.upload_file(config_mj_local_path, bucket_name, config_mj_remote_path)
+                logger.info(f"✅ Обновленный {config_mj_remote_path} (generation=True) загружен в B2.")
+
+            except Exception as e:
+                # Используйте ваш стандартный обработчик ошибок
+                # handle_error("Set Generation Flag Error", f"Не удалось обновить config_midjourney.json: {str(e)}", e)
+                logger.error(f"❌ Не удалось обновить config_midjourney.json: {str(e)}")
+                # Эта ошибка критична, т.к. без флага не запустится следующий этап
+                raise Exception("Критическая ошибка: не удалось установить флаг generation: true") from e
+            finally:
+                # --- Удаление временного файла ---
+                if os.path.exists(config_mj_local_path):
+                    try:
+                        os.remove(config_mj_local_path)
+                        logger.debug(f"Временный файл {config_mj_local_path} удален.")
+                    except OSError as remove_err:
+                        logger.warning(f"Не удалось удалить временный файл {config_mj_local_path}: {remove_err}")
+            # --- Конец Шага 1.4 ---
 
 
             logger.info("✅ Генерация контента завершена.")
