@@ -802,11 +802,11 @@ class ContentGenerator:
             # --- Конец ИСПРАВЛЕННОГО Шага 1.2 ---
             # --- Начало Шага 1.3.3: Формирование полного словаря ---
             logger.info("Формирование итогового словаря complete_content_dict...")
-
+            # Определение final_text ПЕРЕД его использованием в словаре
+            final_text = text_initial.strip() if text_initial else ""
             # Убедимся, что все нужные переменные существуют к этому моменту:
             # topic, final_text, sarcastic_comment, sarcastic_poll, script_text, first_frame_description
             # Переменная final_text определяется ниже, перенесем ее определение сюда:
-            final_text = text_initial.strip() if text_initial else ""
 
             complete_content_dict = {
                 "topic": topic if 'topic' in locals() else "Тема не сгенерирована",
@@ -852,12 +852,6 @@ class ContentGenerator:
                 # Далее должен идти Шаг 1.4 - установка флага generation:true
                 # --- Конец Шага 1.3.5 ---
 
-            try:
-                run_generate_media(generation_id)
-                logger.info("✅ Медиа успешно сгенерированы")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Ошибка запуска generate_media.py: {str(e)}")
-                logger.warning("Продолжаем без медиа")
 
             logger.info("✅ Генерация контента завершена.")
 
