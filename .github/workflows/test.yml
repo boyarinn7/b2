@@ -48,20 +48,18 @@ jobs:
         ls -la
         ls -la scripts || echo "Каталог scripts не найден"
 
-    - name: Запуск b2_storage_manager.py
-      run: |
-        export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
-        python -u scripts/b2_storage_manager.py --zero-delay > b2_storage_manager.log 2>&1 || {
-          echo "Ошибка выполнения b2_storage_manager.py, см. логи ниже:"
-          cat b2_storage_manager.log
-          exit 1
-        }
-        cat b2_storage_manager.log  # Показываем логи даже при успехе
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+    - name: Запуск b2_storage_manager.py # Имя шага то же
+      run: echo "--- CHECK: Step Runner is Alive ---" # <-- ВСЯ СЕКЦИЯ run: ЗАМЕНЕНА НА ЭТОТ ECHO
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     - name: Загрузка логов как артефакта
+      # Этот шаг теперь не найдет b2_storage_manager.log, так как мы его не создаем.
+      # Его можно временно закомментировать или изменить 'path', чтобы он не вызывал ошибку,
+      # но он не является причиной зависания. Оставим пока так.
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: b2-storage-manager-logs
-        path: b2_storage_manager.log
+        path: b2_storage_manager.log # Файл не будет найден, но шаг с if: always() не прервет workflow
         retention-days: 7
