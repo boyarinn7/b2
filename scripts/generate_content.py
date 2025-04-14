@@ -800,25 +800,58 @@ class ContentGenerator:
                 raise Exception("Критическая ошибка: неожиданная ошибка при генерации сценария.") from general_err
 
             # --- Конец ИСПРАВЛЕННОГО Шага 1.2 ---
-            final_text = text_initial.strip()
-            target_folder = empty_folders[0]
-            content_dict = {
-                "topic": topic,
+            # --- Начало Шага 1.3.3: Формирование полного словаря ---
+            logger.info("Формирование итогового словаря complete_content_dict...")
+
+            # Убедимся, что все нужные переменные существуют к этому моменту:
+            # topic, final_text, sarcastic_comment, sarcastic_poll, script_text, first_frame_description
+            # Переменная final_text определяется ниже, перенесем ее определение сюда:
+            final_text = text_initial.strip() if text_initial else ""
+
+            complete_content_dict = {
+                "topic": topic if 'topic' in locals() else "Тема не сгенерирована",
                 "content": final_text,
-                "sarcasm": {"comment": sarcastic_comment, "poll": sarcastic_poll}
+                "sarcasm": {
+                    "comment": sarcastic_comment if 'sarcastic_comment' in locals() else None,
+                    "poll": sarcastic_poll if 'sarcastic_poll' in locals() and isinstance(sarcastic_poll, dict) else {}
+                },
+                "script": script_text if 'script_text' in locals() else None,
+                "first_frame_description": first_frame_description if 'first_frame_description' in locals() else None
             }
+            logger.debug(
+                f"Сформирован complete_content_dict: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
+            # --- Конец Шага 1.3.3 ---
+            # --- Перенесенное определение final_text ---
+            # Строку 'final_text = text_initial.strip()' ниже по коду нужно будет удалить или закомментировать
+            #final_text = text_initial.strip()
 
-            if not save_to_b2(target_folder, content_dict):
-                logger.error(f"❌ Не удалось сохранить контент в B2: {target_folder}")
-                return
+            # --- Начало Шага 1.3.5: Исправленный вызов save_to_b2 ---
+            logger.info(f"Попытка сохранения {generation_id}.json в папку 666/...")
+            # Убедитесь, что функция save_to_b2 импортирована/доступна
+            # и что она использует 'generation_id' для имени файла.
+            # Передаем папку "666/" и полный словарь.
+            try:
+                # Предполагаем, что save_to_b2 возвращает True/False или кидает исключение
+                # Если ваша функция save_to_b2 требует ID явно, передайте его:
+                # success = save_to_b2("666/", complete_content_dict, generation_id)
+                success = save_to_b2("666/", complete_content_dict)  # Если ID используется неявно
 
-            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                config_gen_content = json.load(gen_file)
-                generation_id = config_gen_content["generation_id"]
+                if not success:
+                    # Если save_to_b2 возвращает False при ошибке
+                    logger.error(f"❌ Функция save_to_b2 вернула ошибку при сохранении в 666/{generation_id}.json")
+                    # Прерываем выполнение, так как сохранение критично
+                    raise Exception(f"Не удалось сохранить контент в B2: 666/{generation_id}.json")
+                else:
+                    logger.info(f"✅ Контент успешно сохранен в B2: 666/{generation_id}.json")
 
-            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
-            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
+            except Exception as save_err:
+                # Ловим ошибки, которые может выбросить save_to_b2
+                logger.error(f"❌ Исключение при вызове save_to_b2: {save_err}")
+                raise Exception(f"Не удалось сохранить контент в B2: {save_err}") from save_err
 
+                # Далее должен идти Шаг 1.4 - установка флага generation:true
+                # --- Конец Шага 1.3.5 ---
+                
             try:
                 run_generate_media(generation_id)
                 logger.info("✅ Медиа успешно сгенерированы")
