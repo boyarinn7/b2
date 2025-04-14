@@ -722,6 +722,83 @@ class ContentGenerator:
                 sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
                 self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment, "poll": sarcastic_poll})
 
+            # --- Начало Шага 1.2 (JSON Mode): Генерация и парсинг JSON для сценария/кадра ---
+            
+            script_text = None
+            first_frame_description = None
+            try:
+                logger.info("Запрос к OpenAI (JSON Mode) для генерации сценария и описания кадра...")
+                # --- Получение темы и промпта (как в предыдущей версии Шага 1.2) ---
+                if not topic:  # Убедитесь, что переменная topic доступна
+                    raise ValueError("Переменная 'topic' не определена перед генерацией сценария.")
+                prompt_combined_config_key = 'PROMPTS.user_prompt_combined'
+                prompt_template = self.config.get(prompt_combined_config_key)
+                if not prompt_template:
+                    raise ValueError(f"Промпт не найден в конфигурации: {prompt_combined_config_key}")
+                # ВАЖНО: Промпт в конфиге все равно должен описывать, ЧТО должно быть в JSON,
+                # но можно убрать из него фразу про "Output only JSON..." если используем JSON mode.
+                # Однако, оставить ее не вредно для ясности.
+                prompt_combined = prompt_template.format(topic=topic)
+
+                # --- Получение параметров модели (как в предыдущей версии Шага 1.2) ---
+                openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
+                openai_max_tokens = self.config.get("OPENAI_SETTINGS.max_tokens_script", 1000)
+                openai_temperature = self.config.get("OPENAI_SETTINGS.temperature_script", 0.7)
+                logger.info(
+                    f"Параметры для OpenAI (script/frame): model={openai_model}, max_tokens={openai_max_tokens}, temp={openai_temperature}, response_format=json_object")
+
+                # --- Вызов OpenAI API с JSON Mode ---
+                # Убедитесь, что 'openai' импортирован и настроен
+                response = openai.ChatCompletion.create(
+                    model=openai_model,
+                    messages=[{"role": "user", "content": prompt_combined}],
+                    max_tokens=openai_max_tokens,
+                    temperature=openai_temperature,
+                    response_format={"type": "json_object"}  # <--- ВКЛЮЧАЕМ JSON MODE
+                )
+
+                response_content = response["choices"][0]["message"]["content"]  # .strip() не нужен для JSON
+                logger.debug(f"Raw OpenAI JSON response for script/frame: {response_content[:500]}")
+
+                # --- Парсинг JSON (упрощенный, но с try-except) ---
+                # Убедитесь, что 'json' импортирован
+                try:
+                    script_data = json.loads(response_content)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Ошибка парсинга JSON ответа OpenAI (даже в JSON Mode!): {e}")
+                    # Пробрасываем ошибку, так как не получили ожидаемый JSON
+                    raise ValueError("API OpenAI вернул невалидный JSON, несмотря на JSON Mode.") from e
+
+                # --- Извлечение данных и проверка (как в предыдущей версии Шага 1.2) ---
+                if script_data:
+                    script_text = script_data.get("script")
+                    first_frame_description = script_data.get("first_frame_description")
+
+                    if not script_text or not first_frame_description:
+                        logger.error(
+                            f"Ключи 'script' или 'first_frame_description' отсутствуют/пусты в JSON. Получено: {script_data}")
+                        raise ValueError("Ключи 'script' или 'first_frame_description' отсутствуют или пусты в JSON.")
+                    else:
+                        logger.info("✅ Сценарий и описание кадра успешно извлечены (JSON Mode).")
+                else:
+                    # Эта ветка маловероятна при успешном json.loads()
+                    raise ValueError("Не удалось получить распарсенные данные script_data после json.loads().")
+
+            # Обработка ВСЕХ ИСКЛЮЧЕНИЙ из блока try происходит здесь
+            except (json.JSONDecodeError, ValueError) as parse_err:
+                logger.error(f"❌ Ошибка парсинга или валидации JSON сценария/описания: {parse_err}.")
+                raise Exception(
+                    "Критическая ошибка: не удалось получить валидный сценарий/описание от OpenAI.") from parse_err
+            except openai.error.OpenAIError as api_err:
+                logger.error(f"❌ Ошибка OpenAI API при генерации сценария/описания: {api_err}")
+                raise Exception("Критическая ошибка: ошибка API OpenAI при генерации сценария.") from api_err
+            except Exception as general_err:
+                logger.error(f"❌ Неожиданная ошибка при генерации сценария/описания: {general_err}")
+                raise Exception("Критическая ошибка: неожиданная ошибка при генерации сценария.") from general_err
+
+            # Переменные script_text и first_frame_description содержат данные или будет выброшено исключение
+            # --- Конец Шага 1.2 (JSON Mode) ---
+
             final_text = text_initial.strip()
             target_folder = empty_folders[0]
             content_dict = {
@@ -733,16 +810,6 @@ class ContentGenerator:
             if not save_to_b2(target_folder, content_dict):
                 logger.error(f"❌ Не удалось сохранить контент в B2: {target_folder}")
                 return
-
-            script_text, first_frame_description = generate_script_and_frame(content_dict["topic"])
-            if script_text and first_frame_description:
-                content_dict["script"] = script_text
-                content_dict["first_frame_description"] = first_frame_description
-                with open(self.content_output_path, 'w', encoding='utf-8') as f:
-                    json.dump(content_dict, f, ensure_ascii=False, indent=4)
-                logger.info("✅ Сценарий и описание кадра сохранены в %s", self.content_output_path)
-            else:
-                logger.warning("⚠️ Не удалось сгенерировать сценарий или описание, продолжаем без них")
 
             with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
                 config_gen_content = json.load(gen_file)
