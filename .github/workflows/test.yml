@@ -51,11 +51,13 @@ jobs:
     # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
     - name: Запуск b2_storage_manager.py
       run: |
-        echo "--- GITHUB ACTION: Preparing to run Python ---"
-        # Запускаем Python НАПРЯМУЮ, без export и без || {...}
+        echo "--- GITHUB ACTION: Setting PYTHONPATH ---"
+        # Возвращаем export PYTHONPATH
+        export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
+        echo "--- GITHUB ACTION: PYTHONPATH Set. Executing Python Script (Direct Output) ---"
+        # Запускаем Python НАПРЯМУЮ, без || {...} и без > logfile
         python -u scripts/b2_storage_manager.py --zero-delay
-        echo "--- GITHUB ACTION: Python finished (or failed silently) ---"
-    
+        echo "--- GITHUB ACTION: Python script finished (or failed). ---"
 
     - name: Загрузка логов как артефакта
       # Этот шаг теперь не найдет b2_storage_manager.log, так как мы его не создаем.
