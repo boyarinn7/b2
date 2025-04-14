@@ -292,6 +292,6 @@ def main():
                     logger.info("🔓 Блокировка config_public снята.")
             except Exception as e:
                 handle_error("Unlock Error", str(e), e)
-                
+
 if __name__ == "__main__":
     main()

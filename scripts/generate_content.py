@@ -10,6 +10,7 @@ import subprocess
 import boto3
 import io
 import random
+import argparse
 
 from modules.config_manager import ConfigManager
 from modules.logger import get_logger
@@ -25,6 +26,17 @@ B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
 FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
 CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"  # Фиксированный локальный путь
+
+# --- Функция генерации ID ---
+def generate_file_id():
+    """Создает уникальный ID генерации в формате ГГГГММДД-ЧЧММ."""
+    # Используем UTC для согласованности
+    now = datetime.utcnow()
+    # Формат ГГГГММДД-ЧЧММ
+    date_part = now.strftime("%Y%m%d")
+    time_part = now.strftime("%H%M")
+    # Возвращаем ID без расширения .json
+    return f"{date_part}-{time_part}"
 
 def run_generate_media(generation_id):
     try:
@@ -558,6 +570,91 @@ class ContentGenerator:
         return tracker
 
     def run(self):
+
+        # --- Начало Шага 1.1.3: Обработка аргумента и определение generation_id ---
+
+        # Убедитесь, что logger уже инициализирован к этому моменту, если вы используете его здесь
+        # logger = get_logger("generate_content") # Пример
+
+        # Импорты os, json, argparse, datetime должны быть в начале файла
+        # Функция generate_file_id() должна быть определена выше
+        # Функция ensure_directory_exists (или аналог) должна быть доступна/импортирована
+        # from modules.utils import ensure_directory_exists # Пример
+
+        parser = argparse.ArgumentParser(description='Generate content for a specific ID.')
+        parser.add_argument('--generation_id', type=str, help='The generation ID for the content file.')
+        args = parser.parse_args()
+        generation_id_arg = args.generation_id
+        logger.info(f"Аргумент --generation_id: {generation_id_arg}")
+
+        generation_id = None
+        config_gen_path = os.path.join("config", "config_gen.json")
+
+        # Убедимся, что папка config существует
+        try:
+            ensure_directory_exists(os.path.dirname(config_gen_path))
+        except NameError:
+            logger.warning("Функция ensure_directory_exists не найдена, пытаемся создать папку стандартным способом.")
+            os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
+        except Exception as dir_err:
+            logger.error(f"Не удалось создать директорию для {config_gen_path}: {dir_err}")
+            # Возможно, стоит прервать выполнение
+            # import sys
+            # sys.exit(1)
+
+        if generation_id_arg:
+            generation_id = generation_id_arg
+            logger.info(f"Используем generation_id из аргумента: {generation_id}")
+        else:
+            logger.info(f"generation_id не передан, проверяем {config_gen_path}...")
+            try:
+                if os.path.exists(config_gen_path):
+                    # Проверяем, не пустой ли файл, перед чтением JSON
+                    if os.path.getsize(config_gen_path) > 0:
+                        with open(config_gen_path, 'r', encoding='utf-8') as f:
+                            config_gen_data = json.load(f)
+                            generation_id = config_gen_data.get("generation_id")
+                            if generation_id:
+                                logger.info(f"Используем generation_id из {config_gen_path}: {generation_id}")
+                            else:
+                                logger.info(f"Ключ 'generation_id' не найден в {config_gen_path}.")
+                    else:
+                        logger.info(f"{config_gen_path} пустой.")
+                else:
+                    logger.info(f"{config_gen_path} не найден.")
+
+            except (json.JSONDecodeError, FileNotFoundError, Exception) as e:
+                logger.warning(f"Ошибка чтения {config_gen_path}: {e}. Будет сгенерирован новый ID.")
+                generation_id = None  # Сбрасываем на случай ошибки чтения
+
+            if not generation_id:
+                generation_id = generate_file_id()  # Используем функцию из Шага 1.1.2
+                logger.info(f"Сгенерирован новый generation_id: {generation_id}")
+
+        # Сохраняем актуальный generation_id в config_gen.json
+        try:
+            with open(config_gen_path, 'w', encoding='utf-8') as f:
+                json.dump({"generation_id": generation_id}, f, ensure_ascii=False, indent=4)
+            logger.info(f"Актуальный generation_id '{generation_id}' сохранен в {config_gen_path}")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить generation_id в {config_gen_path}: {e}")
+            # Это может быть критично, рассмотрите возможность прерывания
+            # import sys
+            # sys.exit(1)
+
+        logger.info(f"--- ID для текущего запуска определен: {generation_id} ---")
+
+        # --- Конец Шага 1.1.3 ---
+
+        # --- Далее должен идти ВАШ СУЩЕСТВУЮЩИЙ КОД из блока if __name__ == "__main__": ---
+        # --- Например, создание объекта generator = ContentGenerator() и вызов его методов ---
+        # --- Убедитесь, что он использует переменную 'generation_id' ---
+
+        # try:
+        #     # Ваш существующий код...
+        # except Exception as main_err:
+        #     # Ваша обработка ошибок...
+
         """Основной процесс генерации контента."""
         lock_file = "config/processing.lock"
 
