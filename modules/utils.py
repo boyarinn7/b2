@@ -4,12 +4,25 @@ import json
 import base64
 import inspect
 
+from datetime import datetime
 from modules.error_handler import handle_error
 from modules.logger import get_logger
 
 logger = get_logger("utils")
 
 CONFIG_PATH = "config/config.json"
+
+# --- ИЗМЕНЕННАЯ Функция генерации ID ---
+def generate_file_id():
+    """Создает уникальный ID генерации в формате ГГГГММДД-ЧЧММ (БЕЗ .json)."""
+    # Используем UTC для согласованности
+    now = datetime.utcnow()
+    # Формат ГГГГММДД-ЧЧММ
+    date_part = now.strftime("%Y%m%d")
+    time_part = now.strftime("%H%M")
+    # Возвращаем ID БЕЗ расширения .json
+    return f"{date_part}-{time_part}"
+
 
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:

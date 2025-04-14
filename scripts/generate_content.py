@@ -27,16 +27,6 @@ FAILSAFE_PATH = "config/FailSafeVault.json"
 TRACKER_PATH = "data/topics_tracker.json"
 CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"  # Фиксированный локальный путь
 
-# --- ИЗМЕНЕННАЯ Функция генерации ID ---
-def generate_file_id():
-    """Создает уникальный ID генерации в формате ГГГГММДД-ЧЧММ (БЕЗ .json)."""
-    # Используем UTC для согласованности
-    now = datetime.utcnow()
-    # Формат ГГГГММДД-ЧЧММ
-    date_part = now.strftime("%Y%m%d")
-    time_part = now.strftime("%H%M")
-    # Возвращаем ID БЕЗ расширения .json
-    return f"{date_part}-{time_part}"
 
 def run_generate_media(generation_id):
     try:
