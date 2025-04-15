@@ -52,7 +52,6 @@ jobs:
     - name: Запуск b2_storage_manager.py
       run: |
         echo "--- GITHUB ACTION: Setting PYTHONPATH ---"
-        # Возвращаем export PYTHONPATH
         export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
         echo "--- GITHUB ACTION: PYTHONPATH Set. Executing Python Script (Direct Output) ---"
         # Запускаем Python НАПРЯМУЮ, без || {...} и без > logfile
