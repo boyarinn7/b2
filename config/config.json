@@ -13,7 +13,7 @@
         },
         "runwayml": {
             "endpoint": null,
-            "model_name": "gen4"
+            "model_name": "gen4_turbo"
         }
     },
     "OPENAI_SETTINGS": {

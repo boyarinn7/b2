@@ -23,10 +23,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("runway_test")
 
 # --- Константы и Настройки по Умолчанию ---
-DEFAULT_MODEL_NAME = "gen-2" # Оставляем gen-2 как дефолт, но пользователь передает gen3a_turbo
+DEFAULT_MODEL_NAME = "gen4_turbo" # Оставляем эту модель для теста
 DEFAULT_DURATION = 5
-# --- ИЗМЕНЕНО: Формат Ratio ---
-DEFAULT_RATIO = "1280:768" # Используем формат, требуемый API
+# --- ИЗМЕНЕНО: Формат Ratio для Gen4 ---
+DEFAULT_RATIO = "1280:720" # Используем формат, требуемый API для gen4_turbo
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 DEFAULT_POLLING_TIMEOUT = 300
 DEFAULT_POLLING_INTERVAL = 15
@@ -42,7 +42,7 @@ def test_runway_generation(
     image_url: str,
     prompt_text: str,
     duration: int,
-    ratio: str, # Теперь ожидаем "ШИРИНА:ВЫСОТА"
+    ratio: str, # Теперь ожидаем "ШИРИНА:ВЫСОТА" из списка для модели
     poll_timeout: int,
     poll_interval: int
 ):
@@ -50,19 +50,19 @@ def test_runway_generation(
     Тестирует генерацию видео через Runway API, используя URL изображения.
     """
     if not RUNWAY_SDK_AVAILABLE:
-        logger.error("❌ SDK Runway недоступен (ошибка при импорте). Тест не может быть выполнен.")
+        logger.error("❌ SDK Runway недоступен. Тест не может быть выполнен.")
         return
     if not api_key:
-        logger.error("❌ RUNWAY_API_KEY не найден в переменных окружения.")
+        logger.error("❌ RUNWAY_API_KEY не найден.")
         return
     if not image_url or not image_url.startswith(('http://', 'https://')):
-        logger.error(f"❌ Некорректный или отсутствующий URL изображения: {image_url}")
+        logger.error(f"❌ Некорректный URL изображения: {image_url}")
         return
-    # --- ДОБАВЛЕНО: Проверка формата ratio ---
-    if ratio not in ["1280:768", "768:1280"]:
-         logger.warning(f"Нестандартное значение ratio '{ratio}'. API может его не принять. Ожидается '1280:768' или '768:1280'.")
-    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
-
+    # Можно добавить более строгую проверку ratio, если знаем модель заранее
+    # Но пока оставим предупреждение
+    allowed_ratios_gen4 = ["1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672"]
+    if model == "gen4_turbo" and ratio not in allowed_ratios_gen4:
+         logger.warning(f"Ratio '{ratio}' может быть неверным для gen4_turbo. Допустимые: {allowed_ratios_gen4}")
 
     logger.info(f"Инициализация клиента Runway...")
     try:
@@ -87,7 +87,7 @@ def test_runway_generation(
         task_id = getattr(task, 'id', 'N/A')
         logger.info(f"✅ Задача успешно создана! ID задачи: {task_id}")
 
-        logger.info(f"⏳ Начало опроса статуса задачи {task_id} (Таймаут: {poll_timeout} сек, Интервал: {poll_interval} сек)...")
+        logger.info(f"⏳ Начало опроса статуса задачи {task_id}...")
         start_time = time.time()
         final_output_url = None
         while time.time() - start_time < poll_timeout:
@@ -100,18 +100,16 @@ def test_runway_generation(
                     logger.info("✅ Задача успешно завершена!")
                     if hasattr(task_status, 'output') and isinstance(task_status.output, list) and len(task_status.output) > 0:
                         final_output_url = task_status.output[0]
-                    else:
-                         logger.warning("Статус SUCCEEDED, но результат (output) не найден или имеет неверный формат.")
+                    else: logger.warning("Статус SUCCEEDED, но результат не найден.")
                     break
                 elif current_status == "FAILED":
                     logger.error("❌ Задача завершилась с ошибкой!")
                     error_details = getattr(task_status, 'error_message', 'Нет деталей')
                     logger.error(f"Детали ошибки: {error_details}")
                     break
-
                 time.sleep(poll_interval)
             except Exception as poll_err:
-                 logger.error(f"❌ Ошибка во время опроса (возможно, API Runway): {poll_err}", exc_info=True)
+                 logger.error(f"❌ Ошибка во время опроса: {poll_err}", exc_info=True)
                  break
         else:
             logger.warning(f"⏰ Превышен таймаут ожидания ({poll_timeout} сек) результата от Runway для задачи {task_id}.")
@@ -137,8 +135,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ratio",
         type=str,
-        default=DEFAULT_RATIO, # Теперь по умолчанию "1280:768"
-        help="Соотношение сторон видео (формат ШИРИНА:ВЫСОТА, напр. 1280:768 или 768:1280)."
+        default=DEFAULT_RATIO, # Теперь по умолчанию "1280:720"
+        help="Соотношение сторон видео (формат Ш:В, для gen4_turbo: 1280:720, 720:1280, ...)."
     )
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     parser.add_argument("--timeout", type=int, default=DEFAULT_POLLING_TIMEOUT, help="Общий таймаут опроса статуса (сек).")
@@ -157,4 +155,3 @@ if __name__ == "__main__":
         poll_timeout=args.timeout, poll_interval=args.interval
     )
     logger.info("--- Тестирование Runway завершено ---")
-
