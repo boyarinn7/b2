@@ -4,6 +4,16 @@ import json
 import base64
 import inspect
 
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+except ImportError:
+    # Обработка отсутствия boto3 (можно просто pass или print)
+    pass
+# Возможно, понадобится ensure_directory_exists из этого же файла utils?
+# from . import ensure_directory_exists # Если она определена здесь же
+# Или передавать logger как аргумент, если он не глобальный
+
 from datetime import datetime
 from modules.error_handler import handle_error
 from modules.logger import get_logger
@@ -152,3 +162,88 @@ def save_to_b2(b2_client, data, b2_path, local_path):
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения в B2 {b2_path}: {e}")
         raise
+
+def load_b2_json(client, bucket, remote_path, local_path, default_value=None):
+    """Загружает JSON из B2, возвращает default_value при ошибке или отсутствии."""
+    # default_value=None лучше, чем {}, чтобы различать пустой файл и его отсутствие
+    try:
+        logger.debug(f"Загрузка {remote_path} из B2 в {local_path}")
+        client.download_file(bucket, remote_path, local_path)
+        if os.path.getsize(local_path) > 0:
+            with open(local_path, 'r', encoding='utf-8') as f:
+                content = json.load(f)
+        else:
+            logger.warning(f"Загруженный файл {local_path} ({remote_path}) пуст, используем значение по умолчанию.")
+            content = default_value
+        logger.info(f"Успешно загружен и распарсен {remote_path} из B2.")
+        return content
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            logger.warning(f"{remote_path} не найден в B2. Используем значение по умолчанию.")
+        else:
+            logger.error(f"Ошибка B2 при загрузке {remote_path}: {e}")
+        return default_value
+    except json.JSONDecodeError as json_err:
+        logger.error(f"Ошибка парсинга JSON из {local_path} ({remote_path}): {json_err}. Используем значение по умолчанию.")
+        return default_value
+    except Exception as e:
+        logger.error(f"Критическая ошибка загрузки {remote_path}: {e}")
+        return default_value # Возвращаем дефолт, чтобы не упасть сразу
+    finally:
+        if os.path.exists(local_path):
+            try: os.remove(local_path)
+            except OSError: logger.warning(f"Не удалось удалить временный файл {local_path}")
+
+def save_b2_json(client, bucket, remote_path, local_path, data):
+    """Сохраняет словарь data как JSON в B2."""
+    try:
+        logger.debug(f"Сохранение данных в {remote_path} в B2 через {local_path}")
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        client.upload_file(local_path, bucket, remote_path)
+        logger.info(f"Данные успешно сохранены в {remote_path} в B2: {json.dumps(data, ensure_ascii=False)}") # Логируем сохраненные данные
+        return True
+    except Exception as e:
+        logger.error(f"Критическая ошибка сохранения {remote_path}: {e}")
+        return False
+    finally:
+        if os.path.exists(local_path):
+            try: os.remove(local_path)
+            except OSError: logger.warning(f"Не удалось удалить временный файл {local_path}")
+
+# --- Функции из старого кода (слегка адаптированы) ---
+# Убедитесь, что B2_BUCKET_NAME доступен глобально или передается как аргумент
+
+
+def upload_to_b2(client, bucket_name, target_folder, local_file_path, base_id):
+    """
+    Загружает локальный файл в указанную папку B2,
+    формируя имя файла на основе base_id и расширения локального файла.
+    Возвращает True при успехе, False при ошибке.
+    """
+    if not os.path.exists(local_file_path):
+        logger.error(f"Локальный файл {local_file_path} не найден для загрузки в B2.")
+        return False
+
+    # Убираем возможное расширение из base_id перед добавлением нового
+    clean_base_id = base_id.replace(".json", "")
+    # Получаем расширение из локального файла
+    file_extension = os.path.splitext(local_file_path)[1]
+    if not file_extension:
+         logger.error(f"Не удалось определить расширение для файла {local_file_path}")
+         return False
+
+    # Формируем ключ B2: например, 666/20250415-0102.png
+    s3_key = f"{target_folder.rstrip('/')}/{clean_base_id}{file_extension}"
+
+    logger.info(f"Загрузка {local_file_path} в B2 как {s3_key}...")
+    try:
+        # Используем переданный bucket_name
+        client.upload_file(local_file_path, bucket_name, s3_key)
+        logger.info(f"✅ Файл успешно загружен в B2: {s3_key}")
+        return True
+    except Exception as e:
+        # Логируем ошибку и возвращаем False
+        logger.error(f"❌ Не удалось загрузить {local_file_path} в B2 как {s3_key}: {e}")
+        return False
+# --- Конец добавления в modules/utils.py ---
