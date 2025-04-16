@@ -39,6 +39,11 @@ except ImportError as e:
 
 # --- Ваши модули ---
 try:
+    # Добавлен BASE_DIR для надежного импорта модулей
+    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if BASE_DIR not in sys.path:
+        sys.path.append(BASE_DIR)
+
     from modules.utils import (
         ensure_directory_exists, load_b2_json, save_b2_json,
         download_image, download_video, upload_to_b2
@@ -89,8 +94,32 @@ try:
     MAX_ATTEMPTS = config.get("GENERATE.max_attempts", 1)
     OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
 
-    PLACEHOLDER_WIDTH = int(config.get("IMAGE_GENERATION.output_size", "1792x1024").split('x')[0])
-    PLACEHOLDER_HEIGHT = int(config.get("IMAGE_GENERATION.output_size", "1792x1024").split('x')[1])
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+    # Получаем строку размера
+    output_size_str = config.get("IMAGE_GENERATION.output_size", "1792x1024")
+    # Определяем разделитель (может быть 'x' или '×')
+    if '×' in output_size_str:
+        delimiter = '×'
+    elif 'x' in output_size_str:
+        delimiter = 'x'
+    else:
+        # Если разделитель не найден, используем значения по умолчанию и логируем ошибку
+        logger.error(f"Не удалось определить разделитель в IMAGE_GENERATION.output_size: '{output_size_str}'. Используем 1792x1024.")
+        output_size_str = "1792x1024" # Fallback
+        delimiter = 'x'
+
+    # Разделяем строку и преобразуем в числа
+    try:
+        width_str, height_str = output_size_str.split(delimiter)
+        PLACEHOLDER_WIDTH = int(width_str.strip()) # strip() на случай пробелов
+        PLACEHOLDER_HEIGHT = int(height_str.strip())
+        logger.info(f"Размеры изображения/плейсхолдера установлены: {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}")
+    except ValueError as e:
+        logger.error(f"Ошибка преобразования размеров '{output_size_str}' в числа: {e}. Используем 1792x1024.")
+        PLACEHOLDER_WIDTH = 1792 # Fallback
+        PLACEHOLDER_HEIGHT = 1024 # Fallback
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     PLACEHOLDER_BG_COLOR = config.get("VIDEO.placeholder_bg_color", "cccccc")
     PLACEHOLDER_TEXT_COLOR = config.get("VIDEO.placeholder_text_color", "333333")
 
@@ -101,7 +130,6 @@ except Exception as config_err:
      sys.exit(1)
 
 # === Вспомогательные Функции ===
-# ... (select_best_image, resize_existing_image, clean_script_text, generate_runway_video, create_mock_video, initiate_midjourney_task - без изменений) ...
 def select_best_image(b2_client, image_urls, prompt_text):
     logger.info("Выбор лучшего изображения...")
     if not image_urls: logger.warning("Список image_urls пуст для select_best_image."); return None
@@ -168,8 +196,8 @@ def select_best_image(b2_client, image_urls, prompt_text):
 def resize_existing_image(image_path):
     if Image is None: logger.warning("Pillow не импортирован. Пропуск ресайза."); return True
     try:
-        target_size_str = config.get("IMAGE_GENERATION.output_size", "1280x768")
-        target_width, target_height = map(int, target_size_str.split('x'))
+        # Используем уже определенные PLACEHOLDER_WIDTH и PLACEHOLDER_HEIGHT
+        target_width, target_height = PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT
         logger.info(f"Изменение размера {image_path} до {target_width}x{target_height}...")
         with Image.open(image_path) as img:
             img_format = img.format or IMAGE_FORMAT.upper()
@@ -198,13 +226,14 @@ def generate_runway_video(image_path: str, script: str) -> str | None:
     try:
         model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
         duration = int(config.get('VIDEO.runway_duration', 5))
-        ratio = config.get('VIDEO.runway_ratio', '1280:768')
+        # Используем уже определенные PLACEHOLDER_WIDTH и PLACEHOLDER_HEIGHT для ratio
+        ratio = f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"
         poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300))
         poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
         logger.info(f"Параметры Runway из конфига: model='{model_name}', duration={duration}, ratio='{ratio}'")
     except Exception as cfg_err:
         logger.error(f"Ошибка чтения параметров Runway из конфига: {cfg_err}. Используем дефолты.")
-        model_name = "gen-2"; duration = 5; ratio = "1280:768"; poll_timeout = 300; poll_interval = 15
+        model_name = "gen-2"; duration = 5; ratio = "16:9"; poll_timeout = 300; poll_interval = 15 # Fallback ratio
     try:
         with open(image_path, "rb") as image_file: base64_image = base64.b64encode(image_file.read()).decode("utf-8")
         ext = os.path.splitext(image_path)[1].lower()
@@ -269,6 +298,7 @@ def create_mock_video(image_path):
          clip.fps = fps
          ffmpeg_logfile = os.path.join('logs', 'ffmpeg_log.txt')
          ensure_directory_exists('logs')
+         # Используем logger=None или 'bar' для прогресс-бара, если нужен
          clip.write_videofile(output_path, codec=codec, fps=fps, audio=False, logger=None, ffmpeg_params=["-loglevel", "error"])
          logger.info(f"✅ Mock видео успешно создано: {output_path}")
          return output_path
@@ -284,8 +314,8 @@ def initiate_midjourney_task(prompt_description, ref_id=""):
     if not MIDJOURNEY_API_KEY: logger.error("Нет MIDJOURNEY_API_KEY."); return None
     if not MIDJOURNEY_ENDPOINT: logger.error("Нет API_KEYS.midjourney.endpoint."); return None
     try:
-        output_size = config.get("IMAGE_GENERATION.output_size", "1792x1024")
-        ar = output_size.replace('x', ':') if isinstance(output_size, str) else "16:9"
+        # Используем уже определенные PLACEHOLDER_WIDTH и PLACEHOLDER_HEIGHT
+        ar = f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"
         version = config.get("IMAGE_GENERATION.midjourney_version", "6.0")
         style = config.get("IMAGE_GENERATION.midjourney_style", None)
     except Exception as cfg_err:
@@ -339,8 +369,10 @@ def main():
     config_mj = None
     script_text = ""
     first_frame_description = ""
-    content_local_path = f"{generation_id}_content_temp.json"
-    config_mj_local_path = f"config_midjourney_{generation_id}_temp.json"
+    # Используем уникальные имена для временных файлов, чтобы избежать конфликтов
+    timestamp_suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    content_local_path = f"{generation_id}_content_temp_{timestamp_suffix}.json"
+    config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
 
     try:
         b2_client = get_b2_client()
@@ -365,7 +397,7 @@ def main():
         else: config_mj.setdefault("midjourney_task", None); config_mj.setdefault("midjourney_results", {}); config_mj.setdefault("generation", False); config_mj.setdefault("status", None)
         logger.info("✅ Необходимые данные и конфиги загружены.")
 
-        temp_dir = f"temp_{generation_id}"
+        temp_dir = f"temp_{generation_id}_{timestamp_suffix}" # Уникальная временная папка
         ensure_directory_exists(temp_dir)
         local_image_path = None
         video_path = None
@@ -474,3 +506,4 @@ if __name__ == "__main__":
         try: logger.error(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА generate_media.py: {e}", exc_info=True)
         except NameError: pass
         sys.exit(1)
+

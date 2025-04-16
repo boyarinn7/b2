@@ -6,6 +6,7 @@ import inspect
 import requests # <--- Добавлен импорт
 import shutil   # <--- Добавлен импорт
 import logging  # <--- Добавлен импорт (для логгера по умолчанию в download*)
+import sys
 
 try:
     import boto3
@@ -18,12 +19,25 @@ except ImportError:
 from datetime import datetime
 # Относительные импорты для модулей в том же пакете (modules)
 try:
-    from .error_handler import handle_error
-    from .logger import get_logger
-except ImportError:
-    # Фоллбэк, если запускается не как часть пакета
+    # Добавлен BASE_DIR для надежного импорта модулей
+    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if BASE_DIR not in sys.path:
+        sys.path.append(BASE_DIR)
     from modules.error_handler import handle_error
     from modules.logger import get_logger
+except ImportError:
+    # Фоллбэк, если запускается не как часть пакета
+    # Попытка импорта из стандартного места, если относительный не сработал
+    try:
+        from modules.error_handler import handle_error
+        from modules.logger import get_logger
+    except ImportError:
+        # Если и это не сработало, используем базовый логгер
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger("utils_fallback")
+        logger.warning("Could not import custom logger or error handler.")
+        def handle_error(context, message, exception=None): # Dummy function
+             logger.error(f"Error in {context}: {message} | Details: {exception}")
 
 
 logger = get_logger("utils") # Используем ваш стандартный логгер
@@ -43,19 +57,19 @@ def generate_file_id():
 # т.к. они используют ConfigManager. Оставляем на всякий случай.
 def load_config():
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        # Используем BASE_DIR для построения пути к конфигу
+        config_full_path = os.path.join(BASE_DIR, CONFIG_PATH)
+        with open(config_full_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        logger.error(f"Файл конфигурации {CONFIG_PATH} не найден в load_config()")
+        logger.error(f"Файл конфигурации {config_full_path} не найден в load_config()")
         return {} # Возвращаем пустой словарь при ошибке
     except json.JSONDecodeError:
-         logger.error(f"Ошибка декодирования JSON в {CONFIG_PATH}")
+         logger.error(f"Ошибка декодирования JSON в {config_full_path}")
          return {}
     except Exception as e:
          logger.error(f"Неизвестная ошибка в load_config: {e}")
          return {}
-
-# config = load_config() # Убрал загрузку здесь, т.к. ConfigManager используется везде
 
 # Функции для работы с topics_tracker.json (если они еще нужны)
 def load_topics_tracker():
@@ -64,16 +78,17 @@ def load_topics_tracker():
         # Нужен экземпляр ConfigManager или передача пути
         # Временное решение: жестко задаем путь или читаем из load_config()
         temp_config = load_config() # Не лучший вариант
-        tracker_path = temp_config.get("FILE_PATHS", {}).get("topics_tracker", "data/topics_tracker.json")
-        if os.path.exists(tracker_path):
+        tracker_path_rel = temp_config.get("FILE_PATHS", {}).get("topics_tracker", "data/topics_tracker.json")
+        tracker_path_abs = os.path.join(BASE_DIR, tracker_path_rel) # Используем BASE_DIR
+        if os.path.exists(tracker_path_abs):
             try:
-                with open(tracker_path, "r", encoding="utf-8") as file:
+                with open(tracker_path_abs, "r", encoding="utf-8") as file:
                     return json.load(file)
             except json.JSONDecodeError:
-                logger.error(f"Ошибка JSON в файле трекера: {tracker_path}")
+                logger.error(f"Ошибка JSON в файле трекера: {tracker_path_abs}")
                 return {}
         else:
-             logger.warning(f"Файл трекера не найден: {tracker_path}")
+             logger.warning(f"Файл трекера не найден: {tracker_path_abs}")
              return {}
     except Exception as e:
         logger.error(f"Ошибка загрузки трекера: {e}")
@@ -84,63 +99,73 @@ def save_topics_tracker(tracker):
      # Используем ConfigManager для получения пути
     try:
         temp_config = load_config() # Не лучший вариант
-        tracker_path = temp_config.get("FILE_PATHS", {}).get("topics_tracker", "data/topics_tracker.json")
-        os.makedirs(os.path.dirname(tracker_path), exist_ok=True)
-        with open(tracker_path, "w", encoding="utf-8") as file:
+        tracker_path_rel = temp_config.get("FILE_PATHS", {}).get("topics_tracker", "data/topics_tracker.json")
+        tracker_path_abs = os.path.join(BASE_DIR, tracker_path_rel) # Используем BASE_DIR
+        os.makedirs(os.path.dirname(tracker_path_abs), exist_ok=True) # Создаем папку перед записью
+        with open(tracker_path_abs, "w", encoding="utf-8") as file:
             json.dump(tracker, file, ensure_ascii=False, indent=4)
     except Exception as e:
          logger.error(f"Ошибка сохранения трекера: {e}")
 
 
 def calculate_file_hash(file_path):
-    # ... (код функции без изменений) ...
     try:
         with open(file_path, 'rb') as f:
             return hashlib.md5(f.read()).hexdigest()
     except FileNotFoundError:
         handle_error("File Hash Calculation Error", f"Файл не найден: {file_path}")
+        return None # Возвращаем None при ошибке
     except Exception as e:
-        handle_error("File Hash Calculation Error", e)
+        handle_error("File Hash Calculation Error", str(e), e)
+        return None # Возвращаем None при ошибке
 
 
 def validate_json_structure(data, required_keys):
-    # ... (код функции без изменений) ...
     missing_keys = [key for key in required_keys if key not in data]
     if missing_keys:
         handle_error("JSON Validation Error", f"Отсутствуют ключи: {missing_keys}")
+        return False # Возвращаем False при ошибке
+    return True # Возвращаем True, если все ключи на месте
 
 
 def ensure_directory_exists(path):
-    # ... (код функции без изменений) ...
-    # Добавим проверку, что path не пустой
-    if not path:
-        logger.warning("Попытка создать директорию с пустым путем.")
-        return
+    """Создает директорию для указанного пути к файлу, если она не существует."""
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+    # Получаем имя директории из полного пути
+    directory = os.path.dirname(path)
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+    # Проверяем, что имя директории не пустое (например, если path был просто именем файла в текущей папке)
+    if not directory:
+        # logger.debug(f"Путь '{path}' не содержит директории, создание не требуется.")
+        return # Ничего не делаем, если нет директории для создания
+
     try:
-        os.makedirs(path, exist_ok=True)
+        # Создаем директорию, если она не существует
+        os.makedirs(directory, exist_ok=True)
+        # logger.debug(f"Директория '{directory}' проверена/создана.")
     except Exception as e:
-        # Используем стандартный логгер utils, если handle_error не импортировался
-        logger.error(f"Ошибка создания директории {path}: {e}")
-        # handle_error("Directory Creation Error", e) # Используем handle_error, если он доступен
+        logger.error(f"Ошибка создания директории {directory}: {e}")
+        # Можно пробросить исключение дальше, если это критично
+        # raise
 
 
 def encode_image_to_base64(image_path: str) -> str | None: # Добавил None в тип возврата
-    # ... (код функции без изменений) ...
     try:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
     except FileNotFoundError:
         logger.error(f"Файл изображения не найден для Base64: {image_path}")
-        # handle_error("Image Encoding Error", f"Файл изображения не найден: {image_path}")
         return None
     except Exception as e:
         logger.error(f"Ошибка кодирования изображения {image_path} в Base64: {e}")
-        # handle_error("Image Encoding Error", e)
         return None
 
 
 def list_files_in_folder(s3, bucket_name, folder): # Добавил bucket_name
-    # ... (код функции без изменений, но добавлен bucket_name) ...
+    if not s3:
+        logger.error("Boto3 S3 client is not available in list_files_in_folder.")
+        return []
     try:
         objects = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder) # Используем переданный bucket_name
         return [obj["Key"] for obj in objects.get("Contents", [])]
@@ -150,59 +175,37 @@ def list_files_in_folder(s3, bucket_name, folder): # Добавил bucket_name
 
 
 def is_folder_empty(s3, bucket_name, folder_prefix):
-    # ... (код функции без изменений) ...
+    if not s3:
+        logger.error("Boto3 S3 client is not available in is_folder_empty.")
+        return False # Считаем не пустой при ошибке клиента
     try:
         response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_prefix)
         # Папка считается пустой, если нет 'Contents' или единственный элемент - сама папка (Key=folder_prefix)
         contents = response.get('Contents')
         if not contents:
             return True
-        if len(contents) == 1 and contents[0]['Key'] == folder_prefix.rstrip('/')+'/' :
-             return True
-        # Проверяем, есть ли что-то кроме .bzEmpty
-        non_placeholder_files = [obj for obj in contents if not obj['Key'].endswith('.bzEmpty')]
+        # Проверяем, есть ли что-то кроме самой папки и .bzEmpty
+        non_placeholder_files = [
+            obj for obj in contents
+            if not obj['Key'].endswith('.bzEmpty') and obj['Key'] != folder_prefix.rstrip('/')+'/'
+            ]
         return not non_placeholder_files
 
     except Exception as e:
         logger.error(f"Ошибка проверки папки {folder_prefix} на пустоту: {e}")
-        # handle_error("B2 Folder Check Error", e)
         return False # В случае ошибки считаем, что не пустая
 
 
-# Эти функции для локального config_public, вероятно, больше не нужны,
-# так как используется load_b2_json/save_b2_json
-# Оставляю их закомментированными на всякий случай
-# def load_config_public(config_path):
-#     if os.path.exists(config_path):
-#         with open(config_path, 'r', encoding='utf-8') as file:
-#             return json.load(file)
-#     return {}
-# def save_config_public(config_path, config_data):
-#     with open(config_path, 'w', encoding='utf-8') as file:
-#         json.dump(config_data, file, indent=4, ensure_ascii=False)
-
-
-# Функция move_to_archive выглядит устаревшей и не используется менеджером
-# Комментирую ее
-# def move_to_archive(s3, bucket_name, generation_id, logger):
-#    ...
-
-
-# Функции load_from_b2 / save_to_b2 - возможно, дублируют load/save_b2_json?
-# Комментирую их, так как используется load/save_b2_json
-# def load_from_b2(b2_client, b2_path, local_path):
-#    ...
-# def save_to_b2(b2_client, data, b2_path, local_path):
-#    ...
-
-
 # --- Функции load/save JSON в B2 (из вашего оригинального utils.py) ---
-# (Код этих функций без изменений, предполагаем, что они рабочие)
 def load_b2_json(client, bucket, remote_path, local_path, default_value=None):
     """Загружает JSON из B2, возвращает default_value при ошибке или отсутствии."""
+    if not client:
+        logger.error("Boto3 S3 client is not available in load_b2_json.")
+        return default_value
     try:
         logger.debug(f"Загрузка {remote_path} из B2 в {local_path}")
-        ensure_directory_exists(os.path.dirname(local_path)) # Убедимся, что папка есть
+        # Вызываем ensure_directory_exists ПЕРЕД download_file, чтобы создать папку для local_path
+        ensure_directory_exists(local_path) # <-- ИСПРАВЛЕНО: Вызов до download_file
         client.download_file(bucket, remote_path, local_path)
         content = default_value
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
@@ -215,8 +218,12 @@ def load_b2_json(client, bucket, remote_path, local_path, default_value=None):
              logger.info(f"Успешно загружен и распарсен {remote_path} из B2.")
         return content
     except ClientError as e:
-        if e.response['Error']['Code'] == 'NoSuchKey' or '404' in str(e): logger.warning(f"{remote_path} не найден в B2. Используем значение по умолчанию.")
-        else: logger.error(f"Ошибка B2 при загрузке {remote_path}: {e}")
+        # Проверяем код ошибки B2
+        error_code = e.response.get('Error', {}).get('Code')
+        if error_code == 'NoSuchKey' or '404' in str(e):
+             logger.warning(f"{remote_path} не найден в B2. Используем значение по умолчанию.")
+        else:
+             logger.error(f"Ошибка B2 при загрузке {remote_path}: {e} (Code: {error_code})")
         return default_value
     except json.JSONDecodeError as json_err:
         logger.error(f"Ошибка парсинга JSON из {local_path} ({remote_path}): {json_err}. Используем значение по умолчанию.")
@@ -225,15 +232,23 @@ def load_b2_json(client, bucket, remote_path, local_path, default_value=None):
         logger.error(f"Критическая ошибка загрузки {remote_path}: {e}", exc_info=True)
         return default_value
     finally:
+        # Удаляем временный локальный файл в любом случае
         if os.path.exists(local_path):
-            try: os.remove(local_path)
-            except OSError: logger.warning(f"Не удалось удалить временный файл {local_path}")
+            try:
+                os.remove(local_path)
+                # logger.debug(f"Временный файл {local_path} удален.")
+            except OSError as remove_err:
+                 logger.warning(f"Не удалось удалить временный файл {local_path}: {remove_err}")
 
 def save_b2_json(client, bucket, remote_path, local_path, data):
     """Сохраняет словарь data как JSON в B2."""
+    if not client:
+        logger.error("Boto3 S3 client is not available in save_b2_json.")
+        return False
     try:
         logger.debug(f"Сохранение данных в {remote_path} в B2 через {local_path}")
-        ensure_directory_exists(os.path.dirname(local_path)) # Убедимся, что папка есть
+        # Вызываем ensure_directory_exists ПЕРЕД открытием файла на запись
+        ensure_directory_exists(local_path) # <-- ИСПРАВЛЕНО: Вызов до open()
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         client.upload_file(local_path, bucket, remote_path)
@@ -246,18 +261,24 @@ def save_b2_json(client, bucket, remote_path, local_path, data):
         logger.error(f"Критическая ошибка сохранения {remote_path}: {e}", exc_info=True)
         return False
     finally:
+        # Удаляем временный локальный файл в любом случае
         if os.path.exists(local_path):
-            try: os.remove(local_path)
-            except OSError: logger.warning(f"Не удалось удалить временный файл {local_path}")
+            try:
+                os.remove(local_path)
+                # logger.debug(f"Временный файл {local_path} удален.")
+            except OSError as remove_err:
+                 logger.warning(f"Не удалось удалить временный файл {local_path}: {remove_err}")
 
 # --- Функция upload_to_b2 (из вашего оригинального utils.py) ---
-# (Код функции без изменений)
 def upload_to_b2(client, bucket_name, target_folder, local_file_path, base_id):
     """
     Загружает локальный файл в указанную папку B2,
     формируя имя файла на основе base_id и расширения локального файла.
     Возвращает True при успехе, False при ошибке.
     """
+    if not client:
+        logger.error("Boto3 S3 client is not available in upload_to_b2.")
+        return False
     if not os.path.exists(local_file_path):
         logger.error(f"Локальный файл {local_file_path} не найден для загрузки в B2.")
         return False
@@ -283,7 +304,7 @@ def download_image(url: str, local_path: str, logger_instance=None) -> bool:
     logger = logger_instance if logger_instance else logging.getLogger("utils_download")
     logger.info(f"Загрузка изображения с {url} в {local_path}...")
     try:
-        ensure_directory_exists(os.path.dirname(local_path))
+        ensure_directory_exists(local_path) # Создаем папку перед скачиванием
         with requests.get(url, stream=True, timeout=60) as r: # Таймаут 60 сек для изображений
             r.raise_for_status()
             with open(local_path, 'wb') as f:
@@ -311,7 +332,7 @@ def download_video(url: str, local_path: str, logger_instance=None) -> bool:
     logger = logger_instance if logger_instance else logging.getLogger("utils_download")
     logger.info(f"Загрузка видео с {url} в {local_path}...")
     try:
-        ensure_directory_exists(os.path.dirname(local_path))
+        ensure_directory_exists(local_path) # Создаем папку перед скачиванием
         with requests.get(url, stream=True, timeout=300) as r: # Таймаут 5 минут для видео
             r.raise_for_status()
             with open(local_path, 'wb') as f:
