@@ -1,395 +1,498 @@
+# -*- coding: utf-8 -*-
+# В файле scripts/generate_content.py
+
 import json
 import os
 import sys
 import requests
 import openai
-import textstat
-import spacy
 import re
 import subprocess
 import boto3
 import io
 import random
 import argparse
+from datetime import datetime # Импортируем datetime
+import shutil # <--- ДОБАВЛЕН ИМПОРТ
 
-from modules.config_manager import ConfigManager
-from modules.logger import get_logger
-from modules.error_handler import handle_error
-from datetime import datetime
-from modules.utils import ensure_directory_exists
+# Импортируем ClientError из botocore (часть boto3)
+try:
+    from botocore.exceptions import ClientError
+except ImportError:
+    # Заглушка на случай, если boto3/botocore не установлены полностью,
+    # хотя основной импорт boto3 выше должен был бы упасть раньше.
+    ClientError = Exception # Ловим общее исключение, если ClientError недоступен
+    print("Warning: Could not import ClientError from botocore. B2 error handling might be less specific.")
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
+
+# Добавляем путь к модулям, если скрипт запускается напрямую
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# --- Импорт кастомных модулей ---
+try:
+    from modules.config_manager import ConfigManager
+    from modules.logger import get_logger
+    from modules.error_handler import handle_error
+    # Импортируем нужные утилиты из utils.py
+    from modules.utils import ensure_directory_exists, load_b2_json, save_b2_json, get_b2_client
+except ModuleNotFoundError as e:
+     print(f"Критическая Ошибка: Не найдены модули проекта в generate_content: {e}", file=sys.stderr)
+     sys.exit(1)
+except ImportError as e:
+     print(f"Критическая Ошибка: Не найдена функция/класс в модулях: {e}", file=sys.stderr)
+     sys.exit(1)
+
+
+# --- Инициализация логгера и конфига ---
 logger = get_logger("generate_content")
 config = ConfigManager()
 
-B2_BUCKET_NAME = "boyarinnbotbucket"  # Из конфига
-FAILSAFE_PATH = "config/FailSafeVault.json"
-TRACKER_PATH = "data/topics_tracker.json"
-CONFIG_PUBLIC_LOCAL_PATH = "config/config_public.json"  # Фиксированный локальный путь
+# --- Константы ---
+# Получаем значения из ConfigManager с дефолтами
+B2_BUCKET_NAME = config.get("API_KEYS.b2.bucket_name", "boyarinnbotbucket") # Убедитесь, что имя бакета правильное
+FAILSAFE_PATH_REL = config.get("FILE_PATHS.failsafe_path", "config/FailSafeVault.json")
+TRACKER_PATH_REL = config.get("FILE_PATHS.tracker_path", "data/topics_tracker.json")
+# Полные пути для локальных операций
+FAILSAFE_PATH_ABS = os.path.join(BASE_DIR, FAILSAFE_PATH_REL)
+TRACKER_PATH_ABS = os.path.join(BASE_DIR, TRACKER_PATH_REL)
+# Путь к локальному файлу для сохранения промежуточных результатов генерации
+CONTENT_OUTPUT_PATH = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
+# --- ФУНКЦИЯ СОХРАНЕНИЯ КОНТЕНТА В B2 (ВНУТРИ ЭТОГО ФАЙЛА) ---
+# Она использует переданный generation_id и не генерирует новый
+def save_content_to_b2(folder, content_dict, generation_id):
+    """
+    Сохраняет словарь content_dict как JSON в указанную папку B2,
+    используя переданный generation_id для имени файла.
+    НЕ генерирует новый ID и НЕ обновляет config_gen.json.
+    Возвращает True при успехе, False при ошибке.
+    """
+    logger.info(f"Вызов save_content_to_b2 для ID: {generation_id}")
 
-def run_generate_media(generation_id):
-    try:
-        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-        script_path = os.path.join(scripts_folder, "generate_media.py")
-        if not os.path.isfile(script_path):
-            raise FileNotFoundError(f"Скрипт generate_media.py не найден: {script_path}")
-        logger.info(f"Запуск: {script_path} с generation_id: {generation_id}")
-        subprocess.run(["python", script_path, generation_id], check=True)
-        logger.info(f"Скрипт {script_path} выполнен.")
-    except subprocess.CalledProcessError as e:
-        handle_error("Script Error", "Ошибка generate_media.py", e)
-        logger.warning("Генерация медиа не удалась, продолжаем.")
-    except FileNotFoundError as e:
-        handle_error("File Error", f"Скрипт не найден: {script_path}", e)
-        logger.warning("generate_media.py отсутствует, продолжаем.")
-    except Exception as e:
-        handle_error("Unknown Error", "Ошибка запуска generate_media.py", e)
-        logger.warning("Неизвестная ошибка, продолжаем.")
-
-def get_b2_client():
-    """Создает клиент для работы с Backblaze B2."""
-    try:
-        return boto3.client(
-            's3',
-            endpoint_url=os.getenv("B2_ENDPOINT"),
-            aws_access_key_id=os.getenv("B2_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("B2_SECRET_KEY")
-        )
-    except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e), e)
-        return None
-
-def download_config_public():
-    """Загружает файл config_public.json из B2 в локальное хранилище."""
-    try:
-        s3 = get_b2_client()
-        if not s3:
-            raise Exception("Не удалось создать клиент B2")
-        bucket_name = config.get("API_KEYS.b2.bucket_name", B2_BUCKET_NAME)
-        remote_path = "config/config_public.json"
-        os.makedirs(os.path.dirname(CONFIG_PUBLIC_LOCAL_PATH), exist_ok=True)
-        s3.download_file(bucket_name, remote_path, CONFIG_PUBLIC_LOCAL_PATH)
-        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {CONFIG_PUBLIC_LOCAL_PATH}")
-    except Exception as e:
-        handle_error("Download Config Public Error", str(e), e)
-
-def generate_file_id():
-    """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
-    now = datetime.utcnow()
-    date_part = now.strftime("%Y%m%d")
-    time_part = now.strftime("%H%M")
-    return f"{date_part}-{time_part}.json"
-
-def save_generation_id_to_config(file_id):
-    """Сохраняет ID генерации в файл config_gen.json."""
-    config_gen_path = os.path.join("config", "config_gen.json")
-    os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
-    try:
-        with open(config_gen_path, "w", encoding="utf-8") as file:
-            json.dump({"generation_id": file_id}, file, ensure_ascii=False, indent=4)
-        logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
-    except Exception as e:
-        handle_error("Save Generation ID Error", str(e), e)
-
-
-def save_to_b2(folder, content):
-    """Сохраняет контент в B2 без двойного кодирования JSON."""
-    try:
-        file_id = generate_file_id()
-        save_generation_id_to_config(file_id)
-        logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
-        s3 = get_b2_client()
-        if not s3:
-            logger.error("❌ Не удалось создать клиент B2")
-            return False
-
-        bucket_name = config.get("API_KEYS.b2.bucket_name", B2_BUCKET_NAME)
-        s3_key = f"{folder.rstrip('/')}/{file_id}"
-
-        if not isinstance(content, dict):
-            logger.error("❌ Ошибка: Контент должен быть словарём!")
-            return False
-
-        sarcasm_data = content.get("sarcasm", {})
-        if isinstance(sarcasm_data, str):
-            try:
-                sarcasm_data = json.loads(sarcasm_data)
-                logger.warning("⚠️ Поле 'sarcasm' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'sarcasm' имеет неверный формат!")
-                return False
-
-        if "poll" in sarcasm_data and isinstance(sarcasm_data["poll"], str):
-            try:
-                sarcasm_data["poll"] = json.loads(sarcasm_data["poll"])
-                logger.warning("⚠️ Поле 'poll' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
-                sarcasm_data["poll"] = {}
-
-        content["sarcasm"] = sarcasm_data
-        json_bytes = io.BytesIO(json.dumps(content, ensure_ascii=False, indent=4).encode("utf-8"))
-        s3.upload_fileobj(json_bytes, bucket_name, s3_key)
-        logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
-        return True
-
-    except Exception as e:
-        handle_error("B2 Upload Error", str(e), e)
+    # Получаем B2 клиент (можно передавать как аргумент или получать здесь)
+    s3 = get_b2_client()
+    if not s3:
+        logger.error("❌ Не удалось создать клиент B2 внутри save_content_to_b2")
         return False
 
-def generate_script_and_frame(topic):
-    """Генерирует сценарий и описание первого кадра для видео."""
+    # Получаем имя бакета
+    bucket_name = config.get("API_KEYS.b2.bucket_name", B2_BUCKET_NAME)
+    if not bucket_name:
+         logger.error("❌ Имя бакета B2 не найдено в save_content_to_b2")
+         return False
+
+    if not generation_id:
+        logger.error("❌ Generation ID не предоставлен для save_content_to_b2.")
+        return False
+    if not isinstance(content_dict, dict):
+         logger.error("❌ Данные для сохранения в save_content_to_b2 не являются словарем.")
+         return False
+
+    # Используем переданный ID, очищенный от возможного .json
+    clean_base_id = generation_id.replace(".json", "")
+    file_extension = ".json" # Мы сохраняем JSON
+    s3_key = f"{folder.rstrip('/')}/{clean_base_id}{file_extension}"
+
+    # Используем временный локальный файл для сохранения JSON перед загрузкой
+    timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+    # Сохраняем временный файл в корне проекта (или можно создать подпапку temp)
+    local_temp_path = f"{clean_base_id}_content_temp_{timestamp_suffix}.json"
+
+    logger.info(f"Попытка сохранения данных для ID {clean_base_id} в B2 как {s3_key} через {local_temp_path}...")
+
     try:
-        USER_PROMPT_COMBINED = config.get("PROMPTS.user_prompt_combined")
-        OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
-        OPENAI_MAX_TOKENS = config.get("OPENAI_SETTINGS.max_tokens", 1000)
-        OPENAI_TEMPERATURE = config.get("OPENAI_SETTINGS.temperature", 0.7)
-        MIN_SCRIPT_LENGTH = config.get("VISUAL_ANALYSIS.min_script_length", 200)
+        # Создаем директорию для временного файла, если она указана (здесь не указана)
+        # ensure_directory_exists(local_temp_path) # Не нужно, если файл в корне
 
-        if not USER_PROMPT_COMBINED:
-            logger.error("Промпт USER_PROMPT_COMBINED не найден в config.json")
-            return None, None
+        # Проверка содержимого перед сохранением (опционально, но полезно)
+        required_keys = ["topic", "content", "sarcasm", "script", "first_frame_description"]
+        missing_keys = [key for key in required_keys if key not in content_dict]
+        if missing_keys:
+             logger.warning(f"⚠️ В сохраняемых данных для ID {clean_base_id} отсутствуют ключи: {missing_keys}. Содержимое: {list(content_dict.keys())}")
+        # Можно добавить более строгую проверку, если нужно
 
-        for attempt in range(3):
-            try:
-                combined_prompt = (
-                    USER_PROMPT_COMBINED.replace("{topic}", topic) +
-                    "\n\n**Strict Format**:\n- Script (500 chars max).\n- 'First Frame Description:'\n- Description (500 chars max).\n- 'End of Description'."
-                )
-                logger.info(f"Попытка {attempt + 1}/3: Генерация для '{topic[:100]}'...")
+        # Сохраняем словарь во временный JSON файл
+        with open(local_temp_path, 'w', encoding='utf-8') as f:
+            json.dump(content_dict, f, ensure_ascii=False, indent=4)
+        logger.debug(f"Временный файл {local_temp_path} создан.")
 
-                response = openai.ChatCompletion.create(
-                    model=OPENAI_MODEL,
-                    messages=[{"role": "user", "content": combined_prompt}],
-                    max_tokens=OPENAI_MAX_TOKENS,
-                    temperature=OPENAI_TEMPERATURE + 0.1 * attempt
-                )
-
-                if not response or not response.get("choices") or not response["choices"][0].get("message"):
-                    logger.warning("⚠️ OpenAI не вернул валидный ответ")
-                    continue
-
-                combined_response = response["choices"][0]["message"]["content"]
-                if not combined_response:
-                    logger.warning("⚠️ OpenAI вернул пустой контент")
-                    continue
-
-                combined_response = combined_response.strip()
-                logger.debug(f"OpenAI response: {combined_response}")
-
-                with open(f"logs/openai_response_{topic[:50].replace(' ', '_')}_{attempt+1}.txt", "w", encoding="utf-8") as f:
-                    f.write(combined_response)
-
-                if len(combined_response) < MIN_SCRIPT_LENGTH:
-                    logger.error(f"Ответ короткий: {len(combined_response)}")
-                    continue
-
-                if "First Frame Description:" not in combined_response or "End of Description" not in combined_response:
-                    logger.error("Маркеры не найдены!")
-                    continue
-
-                script_text = combined_response.split("First Frame Description:")[0].strip()
-                first_frame_description = (
-                    combined_response.split("First Frame Description:")[1].split("End of Description")[0].strip()
-                )
-
-                if not script_text or not first_frame_description:
-                    logger.error("Сценарий или описание пусты")
-                    continue
-
-                logger.info(f"Сценарий: {script_text[:100]}...")
-                logger.info(f"Описание: {first_frame_description[:100]}...")
-                return script_text, first_frame_description
-
-            except Exception as e:
-                logger.error(f"Ошибка (попытка {attempt + 1}/3): {str(e)}")
-                continue
-
-        logger.error("Превышено число попыток.")
-        return None, None
-
+        # Загружаем временный файл в B2
+        s3.upload_file(local_temp_path, bucket_name, s3_key)
+        logger.info(f"✅ Данные для ID {clean_base_id} успешно сохранены в B2: {s3_key}")
+        return True
     except Exception as e:
-        logger.error(f"Ошибка загрузки конфигурации: {str(e)}")
-        return None, None
+        logger.error(f"❌ Не удалось сохранить данные для ID {clean_base_id} в B2 как {s3_key}: {e}", exc_info=True)
+        return False
+    finally:
+        # Удаляем временный локальный файл после попытки загрузки
+        if os.path.exists(local_temp_path):
+            try:
+                os.remove(local_temp_path)
+                logger.debug(f"Временный файл {local_temp_path} удален.")
+            except OSError as remove_err:
+                 logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
+# --- КОНЕЦ ФУНКЦИИ save_content_to_b2 ---
 
+
+# --- КЛАСС ГЕНЕРАТОРА КОНТЕНТА ---
 class ContentGenerator:
     def __init__(self):
-        self.topic_threshold = config.get('GENERATE.topic_threshold', 7)
-        self.text_threshold = config.get('GENERATE.text_threshold', 8)
-        self.max_attempts = config.get('GENERATE.max_attempts', 3)
-        self.adaptation_enabled = config.get('GENERATE.adaptation_enabled', False)
-        self.adaptation_params = config.get('GENERATE.adaptation_parameters', {})
-        self.content_output_path = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
-        self.before_critique_path = config.get('FILE_PATHS.before_critique_path', 'before_critique.json')
-        self.after_critique_path = config.get('FILE_PATHS.after_critique_path', 'after_critique.json')
+        """Инициализация генератора контента."""
         self.logger = logger
         self.config = config
+        # Загрузка настроек генерации
+        self.topic_threshold = self.config.get('GENERATE.topic_threshold', 7)
+        self.text_threshold = self.config.get('GENERATE.text_threshold', 8)
+        self.max_attempts = self.config.get('GENERATE.max_attempts', 1) # Возможно, не используется?
+        self.adaptation_enabled = self.config.get('GENERATE.adaptation_enabled', False)
+        self.adaptation_params = self.config.get('GENERATE.adaptation_parameters', {})
+        # Путь к локальному файлу для сохранения промежуточных результатов
+        self.content_output_path = CONTENT_OUTPUT_PATH
+        # Настройки OpenAI
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4")
-        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.7))
+        self.openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
+        self.temperature = float(self.config.get("OPENAI_SETTINGS.temperature", 0.7))
         if not self.openai_api_key:
-            logger.error("❌ Переменная окружения OPENAI_API_KEY не задана!")
+            self.logger.error("❌ Переменная окружения OPENAI_API_KEY не задана!")
             raise EnvironmentError("Переменная окружения OPENAI_API_KEY отсутствует.")
+        openai.api_key = self.openai_api_key # Устанавливаем ключ для библиотеки
+        # Инициализация B2 клиента один раз
+        self.b2_client = get_b2_client()
+        if not self.b2_client:
+             self.logger.warning("⚠️ Не удалось инициализировать B2 клиент в ContentGenerator.")
 
     def adapt_prompts(self):
+        """Применяет адаптацию промптов (если включено)."""
         if not self.adaptation_enabled:
-            logger.info("🔄 Адаптация промптов отключена.")
+            self.logger.info("🔄 Адаптация промптов отключена.")
             return
-        logger.info("🔄 Применяю адаптацию промптов на основе обратной связи...")
+        self.logger.info("🔄 Применяю адаптацию промптов на основе обратной связи...")
+        # Логика адаптации (если она есть) должна быть здесь
+        # Сейчас просто логирует параметры
         for key, value in self.adaptation_params.items():
-            logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
+            self.logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
 
     def clear_generated_content(self):
+        """Очищает локальный файл с промежуточными результатами."""
         try:
-            logger.info("🧹 Полная очистка файла с результатами перед записью новой темы.")
-            if not self.content_output_path:
-                raise ValueError("❌ Ошибка: content_output_path пустой!")
-            folder = os.path.dirname(self.content_output_path)
-            if folder and not os.path.exists(folder):
-                os.makedirs(folder)
-                logger.info(f"📁 Папка для сохранения данных создана: {folder}")
-            logger.info(f"🔎 Debug: Очистка файла {self.content_output_path}")
+            self.logger.info(f"🧹 Очистка локального файла: {self.content_output_path}")
+            # Создаем папку, если ее нет
+            ensure_directory_exists(self.content_output_path)
+            # Открываем файл на запись, что очистит его или создаст, если его нет
             with open(self.content_output_path, 'w', encoding='utf-8') as file:
                 json.dump({}, file, ensure_ascii=False, indent=4)
-            logger.info("✅ Файл успешно очищен.")
+            self.logger.info("✅ Локальный файл успешно очищен/создан.")
         except PermissionError:
             handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}", PermissionError())
         except Exception as e:
             handle_error("Clear Content Error", str(e), e)
 
+    def load_tracker(self):
+        """Загружает трекер тем из B2 или локального файла."""
+        os.makedirs(os.path.dirname(TRACKER_PATH_ABS), exist_ok=True) # Убедимся, что папка data существует
+        tracker_updated_locally = False
+        if self.b2_client:
+            try:
+                self.logger.info(f"Попытка загрузки {TRACKER_PATH_REL} из B2...")
+                # Используем уникальный временный путь для загрузки
+                timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+                local_temp_tracker = f"tracker_temp_{timestamp_suffix}.json"
+                self.b2_client.download_file(B2_BUCKET_NAME, TRACKER_PATH_REL, local_temp_tracker)
+                # Копируем загруженный файл в основное место
+                # Используем shutil, который теперь импортирован
+                shutil.copyfile(local_temp_tracker, TRACKER_PATH_ABS)
+                os.remove(local_temp_tracker) # Удаляем временный файл
+                self.logger.info(f"✅ Загружен {TRACKER_PATH_REL} из B2 в {TRACKER_PATH_ABS}")
+            except ClientError as e: # Используем импортированный ClientError
+                 error_code = e.response.get('Error', {}).get('Code')
+                 if error_code == 'NoSuchKey' or '404' in str(e):
+                      self.logger.warning(f"⚠️ {TRACKER_PATH_REL} не найден в B2. Проверяем локальную копию.")
+                 else:
+                      self.logger.error(f"⚠️ Ошибка B2 при загрузке трекера: {e}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось загрузить трекер из B2: {e}")
+        else:
+             self.logger.warning("⚠️ B2 клиент недоступен, используем только локальный трекер.")
+
+        # Если локальный файл не существует после попытки загрузки из B2
+        if not os.path.exists(TRACKER_PATH_ABS):
+            self.logger.warning(f"{TRACKER_PATH_ABS} не найден. Попытка создания из {FAILSAFE_PATH_ABS}.")
+            try:
+                with open(FAILSAFE_PATH_ABS, 'r', encoding='utf-8') as f_failsafe:
+                    failsafe_data = json.load(f_failsafe)
+                # Создаем структуру трекера
+                tracker = {
+                    "all_focuses": failsafe_data.get("focuses", []),
+                    "used_focuses": [],
+                    "focus_data": {}
+                }
+                with open(TRACKER_PATH_ABS, 'w', encoding='utf-8') as f_tracker:
+                    json.dump(tracker, f_tracker, ensure_ascii=False, indent=4)
+                self.logger.info(f"✅ Создан новый {TRACKER_PATH_ABS} из FailSafeVault.")
+                tracker_updated_locally = True # Помечаем, что создали новый локально
+            except FileNotFoundError:
+                 self.logger.error(f"❌ Файл {FAILSAFE_PATH_ABS} не найден! Невозможно создать трекер.")
+                 return {"all_focuses": [], "used_focuses": [], "focus_data": {}} # Возвращаем пустую структуру
+            except Exception as e:
+                 self.logger.error(f"❌ Ошибка при создании трекера из FailSafe: {e}")
+                 return {"all_focuses": [], "used_focuses": [], "focus_data": {}}
+
+        # Читаем трекер из локального файла
+        try:
+            with open(TRACKER_PATH_ABS, 'r', encoding='utf-8') as f:
+                tracker = json.load(f)
+            # Проверяем и обновляем структуру, если нужно (для совместимости со старыми версиями)
+            if "all_focuses" not in tracker:
+                self.logger.info("Обновляем структуру старого трекера: добавляем all_focuses.")
+                if os.path.exists(FAILSAFE_PATH_ABS):
+                     with open(FAILSAFE_PATH_ABS, 'r', encoding='utf-8') as f_failsafe:
+                         failsafe_data = json.load(f_failsafe)
+                     tracker["all_focuses"] = failsafe_data.get("focuses", [])
+                else:
+                     tracker["all_focuses"] = [] # Пустой список, если FailSafe нет
+                tracker.setdefault("used_focuses", [])
+                tracker.setdefault("focus_data", {})
+                # Сохраняем обновленный локальный файл
+                with open(TRACKER_PATH_ABS, 'w', encoding='utf-8') as f_tracker:
+                    json.dump(tracker, f_tracker, ensure_ascii=False, indent=4)
+                tracker_updated_locally = True
+            # Синхронизируем с B2, если локальный файл был создан или обновлен
+            if tracker_updated_locally:
+                self.sync_tracker_to_b2(tracker_path_abs=TRACKER_PATH_ABS, tracker_path_rel=TRACKER_PATH_REL)
+
+            return tracker
+        except json.JSONDecodeError:
+            self.logger.error(f"❌ Ошибка JSON в файле трекера: {TRACKER_PATH_ABS}. Возвращаем пустой.")
+            return {"all_focuses": [], "used_focuses": [], "focus_data": {}}
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка чтения трекера {TRACKER_PATH_ABS}: {e}")
+            return {"all_focuses": [], "used_focuses": [], "focus_data": {}}
+
+    def get_valid_focus_areas(self, tracker):
+        """Возвращает список доступных фокусов."""
+        all_focuses = tracker.get("all_focuses", [])
+        used_focuses = tracker.get("used_focuses", [])
+        # Используем set для быстрой проверки
+        used_set = set(used_focuses)
+        valid_focuses = [f for f in all_focuses if f not in used_set]
+        self.logger.info(f"✅ Доступные фокусы: {valid_focuses}")
+        return valid_focuses
+
     def generate_topic(self, tracker):
+        """Генерирует новую тему, используя доступные фокусы."""
         valid_focuses = self.get_valid_focus_areas(tracker)
         if not valid_focuses:
-            self.logger.error("❌ Нет доступных фокусов")
-            raise ValueError("Все фокусы использованы")
-        selected_focus = random.choice(valid_focuses)
-        used_labels = tracker["focus_data"].get(selected_focus, [])
-        prompt = self.config.get("CONTENT.topic.prompt_template").format(
-            focus_areas=selected_focus, exclusions=", ".join(used_labels)
-        )
-        topic_response = self.request_openai(prompt)
-        try:
-            topic_data = json.loads(topic_response)
-            full_topic = topic_data["full_topic"]
-            short_topic = topic_data["short_topic"]
-        except json.JSONDecodeError:
-            self.logger.error("❌ OpenAI вернул не JSON")
-            raise ValueError("Ошибка формата ответа OpenAI")
-        self.update_tracker(selected_focus, short_topic)
-        self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
-        return full_topic, {"theme": "tragic" if "(т)" in selected_focus else "normal"}
+            self.logger.error("❌ Нет доступных фокусов для генерации темы.")
+            # Можно либо выбросить исключение, либо вернуть None
+            raise ValueError("Все фокусы использованы, невозможно сгенерировать тему.")
+            # return None, {} # Альтернативный вариант
 
-    def update_tracker(self, focus, short_topic):
-        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
-            tracker = json.load(f)
-        used_focuses = tracker["used_focuses"]
-        focus_data = tracker["focus_data"]
+        selected_focus = random.choice(valid_focuses)
+        self.logger.info(f"Выбран фокус для генерации темы: {selected_focus}")
+        # Получаем список уже использованных ярлыков для этого фокуса, чтобы избежать повторов
+        used_labels_for_focus = tracker.get("focus_data", {}).get(selected_focus, [])
+        exclusions_str = ", ".join(used_labels_for_focus) if used_labels_for_focus else "нет"
+
+        # Формируем промпт
+        prompt_template = self.config.get("CONTENT.topic.prompt_template")
+        if not prompt_template:
+             self.logger.error("Промпт CONTENT.topic.prompt_template не найден!")
+             raise ValueError("Отсутствует промпт для генерации темы.")
+        prompt = prompt_template.format(focus_areas=selected_focus, exclusions=exclusions_str)
+
+        try:
+            # Запрашиваем JSON ответ
+            topic_response_str = self.request_openai(prompt, use_json_mode=True)
+            topic_data = json.loads(topic_response_str)
+
+            full_topic = topic_data.get("full_topic")
+            short_topic = topic_data.get("short_topic")
+
+            if not full_topic or not short_topic:
+                self.logger.error(f"❌ OpenAI вернул неполные данные для темы: {topic_data}")
+                raise ValueError("Ответ OpenAI для темы не содержит full_topic или short_topic.")
+
+            self.logger.info(f"Сгенерирована тема: '{full_topic}' (Ярлык: '{short_topic}')")
+            # Обновляем трекер с новым ярлыком
+            self.update_tracker(selected_focus, short_topic, tracker) # Передаем tracker для обновления
+            # Сохраняем в локальный файл
+            self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
+
+            # Определяем тему (tragic/normal) по фокусу
+            content_metadata = {"theme": "tragic" if "(т)" in selected_focus else "normal"}
+            return full_topic, content_metadata
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"❌ Ошибка парсинга JSON ответа OpenAI для темы: {e}. Ответ: {topic_response_str[:500]}")
+            raise ValueError("Ошибка формата ответа OpenAI при генерации темы.") from e
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при генерации темы: {e}", exc_info=True)
+            raise # Пробрасываем ошибку дальше
+
+    def update_tracker(self, focus, short_topic, tracker):
+        """Обновляет данные трекера в памяти и сохраняет его."""
+        used_focuses = tracker.get("used_focuses", [])
+        focus_data = tracker.get("focus_data", {})
+
+        # Обновляем список использованных фокусов (последние 15)
         if focus in used_focuses:
             used_focuses.remove(focus)
         used_focuses.insert(0, focus)
         if len(used_focuses) > 15:
             used_focuses.pop()
-        focus_data.setdefault(focus, []).insert(0, short_topic)
-        if len(focus_data[focus]) > 5:
-            focus_data[focus].pop()
+
+        # Обновляем список ярлыков для данного фокуса (последние 5)
+        focus_labels = focus_data.setdefault(focus, [])
+        if short_topic in focus_labels:
+             focus_labels.remove(short_topic) # Убираем, чтобы вставить в начало
+        focus_labels.insert(0, short_topic)
+        if len(focus_labels) > 5:
+            focus_labels.pop()
+
+        # Обновляем основной словарь tracker (переданный по ссылке)
         tracker["used_focuses"] = used_focuses
         tracker["focus_data"] = focus_data
-        with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
-            json.dump(tracker, f, ensure_ascii=False, indent=4)
-        self.sync_tracker_to_b2()
 
-    def sync_tracker_to_b2(self):
-        s3 = get_b2_client()
-        if not s3:
-            self.logger.warning("⚠️ Не удалось создать клиент B2 для синхронизации трекера")
+        # Сохраняем обновленный трекер локально и в B2
+        self.save_topics_tracker(tracker) # Сохраняет локально
+        self.sync_tracker_to_b2(tracker_path_abs=TRACKER_PATH_ABS, tracker_path_rel=TRACKER_PATH_REL) # Синхронизирует с B2
+
+    def save_topics_tracker(self, tracker):
+        """Сохраняет трекер в локальный файл."""
+        try:
+            ensure_directory_exists(TRACKER_PATH_ABS) # Убедимся, что папка есть
+            with open(TRACKER_PATH_ABS, "w", encoding="utf-8") as file:
+                json.dump(tracker, file, ensure_ascii=False, indent=4)
+            self.logger.info(f"Трекер тем сохранен локально: {TRACKER_PATH_ABS}")
+        except Exception as e:
+             self.logger.error(f"Ошибка сохранения трекера локально: {e}")
+
+    def sync_tracker_to_b2(self, tracker_path_abs, tracker_path_rel):
+        """Синхронизирует локальный трекер с B2."""
+        if not self.b2_client:
+            self.logger.warning("⚠️ B2 клиент недоступен, синхронизация трекера невозможна.")
             return
+        if not os.path.exists(tracker_path_abs):
+             self.logger.warning(f"⚠️ Локальный файл трекера {tracker_path_abs} не найден для синхронизации.")
+             return
         try:
-            s3.upload_file(TRACKER_PATH, B2_BUCKET_NAME, "data/topics_tracker.json")
-            self.logger.info("✅ topics_tracker.json синхронизирован с B2")
+            self.logger.info(f"Синхронизация {tracker_path_abs} с B2 как {tracker_path_rel}...")
+            self.b2_client.upload_file(tracker_path_abs, B2_BUCKET_NAME, tracker_path_rel)
+            self.logger.info(f"✅ {tracker_path_rel} синхронизирован с B2.")
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось загрузить в B2: {e}")
+            self.logger.error(f"⚠️ Не удалось загрузить трекер {tracker_path_rel} в B2: {e}")
 
-    def request_openai(self, prompt):
+    def request_openai(self, prompt, use_json_mode=False, temperature_override=None):
+        """Отправляет запрос к OpenAI, опционально запрашивая JSON и переопределяя температуру."""
         try:
-            openai.api_key = self.openai_api_key
-            max_tokens = self.config.get("API_KEYS.openai.max_tokens_text", 750)
-            self.logger.info(f"🔎 Отправка запроса в OpenAI с max_tokens={max_tokens}")
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=self.temperature,
-            )
+            # Определяем параметры по умолчанию
+            max_tokens = 750 # Дефолт для темы/текста
+            temp = temperature_override if temperature_override is not None else self.temperature # Используем переданную или дефолтную
+
+            # Корректируем параметры в зависимости от типа запроса (эвристика по ключам в промпте)
+            prompt_lower = prompt.lower()
+            # Используем более надежные проверки для типа запроса
+            if use_json_mode: # Если явно запрошен JSON (для темы, опроса, скрипта)
+                 if "script" in prompt_lower or "frame_description" in prompt_lower:
+                      max_tokens = self.config.get("OPENAI_SETTINGS.max_tokens_script", 1000)
+                      if temperature_override is None: temp = self.config.get("OPENAI_SETTINGS.temperature_script", 0.7)
+                 elif "poll" in prompt_lower or "опрос" in prompt_lower:
+                      max_tokens = self.config.get("SARCASM.max_tokens_poll", 250)
+                      # Температура уже должна быть в temperature_override
+                 else: # Вероятно, тема
+                      max_tokens = self.config.get("OPENAI_SETTINGS.max_tokens_text", 750) # Используем max_tokens для текста для темы
+                      # Температура уже должна быть в temperature_override или self.temperature
+            elif "comment" in prompt_lower or "комментарий" in prompt_lower: # Комментарий - не JSON
+                 max_tokens = self.config.get("SARCASM.max_tokens_comment", 150)
+                 # Температура уже должна быть в temperature_override
+            else: # Обычный текст
+                 max_tokens = self.config.get("OPENAI_SETTINGS.max_tokens_text", 750)
+                 # Температура уже должна быть в temperature_override или self.temperature
+
+            self.logger.info(f"🔎 Отправка запроса в OpenAI (JSON={use_json_mode}): max_tokens={max_tokens}, temp={temp:.1f}")
+
+            request_args = {
+                "model": self.openai_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temp,
+            }
+            # Добавляем формат JSON, если требуется
+            if use_json_mode:
+                request_args["response_format"] = {"type": "json_object"}
+
+            response = openai.ChatCompletion.create(**request_args)
             return response['choices'][0]['message']['content'].strip()
-        except Exception as e:
+
+        except openai.error.OpenAIError as e:
             logger.error(f"❌ Ошибка при работе с OpenAI API: {e}")
-            raise
+            raise # Пробрасываем ошибку выше
+        except Exception as e:
+             logger.error(f"❌ Неизвестная ошибка в request_openai: {e}", exc_info=True)
+             raise # Пробрасываем ошибку
 
     def generate_sarcasm(self, text, content_data={}):
+        """Генерирует саркастический комментарий."""
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.comment_enabled', True):
             self.logger.info("🔕 Генерация саркастического комментария отключена.")
-            return ""
-        self.logger.info(f"🔎 Debug: Промпт для саркастического комментария: {self.config.get('SARCASM.comment_prompt')}")
+            return None # Возвращаем None, если отключено
+
+        # Выбор промпта и температуры
         if "theme" in content_data and content_data["theme"] == "tragic":
-            prompt = self.config.get('SARCASM.tragic_comment_prompt').format(text=text)
+            prompt_template = self.config.get('SARCASM.tragic_comment_prompt')
             temperature = self.config.get('SARCASM.tragic_comment_temperature', 0.6)
+            prompt_type = "tragic"
         else:
-            prompt = self.config.get('SARCASM.comment_prompt').format(text=text)
+            prompt_template = self.config.get('SARCASM.comment_prompt')
             temperature = self.config.get('SARCASM.comment_temperature', 0.8)
-        max_tokens = self.config.get("SARCASM.max_tokens_comment", 150)
-        self.logger.info(f"🔎 Debug: Используемый max_tokens_comment = {max_tokens}")
+            prompt_type = "normal"
+
+        if not prompt_template:
+            self.logger.error(f"Промпт для комментария ({prompt_type}) не найден!")
+            return None
+
+        prompt = prompt_template.format(text=text)
+        self.logger.info(f"Запрос к OpenAI для генерации комментария (тип: {prompt_type}, temp: {temperature:.1f})...")
+
         try:
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            comment = response['choices'][0]['message']['content'].strip()
+            # Вызываем request_openai с переопределением температуры
+            comment = self.request_openai(prompt, temperature_override=temperature)
             self.logger.info(f"✅ Саркастический комментарий сгенерирован: {comment}")
             return comment
         except Exception as e:
-            self.logger.error(f"❌ Ошибка генерации саркастического комментария: {e}")
-            return ""
+            # request_openai уже залогировал ошибку
+            self.logger.error(f"❌ Ошибка генерации саркастического комментария.")
+            return None # Возвращаем None при ошибке
 
     def generate_sarcasm_poll(self, text, content_data={}):
-        # Проверка, включена ли генерация опросов
+        """Генерирует саркастический опрос, ожидая JSON."""
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.poll_enabled', True):
             self.logger.info("🔕 Генерация саркастического опроса отключена.")
             return {} # Возвращаем пустой словарь
 
-        # Выбор промпта и температуры в зависимости от темы
+        # Выбор промпта и температуры
         if "theme" in content_data and content_data["theme"] == "tragic":
-            prompt = self.config.get('SARCASM.tragic_question_prompt').format(text=text)
+            prompt_template = self.config.get('SARCASM.tragic_question_prompt')
             temperature = self.config.get('SARCASM.tragic_poll_temperature', 0.6)
             prompt_type = "tragic"
         else:
-            prompt = self.config.get('SARCASM.question_prompt').format(text=text)
+            prompt_template = self.config.get('SARCASM.question_prompt')
             temperature = self.config.get('SARCASM.poll_temperature', 0.9)
             prompt_type = "normal"
 
-        # Проверка, что промпт загружен
-        if not prompt:
+        if not prompt_template:
              self.logger.error(f"Промпт для опроса ({prompt_type}) не найден в конфигурации!")
              return {}
 
-        max_tokens = self.config.get('SARCASM.max_tokens_poll', 250)
-        self.logger.info(f"Запрос к OpenAI для генерации опроса (тип: {prompt_type}, max_tokens: {max_tokens}, temp: {temperature})...")
-
+        prompt = prompt_template.format(text=text)
+        self.logger.info(f"Запрос к OpenAI для генерации опроса (тип: {prompt_type}, temp: {temperature:.1f})... Ожидаем JSON.")
+        response_content = "" # Инициализируем на случай ошибки до присваивания
         try:
-            # Запрашиваем JSON ответ от модели
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                # Указываем, что ожидаем JSON (если модель поддерживает, как gpt-4o)
-                # Для старых моделей этот параметр может не работать, но его наличие не должно мешать
-                response_format={"type": "json_object"}
-            )
-            response_content = response['choices'][0]['message']['content'].strip()
-            self.logger.debug(f"Сырой ответ OpenAI для опроса: {response_content[:500]}") # Логируем для отладки
+            # Запрашиваем JSON ответ от модели, передавая температуру
+            response_content = self.request_openai(prompt, use_json_mode=True, temperature_override=temperature)
+            self.logger.debug(f"Сырой ответ OpenAI для опроса: {response_content[:500]}")
 
             # Пытаемся распарсить JSON
             poll_data = json.loads(response_content)
@@ -397,8 +500,8 @@ class ContentGenerator:
             # Проверяем структуру полученного JSON
             if isinstance(poll_data, dict) and "question" in poll_data and "options" in poll_data and isinstance(poll_data["options"], list) and len(poll_data["options"]) == 3:
                 self.logger.info("✅ Опрос успешно сгенерирован и распарсен (JSON).")
-                # Дополнительно очищаем строки от лишних пробелов
-                poll_data["question"] = poll_data["question"].strip()
+                # Очищаем строки от лишних пробелов
+                poll_data["question"] = str(poll_data["question"]).strip()
                 poll_data["options"] = [str(opt).strip() for opt in poll_data["options"]]
                 return poll_data
             else:
@@ -406,517 +509,250 @@ class ContentGenerator:
                 return {}
 
         except json.JSONDecodeError as e:
-            # Ошибка, если ответ OpenAI - не валидный JSON
             self.logger.error(f"❌ Ошибка парсинга JSON ответа OpenAI для опроса: {e}. Ответ: {response_content[:500]}")
-            # Здесь можно добавить fallback на ручной разбор, если очень нужно,
-            # но лучше добиваться от модели корректного JSON
             return {}
-        except openai.error.OpenAIError as e:
-             # Обработка ошибок API OpenAI
-             handle_error("Sarcasm Poll Generation OpenAI Error", str(e), e)
-             return {}
         except Exception as e:
-            # Обработка других непредвиденных ошибок
-            handle_error("Sarcasm Poll Generation Error", str(e), e)
+            # request_openai уже залогировал ошибку
+            self.logger.error(f"❌ Ошибка генерации саркастического опроса.")
             return {}
 
     def save_to_generated_content(self, stage, data):
+        """Сохраняет промежуточные данные в локальный JSON файл."""
         try:
             if not self.content_output_path:
-                raise ValueError("❌ Ошибка: self.content_output_path пустой!")
-            logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
-            folder = os.path.dirname(self.content_output_path) or "."
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-                logger.info(f"📁 Папка создана: {folder}")
+                raise ValueError("❌ Ошибка: self.content_output_path не задан!")
+            self.logger.debug(f"🔄 Обновление локального файла: {self.content_output_path}, этап: {stage}")
+            # Создаем папку, если ее нет
+            ensure_directory_exists(self.content_output_path)
+            # Читаем текущее содержимое или создаем пустой словарь
+            result_data = {}
             if os.path.exists(self.content_output_path):
-                logger.info(f"📄 Файл {self.content_output_path} найден, загружаем данные...")
-                with open(self.content_output_path, 'r', encoding='utf-8') as file:
-                    try:
-                        result_data = json.load(file)
-                    except json.JSONDecodeError:
-                        logger.warning(f"⚠️ Файл {self.content_output_path} поврежден, создаем новый.")
-                        result_data = {}
-            else:
-                logger.warning(f"⚠️ Файл {self.content_output_path} не найден, создаем новый.")
-                result_data = {}
+                try:
+                    # Добавим проверку на размер файла перед чтением
+                    if os.path.getsize(self.content_output_path) > 0:
+                        with open(self.content_output_path, 'r', encoding='utf-8') as file:
+                            result_data = json.load(file)
+                    else:
+                         self.logger.warning(f"⚠️ Файл {self.content_output_path} пуст, начинаем с {{}}")
+                         result_data = {}
+                except json.JSONDecodeError:
+                    self.logger.warning(f"⚠️ Файл {self.content_output_path} поврежден, создаем новый.")
+                    result_data = {}
+                except Exception as read_err:
+                     self.logger.error(f"Ошибка чтения {self.content_output_path}: {read_err}")
+                     result_data = {} # Начинаем с чистого листа при ошибке чтения
+
+            # Обновляем данные для текущего этапа и добавляем метку времени
             result_data["timestamp"] = datetime.utcnow().isoformat()
             result_data[stage] = data
-            logger.info(f"💾 Записываем данные в {self.content_output_path}...")
+            # Записываем обновленные данные
             with open(self.content_output_path, 'w', encoding='utf-8') as file:
                 json.dump(result_data, file, ensure_ascii=False, indent=4)
-            logger.info(f"✅ Данные успешно обновлены и сохранены на этапе: {stage}")
-        except FileNotFoundError:
-            handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}", FileNotFoundError())
-        except PermissionError:
-            handle_error("Save to Generated Content Error", f"Нет прав на запись в файл: {self.content_output_path}", PermissionError())
+            self.logger.debug(f"✅ Данные локально обновлены для этапа: {stage}")
         except Exception as e:
-            handle_error("Save to Generated Content Error", str(e), e)
+            handle_error("Save to Generated Content Error", f"Ошибка при сохранении в {self.content_output_path}: {str(e)}", e)
 
     def critique_content(self, content, topic):
-        if not self.config.get('CONTENT.critique.enabled', True):
+        """Выполняет критику текста (если включено)."""
+        if not self.config.get('CONTENT.critique.enabled', False): # По умолчанию выключено
             self.logger.info("🔕 Критика контента отключена.")
             return "Критика отключена в конфигурации."
+        if not content:
+             self.logger.warning("Нет текста для критики.")
+             return "Нет текста для критики."
         try:
             self.logger.info("🔄 Выполняется критика текста через OpenAI...")
             prompt_template = self.config.get('CONTENT.critique.prompt_template')
+            if not prompt_template:
+                 self.logger.error("Промпт для критики не найден!")
+                 return "Промпт для критики не найден."
+
             prompt = prompt_template.format(content=content, topic=topic)
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.config.get('CONTENT.critique.max_tokens', 300),
-                temperature=self.config.get('CONTENT.critique.temperature', 0.3)
-            )
-            critique = response['choices'][0]['message']['content'].strip()
+            # Используем request_openai с температурой для критики
+            temperature = self.config.get('CONTENT.critique.temperature', 0.3)
+            critique = self.request_openai(prompt, temperature_override=temperature)
             self.logger.info("✅ Критика успешно завершена.")
             return critique
         except Exception as e:
-            handle_error("Critique Error", str(e), e)
+            self.logger.error(f"❌ Ошибка при выполнении критики.")
+            # Ошибка уже залогирована в request_openai
             return "Критика текста завершилась ошибкой."
 
-    def analyze_topic_generation(self):
-        try:
-            self.logger.info("🔍 Анализ архива успешных публикаций и обратной связи...")
-            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-            positive_feedback_topics = []
-            if os.path.exists(feedback_path):
-                with open(feedback_path, 'r', encoding='utf-8') as file:
-                    feedback_data = json.load(file)
-                    positive_feedback_topics = [
-                        entry['topic'] for entry in feedback_data if
-                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                    ]
-                self.logger.info(f"✅ Загрузили {len(positive_feedback_topics)} успешных тем из обратной связи.")
-            else:
-                self.logger.warning("⚠️ Файл обратной связи не найден.")
-            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-            successful_topics = []
-            if os.path.exists(archive_folder):
-                for filename in os.listdir(archive_folder):
-                    if filename.endswith('.json'):
-                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                            archive_data = json.load(file)
-                            if archive_data.get('success', False):
-                                successful_topics.append(archive_data.get('topic', ''))
-                self.logger.info(f"✅ Загрузили {len(successful_topics)} успешных тем из архива.")
-            else:
-                self.logger.warning("⚠️ Папка архива не найдена.")
-            tracker = self.load_tracker()
-            valid_focus_areas = self.get_valid_focus_areas(tracker)
-            combined_topics = list(set(positive_feedback_topics + successful_topics + valid_focus_areas))
-            self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
-            return combined_topics
-        except Exception as e:
-            handle_error("Topic Analysis Error", str(e), e)
-            return []
-
-    def get_valid_focus_areas(self, tracker):
-        all_focuses = tracker["all_focuses"]
-        used_focuses = tracker["used_focuses"]
-        valid_focuses = [f for f in all_focuses if f not in used_focuses]
-        self.logger.info(f"✅ Доступные фокусы: {valid_focuses}")
-        return valid_focuses
-
-    def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
-        try:
-            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-            feedback_foci = []
-            if os.path.exists(feedback_path):
-                with open(feedback_path, 'r', encoding='utf-8') as file:
-                    feedback_data = json.load(file)
-                    feedback_foci = [
-                        entry['topic'] for entry in feedback_data if
-                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                    ]
-            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-            archive_foci = []
-            if os.path.exists(archive_folder):
-                for filename in os.listdir(archive_folder):
-                    if filename.endswith('.json'):
-                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                            archive_data = json.load(file)
-                            if archive_data.get('success', False):
-                                archive_foci.append(archive_data.get('topic', ''))
-            for focus in feedback_foci + archive_foci:
-                if focus in valid_focus_areas:
-                    self.logger.info(f"✅ Выбран приоритетный фокус: {focus}")
-                    return focus
-            if valid_focus_areas:
-                self.logger.info(f"🔄 Используем первый доступный фокус: {valid_focus_areas[0]}")
-                return valid_focus_areas[0]
-            self.logger.warning("⚠️ Нет доступных фокусов для выбора.")
-            return None
-        except Exception as e:
-            handle_error("Focus Prioritization Error", str(e), e)
-            return None
-
-    def load_tracker(self):
-        os.makedirs(os.path.dirname(TRACKER_PATH), exist_ok=True)
-        s3 = get_b2_client()
-        tracker_updated = False
-        if not s3:
-            self.logger.warning("⚠️ Не удалось создать клиент B2 для загрузки трекера")
-        else:
-            try:
-                s3.download_file(B2_BUCKET_NAME, "data/topics_tracker.json", TRACKER_PATH)
-                self.logger.info("✅ Загружен topics_tracker.json из B2")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Не удалось загрузить из B2: {e}")
-                if not os.path.exists(TRACKER_PATH):
-                    self.logger.info("Создаём новый topics_tracker.json из FailSafeVault")
-                    with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
-                        failsafe = json.load(f)
-                    tracker = {
-                        "all_focuses": failsafe["focuses"],
-                        "used_focuses": [],
-                        "focus_data": {}
-                    }
-                    with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
-                        json.dump(tracker, f, ensure_ascii=False, indent=4)
-                    tracker_updated = True
-        with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
-            tracker = json.load(f)
-        if "all_focuses" not in tracker:
-            self.logger.info("Обновляем старый трекер: добавляем all_focuses")
-            with open(FAILSAFE_PATH, 'r', encoding='utf-8') as f:
-                failsafe = json.load(f)
-            tracker["all_focuses"] = failsafe["focuses"]
-            tracker.setdefault("used_focuses", [])
-            tracker.setdefault("focus_data", {})
-            with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
-                json.dump(tracker, f, ensure_ascii=False, indent=4)
-            tracker_updated = True
-        if tracker_updated and s3:
-            self.sync_tracker_to_b2()
-        return tracker
-
-    def run(self):
-
-        # --- Начало Шага 1.1.3: Обработка аргумента и определение generation_id ---
-
-        # Убедитесь, что logger уже инициализирован к этому моменту, если вы используете его здесь
-        # logger = get_logger("generate_content") # Пример
-
-        # Импорты os, json, argparse, datetime должны быть в начале файла
-        # Функция generate_file_id() должна быть определена выше
-        # Функция ensure_directory_exists (или аналог) должна быть доступна/импортирована
-        # from modules.utils import ensure_directory_exists # Пример
-
-        # --- Начало НОВОГО Шага 1.1: ОБЯЗАТЕЛЬНЫЙ аргумент generation_id ---
-        parser = argparse.ArgumentParser(description='Generate content for a specific ID.')
-        # Делаем аргумент ОБЯЗАТЕЛЬНЫМ
-        parser.add_argument('--generation_id', type=str, required=True,
-                            help='The generation ID for the content file (Mandatory).')
-        args = parser.parse_args()
-        # Получаем ID ИСКЛЮЧИТЕЛЬНО из аргумента
-        generation_id = args.generation_id
-
-        # Опционально, но рекомендуется: очищаем от .json, если он вдруг будет передан
-        if generation_id and isinstance(generation_id, str) and generation_id.endswith(".json"):
-            original_id_with_ext = generation_id
-            generation_id = generation_id.replace(".json", "")
-            logger.info(f"ID из аргумента '{original_id_with_ext}' очищен от расширения: {generation_id}")
-
-        # Проверка, что ID получен (хотя argparse с required=True должен это гарантировать)
+    def run(self, generation_id):
+        """Основной процесс генерации контента для заданного ID."""
+        self.logger.info(f"--- Запуск ContentGenerator.run для ID: {generation_id} ---")
         if not generation_id:
-            logger.error("Критическая ошибка: generation_id не был получен из аргумента!")
-            raise ValueError("Argument --generation_id is required but was not parsed.")
-
-        # Логгируем полученный ID
-        logger.info(f"--- ID для текущего запуска получен из аргумента: {generation_id} ---")
-        # --- Конец НОВОГО Шага 1.1 ---
-        logger.info(f"--- ID для текущего запуска определен: {generation_id} ---")
-
-        # --- Конец Шага 1.1.3 ---
-
-        # --- Далее должен идти ВАШ СУЩЕСТВУЮЩИЙ КОД из блока if __name__ == "__main__": ---
-        # --- Например, создание объекта generator = ContentGenerator() и вызов его методов ---
-        # --- Убедитесь, что он использует переменную 'generation_id' ---
-
-        # try:
-        #     # Ваш существующий код...
-        # except Exception as main_err:
-        #     # Ваша обработка ошибок...
-
-        """Основной процесс генерации контента."""
-        lock_file = "config/processing.lock"
-
-        if os.path.exists(lock_file):
-            logger.info("🔒 Процесс уже выполняется. Завершаем работу.")
-            return
+             self.logger.error("❌ В ContentGenerator.run не передан generation_id!")
+             raise ValueError("generation_id не может быть пустым.")
 
         try:
-            os.makedirs(os.path.dirname(lock_file), exist_ok=True)
-            with open(lock_file, "w") as f:
-                f.write("")
-
-            download_config_public()
-            if not os.path.exists(CONFIG_PUBLIC_LOCAL_PATH):
-                logger.error(f"❌ Файл {CONFIG_PUBLIC_LOCAL_PATH} не загружен из B2, создаём пустой config_public")
-                config_public = {"empty": ["666/"]}
-                os.makedirs(os.path.dirname(CONFIG_PUBLIC_LOCAL_PATH), exist_ok=True)
-                with open(CONFIG_PUBLIC_LOCAL_PATH, "w", encoding="utf-8") as file:
-                    json.dump(config_public, file, ensure_ascii=False, indent=4)
-            else:
-                with open(CONFIG_PUBLIC_LOCAL_PATH, "r", encoding="utf-8") as file:
-                    config_public = json.load(file)
-
-            empty_folders = config_public.get("empty", [])
-            if len(empty_folders) > 1:
-                config_public["empty"] = [empty_folders[0]]
-                with open(CONFIG_PUBLIC_LOCAL_PATH, "w", encoding="utf-8") as file:
-                    json.dump(config_public, file, ensure_ascii=False, indent=4)
-                logger.info("Лимит: одна генерация, взята папка %s", empty_folders[0])
-
-            if not self.config.get('CONTENT.topic.enabled', True):
-                logger.error("❌ Генерация темы отключена, дальнейшая работа невозможна.")
-                return
-
-            if not empty_folders:
-                logger.info("✅ Нет пустых папок. Процесс завершён.")
-                return
-
+            # --- Шаг 1: Подготовка ---
             self.adapt_prompts()
-            self.clear_generated_content()
+            self.clear_generated_content() # Очищает локальный файл generated_content.json
+
+            # --- Шаг 2: Генерация Темы ---
             tracker = self.load_tracker()
             topic, content_data = self.generate_topic(tracker)
-            if not topic:
-                logger.error("❌ Тема не сгенерирована, прерываем выполнение.")
-                return
+            # generate_topic выбросит исключение, если не сможет сгенерировать тему
 
+            # --- Шаг 3: Генерация Текста ---
+            text_initial = ""
             if self.config.get('CONTENT.text.enabled', True) or self.config.get('CONTENT.tragic_text.enabled', True):
-                if "theme" in content_data and content_data["theme"] == "tragic" and self.config.get(
-                        'CONTENT.tragic_text.enabled', True):
-                    text_initial = self.request_openai(
-                        self.config.get('CONTENT.tragic_text.prompt_template').format(topic=topic))
+                prompt_key = 'CONTENT.tragic_text.prompt_template' if content_data.get("theme") == "tragic" else 'CONTENT.text.prompt_template'
+                prompt_template = self.config.get(prompt_key)
+                if prompt_template:
+                     text_initial = self.request_openai(prompt_template.format(topic=topic))
+                     self.logger.info(f"Сгенерирован текст (длина: {len(text_initial)}): {text_initial[:100]}...")
+                     self.save_to_generated_content("text", {"text": text_initial})
                 else:
-                    text_initial = self.request_openai(
-                        self.config.get('CONTENT.text.prompt_template').format(topic=topic))
-                critique = self.critique_content(text_initial, topic)
-                self.save_to_generated_content("critique", {"critique": critique})
+                     self.logger.warning(f"Промпт {prompt_key} не найден, генерация текста пропущена.")
             else:
-                text_initial = ""
-                logger.info("🔕 Генерация текста отключена.")
+                self.logger.info("🔕 Генерация текста отключена.")
 
+            # --- Шаг 4: Критика ---
+            critique_result = self.critique_content(text_initial, topic)
+            self.save_to_generated_content("critique", {"critique": critique_result})
+
+            # --- Шаг 5: Генерация Сарказма ---
             sarcastic_comment = None
-            sarcastic_poll = None
-            if text_initial:
+            sarcastic_poll = {}
+            if text_initial: # Генерируем сарказм только если есть текст
                 sarcastic_comment = self.generate_sarcasm(text_initial, content_data)
-                sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
-                self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment, "poll": sarcastic_poll})
+                sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data) # Используем исправленный метод
+            self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment, "poll": sarcastic_poll})
 
-            # --- Начало ИСПРАВЛЕННОГО Шага 1.2 (JSON Mode + Restriction) ---
+            # --- Шаг 6: Генерация Сценария и Кадра ---
             script_text = None
             first_frame_description = None
             try:
-                logger.info("Запрос к OpenAI (JSON Mode) для генерации сценария и описания кадра...")
-                # --- Получение темы (убедитесь, что переменная 'topic' доступна) ---
-                if not topic:
-                    raise ValueError("Переменная 'topic' не определена перед генерацией сценария.")
+                self.logger.info("Запрос к OpenAI (JSON Mode) для генерации сценария и описания кадра...")
+                restrictions_list = self.config.get("restrictions", [])
+                chosen_restriction = random.choice(restrictions_list) if restrictions_list else "No specific restrictions."
+                self.logger.info(f"Выбрано ограничение: {chosen_restriction}")
 
-                # --- Получение и выбор ограничения ---
-                restrictions_list = self.config.get("restrictions", [])  # Получаем список из конфига
-                if not restrictions_list:
-                    logger.warning("Список 'restrictions' в конфиге пуст или отсутствует!")
-                    chosen_restriction = "No specific restrictions."  # Запасной вариант
-                else:
-                    # Убедитесь, что 'random' импортирован (import random)
-                    chosen_restriction = random.choice(restrictions_list)
-                logger.info(f"Выбрано ограничение: {chosen_restriction}")
-
-                # --- Получение и форматирование промпта ---
-                prompt_combined_config_key = 'PROMPTS.user_prompt_combined'
-                prompt_template = self.config.get(prompt_combined_config_key)
+                prompt_template = self.config.get('PROMPTS.user_prompt_combined')
                 if not prompt_template:
-                    raise ValueError(f"Промпт не найден в конфигурации: {prompt_combined_config_key}")
-                # Теперь форматируем с ДВУМЯ аргументами
+                    raise ValueError("Промпт PROMPTS.user_prompt_combined не найден!")
                 prompt_combined = prompt_template.format(topic=topic, restriction=chosen_restriction)
 
-                # --- Получение параметров модели (как раньше) ---
-                openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
-                openai_max_tokens = self.config.get("OPENAI_SETTINGS.max_tokens_script", 1000)
-                openai_temperature = self.config.get("OPENAI_SETTINGS.temperature_script", 0.7)
-                logger.info(
-                    f"Параметры для OpenAI (script/frame): model={openai_model}, max_tokens={openai_max_tokens}, temp={openai_temperature}, response_format=json_object")
+                # Используем request_openai с флагом JSON
+                response_content = self.request_openai(prompt_combined, use_json_mode=True)
+                self.logger.debug(f"Raw OpenAI JSON response for script/frame: {response_content[:500]}")
+                script_data = json.loads(response_content)
 
-                # --- Вызов OpenAI API с JSON Mode (как раньше) ---
-                response = openai.ChatCompletion.create(
-                    model=openai_model,
-                    messages=[{"role": "user", "content": prompt_combined}],
-                    max_tokens=openai_max_tokens,
-                    temperature=openai_temperature,
-                    response_format={"type": "json_object"}
-                )
-                response_content = response["choices"][0]["message"]["content"]
-                logger.debug(f"Raw OpenAI JSON response for script/frame: {response_content[:500]}")
+                script_text = script_data.get("script")
+                first_frame_description = script_data.get("first_frame_description")
 
-                # --- Парсинг JSON (как раньше) ---
-                try:
-                    script_data = json.loads(response_content)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Ошибка парсинга JSON ответа OpenAI (даже в JSON Mode!): {e}")
-                    raise ValueError("API OpenAI вернул невалидный JSON, несмотря на JSON Mode.") from e
+                if not script_text or not first_frame_description:
+                    raise ValueError(f"Ключи 'script' или 'first_frame_description' отсутствуют/пусты в JSON от OpenAI: {script_data}")
 
-                # --- Извлечение данных и проверка (как раньше) ---
-                if script_data:
-                    script_text = script_data.get("script")
-                    first_frame_description = script_data.get("first_frame_description")
-                    if not script_text or not first_frame_description:
-                        logger.error(
-                            f"Ключи 'script' или 'first_frame_description' отсутствуют/пусты в JSON. Получено: {script_data}")
-                        raise ValueError("Ключи 'script' или 'first_frame_description' отсутствуют или пусты в JSON.")
-                    else:
-                        logger.info("✅ Сценарий и описание кадра успешно извлечены (JSON Mode).")
-                else:
-                    raise ValueError("Не удалось получить распарсенные данные script_data после json.loads().")
+                self.logger.info("✅ Сценарий и описание кадра успешно извлечены (JSON Mode).")
+                self.save_to_generated_content("script", {"script": script_text, "first_frame_description": first_frame_description})
 
-            # Обработка ИСКЛЮЧЕНИЙ (как раньше)
             except (json.JSONDecodeError, ValueError) as parse_err:
-                logger.error(f"❌ Ошибка парсинга или валидации JSON сценария/описания: {parse_err}.")
-                raise Exception(
-                    "Критическая ошибка: не удалось получить валидный сценарий/описание от OpenAI.") from parse_err
-            except openai.error.OpenAIError as api_err:
-                logger.error(f"❌ Ошибка OpenAI API при генерации сценария/описания: {api_err}")
-                raise Exception("Критическая ошибка: ошибка API OpenAI при генерации сценария.") from api_err
-            except Exception as general_err:
-                logger.error(f"❌ Неожиданная ошибка при генерации сценария/описания: {general_err}")
-                raise Exception("Критическая ошибка: неожиданная ошибка при генерации сценария.") from general_err
+                self.logger.error(f"❌ Ошибка парсинга/валидации JSON сценария/описания: {parse_err}.")
+                # Не прерываем весь процесс, но логируем и оставляем script/description пустыми
+                script_text = None
+                first_frame_description = None
+            except Exception as script_err:
+                self.logger.error(f"❌ Неожиданная ошибка при генерации сценария/описания: {script_err}", exc_info=True)
+                script_text = None
+                first_frame_description = None
 
-            # --- Конец ИСПРАВЛЕННОГО Шага 1.2 ---
-            # --- Начало Шага 1.3.3: Формирование полного словаря ---
-            logger.info("Формирование итогового словаря complete_content_dict...")
-            # Определение final_text ПЕРЕД его использованием в словаре
-            final_text = text_initial.strip() if text_initial else ""
-            # Убедимся, что все нужные переменные существуют к этому моменту:
-            # topic, final_text, sarcastic_comment, sarcastic_poll, script_text, first_frame_description
-            # Переменная final_text определяется ниже, перенесем ее определение сюда:
-
+            # --- Шаг 7: Формирование и Сохранение Итогового Контента в B2 ---
+            self.logger.info("Формирование итогового словаря для B2...")
             complete_content_dict = {
-                "topic": topic if 'topic' in locals() else "Тема не сгенерирована",
-                "content": final_text,
+                "topic": topic,
+                "content": text_initial.strip() if text_initial else "",
                 "sarcasm": {
-                    "comment": sarcastic_comment if 'sarcastic_comment' in locals() else None,
-                    "poll": sarcastic_poll if 'sarcastic_poll' in locals() and isinstance(sarcastic_poll, dict) else {}
+                    "comment": sarcastic_comment,
+                    "poll": sarcastic_poll # Сохраняем результат (может быть пустым словарем)
                 },
-                "script": script_text if 'script_text' in locals() else None,
-                "first_frame_description": first_frame_description if 'first_frame_description' in locals() else None
+                "script": script_text, # Будет None, если генерация не удалась
+                "first_frame_description": first_frame_description # Будет None, если генерация не удалась
             }
-            logger.debug(
-                f"Сформирован complete_content_dict: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
-            # --- Конец Шага 1.3.3 ---
-            # --- Перенесенное определение final_text ---
-            # Строку 'final_text = text_initial.strip()' ниже по коду нужно будет удалить или закомментировать
-            #final_text = text_initial.strip()
+            self.logger.debug(f"Итоговый словарь: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
 
-            # --- Начало Шага 1.3.5: Исправленный вызов save_to_b2 ---
-            logger.info(f"Попытка сохранения {generation_id}.json в папку 666/...")
-            # Убедитесь, что функция save_to_b2 импортирована/доступна
-            # и что она использует 'generation_id' для имени файла.
-            # Передаем папку "666/" и полный словарь.
+            # Вызываем функцию save_content_to_b2 (определенную выше в этом файле), передавая ID
+            self.logger.info(f"Сохранение итогового контента в B2 для ID {generation_id}...")
+            success = save_content_to_b2(
+                 "666/", # Целевая папка
+                 complete_content_dict, # Словарь с данными
+                 generation_id # <--- Передаем правильный ID!
+            )
+            if not success:
+                # Если сохранение не удалось, это критично
+                raise Exception(f"Не удалось сохранить итоговый контент в B2 для ID {generation_id}")
+
+            # --- Шаг 8: Обновление config_midjourney.json ---
+            self.logger.info(f"Обновление config_midjourney.json для ID: {generation_id} (установка generation: true)")
             try:
-                # Предполагаем, что save_to_b2 возвращает True/False или кидает исключение
-                # Если ваша функция save_to_b2 требует ID явно, передайте его:
-                # success = save_to_b2("666/", complete_content_dict, generation_id)
-                success = save_to_b2("666/", complete_content_dict)  # Если ID используется неявно
+                s3_client_mj = self.b2_client
+                if not s3_client_mj:
+                     raise ConnectionError("B2 клиент недоступен для обновления config_midjourney")
 
-                if not success:
-                    # Если save_to_b2 возвращает False при ошибке
-                    logger.error(f"❌ Функция save_to_b2 вернула ошибку при сохранении в 666/{generation_id}.json")
-                    # Прерываем выполнение, так как сохранение критично
-                    raise Exception(f"Не удалось сохранить контент в B2: 666/{generation_id}.json")
-                else:
-                    logger.info(f"✅ Контент успешно сохранен в B2: 666/{generation_id}.json")
-
-            except Exception as save_err:
-                # Ловим ошибки, которые может выбросить save_to_b2
-                logger.error(f"❌ Исключение при вызове save_to_b2: {save_err}")
-                raise Exception(f"Не удалось сохранить контент в B2: {save_err}") from save_err
-
-                # Далее должен идти Шаг 1.4 - установка флага generation:true
-                # --- Конец Шага 1.3.5 ---
-            # --- Начало Шага 1.4: Установка флага generation: true ---
-            try:
-                logger.info(f"Обновление config_midjourney.json для ID: {generation_id}")
-                # --- Получение B2 клиента ---
-                # Убедитесь, что функция get_b2_client() импортирована/доступна
-                s3_client = get_b2_client()
-                if not s3_client:
-                    raise ConnectionError("Не удалось создать клиент B2 для обновления config_midjourney")
-
-                # --- Константы и переменные ---
                 config_mj_remote_path = "config/config_midjourney.json"
-                # Используем ID в имени временного файла для потокобезопасности, если скрипт вдруг будет запускаться параллельно
-                config_mj_local_path = os.path.join("config", f"config_midjourney_{generation_id}_temp.json")
-                # Убедитесь, что B2_BUCKET_NAME определен (из os.getenv или конфига)
-                bucket_name = os.getenv("B2_BUCKET_NAME")  # Пример
+                timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+                config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
+                bucket_name = B2_BUCKET_NAME
 
-                # --- Загрузка текущего config_midjourney.json из B2 ---
-                config_mj = {}  # Словарь по умолчанию
-                try:
-                    # Убедитесь, что ensure_directory_exists доступна/импортирована
-                    ensure_directory_exists(os.path.dirname(config_mj_local_path))
-                    logger.debug(f"Загрузка {config_mj_remote_path} из B2 в {config_mj_local_path}")
-                    s3_client.download_file(bucket_name, config_mj_remote_path, config_mj_local_path)
-                    with open(config_mj_local_path, 'r', encoding='utf-8') as f:
-                        if os.path.getsize(config_mj_local_path) > 0:  # Проверка на пустоту файла
-                            config_mj = json.load(f)
-                        else:
-                            logger.warning(f"Загруженный файл {config_mj_local_path} пуст.")
-                    logger.info(f"Загружен {config_mj_remote_path} из B2.")
-                except s3_client.exceptions.NoSuchKey:
-                    logger.warning(f"{config_mj_remote_path} не найден в B2. Будет создан новый.")
-                    config_mj = {}  # Создать пустой словарь, если файл не найден
-                except json.JSONDecodeError as json_err:
-                    logger.error(
-                        f"Ошибка парсинга JSON из {config_mj_local_path}: {json_err}. Используем пустой конфиг.")
-                    config_mj = {}
-                except Exception as download_err:
-                    logger.error(f"Ошибка загрузки {config_mj_remote_path}: {download_err}")
-                    # Считаем эту ошибку критичной, так как не можем обновить статус
-                    raise Exception(
-                        f"Критическая ошибка: не удалось загрузить {config_mj_remote_path}") from download_err
+                # Загрузка текущего config_midjourney.json из B2
+                config_mj = load_b2_json(s3_client_mj, bucket_name, config_mj_remote_path, config_mj_local_path, default_value={})
+                if config_mj is None: config_mj = {}
 
-                # --- Обновление данных ---
+                # Обновление данных
                 config_mj['generation'] = True
-                config_mj['midjourney_task'] = None  # Очистка ID задачи
-                config_mj['midjourney_results'] = {}  # Очистка результатов
-                logger.info("Данные для config_midjourney.json подготовлены: generation=True, task/results очищены.")
+                config_mj['midjourney_task'] = None
+                config_mj['midjourney_results'] = {}
+                config_mj['status'] = None
+                self.logger.info("Данные для config_midjourney.json подготовлены: generation=True, task/results очищены.")
 
-                # --- Сохранение локально ---
-                with open(config_mj_local_path, 'w', encoding='utf-8') as f:
-                    json.dump(config_mj, f, ensure_ascii=False, indent=4)
-                logger.debug(f"Обновленный config_mj сохранен локально в {config_mj_local_path}")
-
-                # --- Загрузка обратно в B2 ---
-                s3_client.upload_file(config_mj_local_path, bucket_name, config_mj_remote_path)
-                logger.info(f"✅ Обновленный {config_mj_remote_path} (generation=True) загружен в B2.")
+                # Сохранение обратно в B2 (используем save_b2_json из utils)
+                if not save_b2_json(s3_client_mj, bucket_name, config_mj_remote_path, config_mj_local_path, config_mj):
+                     raise Exception("Не удалось сохранить config_mj после установки generation=True!")
+                else:
+                     self.logger.info(f"✅ Обновленный {config_mj_remote_path} (generation=True) загружен в B2.")
 
             except Exception as e:
-                # Используйте ваш стандартный обработчик ошибок
-                # handle_error("Set Generation Flag Error", f"Не удалось обновить config_midjourney.json: {str(e)}", e)
-                logger.error(f"❌ Не удалось обновить config_midjourney.json: {str(e)}")
-                # Эта ошибка критична, т.к. без флага не запустится следующий этап
+                self.logger.error(f"❌ Не удалось обновить config_midjourney.json: {str(e)}", exc_info=True)
+                # Эта ошибка критична
                 raise Exception("Критическая ошибка: не удалось установить флаг generation: true") from e
-            finally:
-                # --- Удаление временного файла ---
-                if os.path.exists(config_mj_local_path):
-                    try:
-                        os.remove(config_mj_local_path)
-                        logger.debug(f"Временный файл {config_mj_local_path} удален.")
-                    except OSError as remove_err:
-                        logger.warning(f"Не удалось удалить временный файл {config_mj_local_path}: {remove_err}")
-            # --- Конец Шага 1.4 ---
 
-
-            logger.info("✅ Генерация контента завершена.")
+            self.logger.info(f"✅ ContentGenerator.run успешно завершен для ID {generation_id}.")
 
         except Exception as e:
-            logger.error(f"❌ Ошибка в процессе генерации: {str(e)}")
-        finally:
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-                logger.info("🔓 Лок-файл удалён.")
+            self.logger.error(f"❌ Ошибка в ContentGenerator.run для ID {generation_id}: {str(e)}", exc_info=True)
+            # Пробрасываем исключение, чтобы точка входа могла его поймать и вернуть ненулевой код
+            raise
 
+# --- Точка входа ---
 if __name__ == "__main__":
-    generator = ContentGenerator()
-    generator.run()
+    parser = argparse.ArgumentParser(description='Generate content for a specific ID.')
+    # Аргумент generation_id обязателен
+    parser.add_argument('--generation_id', type=str, required=True,
+                        help='The generation ID for the content file (Mandatory).')
+    args = parser.parse_args()
+    generation_id_main = args.generation_id
+
+    # Дополнительная проверка на пустой ID на всякий случай
+    if not generation_id_main:
+         logger.critical("Критическая ошибка: generation_id не был передан или пуст!")
+         sys.exit(1) # Выход с ошибкой
+
+    logger.info(f"--- Запуск скрипта generate_content.py для ID: {generation_id_main} ---")
+    exit_code = 1 # По умолчанию код выхода - ошибка
+    try:
+        # Создаем экземпляр генератора
+        generator = ContentGenerator()
+        # Запускаем основной метод run, передавая ID
+        generator.run(generation_id_main)
+        logger.info(f"--- Скрипт generate_content.py успешно завершен для ID: {generation_id_main} ---")
+        exit_code = 0 # Успешное завершение
+    except Exception as main_err:
+         # Логгер внутри generator.run уже должен был залогировать детали
+         logger.error(f"!!! КРИТИЧЕСКАЯ ОШИБКА ВЫПОЛНЕНИЯ generate_content.py для ID {generation_id_main} !!!")
+         # exit_code остается 1
+    finally:
+         logger.info(f"--- Завершение generate_content.py с кодом выхода: {exit_code} ---")
+         sys.exit(exit_code) # Выход с соответствующим кодом
+
