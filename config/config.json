@@ -179,7 +179,7 @@
         }
     },
     "IMAGE_GENERATION": {
-        "output_size": "1792x1024",
+        "output_size": "1280×720",
         "midjourney_version": "7.0",
         "midjourney_style": null
     },
