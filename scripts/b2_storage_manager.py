@@ -9,11 +9,10 @@ import sys
 import time
 import argparse
 import io
-from datetime import datetime, timezone, timedelta # <--- Импорт для времени
+from datetime import datetime, timezone, timedelta
 
 # Импорты из ваших модулей
 try:
-    # Попытка импортировать зависимости проекта
     from modules.utils import is_folder_empty, ensure_directory_exists, generate_file_id, load_b2_json, \
         save_b2_json
     from modules.api_clients import get_b2_client
@@ -22,7 +21,6 @@ try:
     from modules.config_manager import ConfigManager
 except ModuleNotFoundError as import_err:
     print(f"Ошибка импорта модулей проекта: {import_err}")
-    print("Убедитесь, что PYTHONPATH настроен правильно или скрипт запускается из корневой папки.")
     sys.exit(1)
 
 # Импорт boto3 и его исключений
@@ -30,7 +28,7 @@ try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
 except ImportError:
-    print("Ошибка: Необходима библиотека boto3. Установите ее: pip install boto3")
+    print("Ошибка: Необходима библиотека boto3.")
     sys.exit(1)
 
 print("--- IMPORTS DONE ---", flush=True)
@@ -43,7 +41,6 @@ try:
     print("--- LOGGER INIT DONE ---", flush=True)
     logger.info("Logger is now active.")
 except Exception as init_err:
-    print(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}")
     print(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", file=sys.stderr)
     sys.exit(1)
 
@@ -60,7 +57,6 @@ CONFIG_GEN_LOCAL_PATH = "config_gen_local_main.json"
 CONFIG_MJ_LOCAL_PATH = "config_mj_local_main.json"
 CONFIG_MJ_LOCAL_CHECK_PATH = "config_mj_local_check.json"
 CONFIG_MJ_LOCAL_TIMEOUT_PATH = "config_mj_local_timeout.json"
-# --- ДОБАВЛЕН ПУТЬ для сохранения при сбросе флага ---
 CONFIG_MJ_LOCAL_RESET_PATH = "config_mj_local_reset.json"
 
 FILE_EXTENSIONS = ['.json', '.png', '.mp4']
@@ -139,26 +135,30 @@ def process_folders(s3, folders):
     logger.info("Сортировка папок завершена.")
 
 def handle_publish(s3, config_public):
+    """Архивирует группы файлов по generation_id из config_public."""
+    # Эта функция теперь просто читает список из config_public и архивирует.
+    # Добавление ID в этот список теперь происходит во внешнем скрипте публикации.
     generation_ids_to_archive = config_public.get("generation_id", [])
-    if not generation_ids_to_archive: logger.info("📂 Нет ID для архивации."); return False
+    if not generation_ids_to_archive: logger.info("📂 Нет ID для архивации в config_public['generation_id']."); return False
     if not isinstance(generation_ids_to_archive, list):
         logger.warning(f"Ключ 'generation_id' не список: {generation_ids_to_archive}. Преобразование.")
         generation_ids_to_archive = [str(generation_ids_to_archive)]
-    logger.info(f"ID для архивации: {generation_ids_to_archive}")
+    logger.info(f"ID для архивации (из config_public): {generation_ids_to_archive}")
     archived_ids = []; failed_ids = []
     for generation_id in list(generation_ids_to_archive):
         clean_id = generation_id.replace(".json", "")
         if not FILE_NAME_PATTERN.match(clean_id): logger.warning(f"ID '{generation_id}' не соответствует паттерну, пропуск."); failed_ids.append(generation_id); continue
         logger.info(f"🔄 Архивируем группу: {clean_id}")
         success = True; found_any_file = False
+        # Ищем файлы во всех папках (444, 555, 666) для архивации
         for folder in FOLDERS:
             for ext in FILE_EXTENSIONS:
                 src_key = f"{folder}{clean_id}{ext}"; dst_key = f"{ARCHIVE_FOLDER.rstrip('/')}/{clean_id}{ext}"
                 try:
                     s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key); found_any_file = True
-                    logger.debug(f"Копирование: {src_key} -> {dst_key}")
+                    logger.debug(f"Копирование для архивации: {src_key} -> {dst_key}")
                     s3.copy_object(Bucket=B2_BUCKET_NAME, CopySource={"Bucket": B2_BUCKET_NAME, "Key": src_key}, Key=dst_key)
-                    logger.debug(f"Удаление: {src_key}")
+                    logger.debug(f"Удаление оригинала: {src_key}")
                     s3.delete_object(Bucket=B2_BUCKET_NAME, Key=src_key)
                     logger.info(f"✅ Заархивировано и удалено: {src_key}")
                 except ClientError as e:
@@ -173,8 +173,9 @@ def handle_publish(s3, config_public):
         if not new_archive_list:
             if "generation_id" in config_public: del config_public["generation_id"]; logger.info("Список generation_id в config_public очищен.")
         else: config_public["generation_id"] = new_archive_list; logger.info(f"Обновлен список generation_id: {new_archive_list}")
-        return True
+        return True # Были изменения
     else: logger.info("Не было успешно заархивировано ни одного ID."); return False
+
 
 # === Основная функция ===
 def main():
@@ -185,13 +186,11 @@ def main():
     logger.info(f"Флаг --zero-delay установлен: {zero_delay_flag} (менее актуален в гибридной модели)")
 
     tasks_processed = 0
-    # --- ИЗМЕНЕНО: Читаем max_tasks_per_run из конфига ---
     try:
         max_tasks_per_run = int(config.get('WORKFLOW.max_tasks_per_run', 1))
     except ValueError:
-        logger.warning("Некорректное значение WORKFLOW.max_tasks_per_run в конфиге. Используется 1.")
+        logger.warning("Некорректное значение WORKFLOW.max_tasks_per_run. Используется 1.")
         max_tasks_per_run = 1
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     logger.info(f"Максимальное количество задач за запуск: {max_tasks_per_run}")
 
     b2_client = None
@@ -199,7 +198,7 @@ def main():
     config_gen = {}
     config_mj = {}
     lock_acquired = False
-    task_completed_successfully = False
+    task_completed_successfully = False # Флаг для финальной очистки config_gen
 
     try:
         b2_client = get_b2_client()
@@ -256,7 +255,7 @@ def main():
                     logger.info(f"Запуск {GENERATE_MEDIA_SCRIPT} --use-mock для ID: {current_generation_id}...")
                     subprocess.run([sys.executable, GENERATE_MEDIA_SCRIPT, '--generation_id', current_generation_id, '--use-mock'], check=True, timeout=300)
                     logger.info(f"{GENERATE_MEDIA_SCRIPT} --use-mock успешно завершен.")
-                    tasks_processed += 1; task_completed_successfully = True; break
+                    tasks_processed += 1; task_completed_successfully = True; break # Задача выполнена (с имитацией)
                 except subprocess.CalledProcessError as e: logger.error(f"Ошибка {GENERATE_MEDIA_SCRIPT} --use-mock: {e}. Прерывание."); break
                 except subprocess.TimeoutExpired: logger.error(f"Таймаут {GENERATE_MEDIA_SCRIPT} --use-mock. Прерывание."); break
                 except Exception as mock_gen_err: logger.error(f"Ошибка генерации имитации: {mock_gen_err}. Прерывание.", exc_info=True); break
@@ -274,9 +273,9 @@ def main():
                     logger.info(f"Готовые результаты MJ для ID {current_generation_id}. Запуск генерации медиа.")
                     try:
                         logger.info(f"Запуск {GENERATE_MEDIA_SCRIPT} для ID: {current_generation_id}...")
-                        subprocess.run([sys.executable, GENERATE_MEDIA_SCRIPT, '--generation_id', current_generation_id], check=True, timeout=600)
+                        subprocess.run([sys.executable, GENERATE_MEDIA_SCRIPT, '--generation_id', current_generation_id], check=True, timeout=600) # Таймаут для Runway
                         logger.info(f"{GENERATE_MEDIA_SCRIPT} успешно завершен (генерация видео).")
-                        tasks_processed += 1; task_completed_successfully = True; break
+                        tasks_processed += 1; task_completed_successfully = True; break # Задача выполнена
                     except subprocess.CalledProcessError as e: logger.error(f"Ошибка {GENERATE_MEDIA_SCRIPT} (ген. видео): {e}. Прерывание."); break
                     except subprocess.TimeoutExpired: logger.error(f"Таймаут {GENERATE_MEDIA_SCRIPT} (ген. видео). Прерывание."); break
                     except Exception as media_gen_err: logger.error(f"Ошибка генерации медиа: {media_gen_err}. Прерывание.", exc_info=True); break
@@ -322,7 +321,9 @@ def main():
                         logger.info("Сохранение config_midjourney.json (статус таймаута) в B2...")
                         if not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, CONFIG_MJ_LOCAL_TIMEOUT_PATH, config_mj): logger.error("!!! Не удалось сохранить config_mj после установки таймаута!")
                         else: logger.info("✅ Config_mj со статусом таймаута сохранен.")
-                    continue
+                    # Прерываем цикл после проверки, чтобы ждать след. запуска по расписанию
+                    logger.info("Завершение текущего запуска менеджера для ожидания следующего по расписанию.")
+                    break
                 except subprocess.CalledProcessError as e: logger.error(f"Ошибка выполнения {WORKSPACE_MEDIA_SCRIPT}: {e}. Прерывание."); break
                 except subprocess.TimeoutExpired: logger.error(f"Таймаут выполнения {WORKSPACE_MEDIA_SCRIPT}. Прерывание."); break
                 except Exception as check_err: logger.error(f"Ошибка на этапе проверки MJ: {check_err}. Прерывание.", exc_info=True); break
@@ -333,7 +334,7 @@ def main():
                 current_generation_id = config_gen.get("generation_id")
                 # --- ИЗМЕНЕНО: Обработка неконсистентности ---
                 if not current_generation_id:
-                    logger.warning("⚠️ Обнаружен флаг generation:true, но нет generation_id в config_gen.json! Сброс флага.")
+                    logger.warning("⚠️ Обнаружен флаг generation:true, но нет generation_id! Сброс флага.")
                     config_mj['generation'] = False
                     # Сохраняем исправленный config_mj
                     if save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, CONFIG_MJ_LOCAL_RESET_PATH, config_mj):
@@ -395,27 +396,34 @@ def main():
         logger.info(f"--- Основной цикл обработки завершен. Обработано задач: {tasks_processed} ---")
 
         # --- Шаг 4.4: Логика завершения задачи ---
+        # --- ИЗМЕНЕНО: Убрано добавление ID в config_public ---
         if task_completed_successfully:
             logger.info("Задача успешно обработана, обновление финальных статусов...")
             try:
-                config_public = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH, config_public)
+                # Загружаем только config_gen для очистки
                 config_gen = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_GEN_REMOTE_PATH, CONFIG_GEN_LOCAL_PATH, config_gen)
-                if config_public is None or config_gen is None: raise Exception("Не удалось загрузить конфиги перед финальным обновлением")
+                if config_gen is None: raise Exception("Не удалось загрузить config_gen перед финальной очисткой")
+
                 completed_id = config_gen.get("generation_id")
                 if completed_id:
-                    clean_completed_id = completed_id.replace(".json", "")
-                    logger.info(f"Перенос ID '{clean_completed_id}' в config_public для архивации.")
-                    archive_list = config_public.get("generation_id", [])
-                    if not isinstance(archive_list, list): archive_list = []
-                    if clean_completed_id not in archive_list: archive_list.append(clean_completed_id)
-                    config_public["generation_id"] = archive_list
+                    # НЕ добавляем в config_public["generation_id"]
+                    # logger.info(f"Перенос ID '{completed_id}' в config_public для архивации.")
+                    # archive_list = config_public.get("generation_id", [])
+                    # ... (логика добавления удалена) ...
+                    # config_public["generation_id"] = archive_list
+
+                    # Просто очищаем config_gen
                     config_gen["generation_id"] = None
                     logger.info("Очистка generation_id в config_gen.")
-                    save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH, config_public)
+                    # Сохраняем только config_gen
+                    # save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH, config_public) # Не сохраняем public здесь
                     save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_GEN_REMOTE_PATH, CONFIG_GEN_LOCAL_PATH, config_gen)
-                    logger.info("Обновленные config_public и config_gen сохранены.")
-                else: logger.warning("Не найден generation_id в config_gen для переноса.")
-            except Exception as final_save_err: logger.error(f"Ошибка при финальном обновлении конфигов: {final_save_err}", exc_info=True)
+                    logger.info("Обновленный config_gen сохранен.")
+                else:
+                    logger.warning("Не найден generation_id в config_gen для очистки.")
+            except Exception as final_save_err:
+                logger.error(f"Ошибка при финальной очистке config_gen: {final_save_err}", exc_info=True)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     except ConnectionError as conn_err: logger.error(f"❌ Ошибка соединения B2: {conn_err}"); lock_acquired = False
     except Exception as main_exec_err: logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в главном блоке: {main_exec_err}", exc_info=True)
