@@ -35,8 +35,10 @@ try:
     from modules.config_manager import ConfigManager
     from modules.logger import get_logger
     from modules.error_handler import handle_error
-    # Импортируем нужные утилиты из utils.py
-    from modules.utils import ensure_directory_exists, load_b2_json, save_b2_json, get_b2_client
+    # Импортируем нужные утилиты из utils.py (БЕЗ get_b2_client)
+    from modules.utils import ensure_directory_exists, load_b2_json, save_b2_json
+    # Импортируем get_b2_client из ПРАВИЛЬНОГО модуля
+    from modules.api_clients import get_b2_client # <--- ИСПРАВЛЕНИЕ ЗДЕСЬ
 except ModuleNotFoundError as e:
      print(f"Критическая Ошибка: Не найдены модули проекта в generate_content: {e}", file=sys.stderr)
      sys.exit(1)
@@ -72,7 +74,7 @@ def save_content_to_b2(folder, content_dict, generation_id):
     logger.info(f"Вызов save_content_to_b2 для ID: {generation_id}")
 
     # Получаем B2 клиент (можно передавать как аргумент или получать здесь)
-    s3 = get_b2_client()
+    s3 = get_b2_client() # Используем импортированную функцию
     if not s3:
         logger.error("❌ Не удалось создать клиент B2 внутри save_content_to_b2")
         return False
@@ -159,7 +161,7 @@ class ContentGenerator:
             raise EnvironmentError("Переменная окружения OPENAI_API_KEY отсутствует.")
         openai.api_key = self.openai_api_key # Устанавливаем ключ для библиотеки
         # Инициализация B2 клиента один раз
-        self.b2_client = get_b2_client()
+        self.b2_client = get_b2_client() # Используем импортированную функцию
         if not self.b2_client:
              self.logger.warning("⚠️ Не удалось инициализировать B2 клиент в ContentGenerator.")
 
@@ -220,6 +222,8 @@ class ContentGenerator:
         if not os.path.exists(TRACKER_PATH_ABS):
             self.logger.warning(f"{TRACKER_PATH_ABS} не найден. Попытка создания из {FAILSAFE_PATH_ABS}.")
             try:
+                # Убедимся, что папка для FailSafe существует (на всякий случай)
+                ensure_directory_exists(FAILSAFE_PATH_ABS)
                 with open(FAILSAFE_PATH_ABS, 'r', encoding='utf-8') as f_failsafe:
                     failsafe_data = json.load(f_failsafe)
                 # Создаем структуру трекера
@@ -277,7 +281,8 @@ class ContentGenerator:
         # Используем set для быстрой проверки
         used_set = set(used_focuses)
         valid_focuses = [f for f in all_focuses if f not in used_set]
-        self.logger.info(f"✅ Доступные фокусы: {valid_focuses}")
+        self.logger.info(f"✅ Доступные фокусы: {len(valid_focuses)} шт.") # Логируем количество для краткости
+        self.logger.debug(f"Полный список доступных фокусов: {valid_focuses}")
         return valid_focuses
 
     def generate_topic(self, tracker):
@@ -285,23 +290,20 @@ class ContentGenerator:
         valid_focuses = self.get_valid_focus_areas(tracker)
         if not valid_focuses:
             self.logger.error("❌ Нет доступных фокусов для генерации темы.")
-            # Можно либо выбросить исключение, либо вернуть None
             raise ValueError("Все фокусы использованы, невозможно сгенерировать тему.")
-            # return None, {} # Альтернативный вариант
 
         selected_focus = random.choice(valid_focuses)
         self.logger.info(f"Выбран фокус для генерации темы: {selected_focus}")
-        # Получаем список уже использованных ярлыков для этого фокуса, чтобы избежать повторов
         used_labels_for_focus = tracker.get("focus_data", {}).get(selected_focus, [])
         exclusions_str = ", ".join(used_labels_for_focus) if used_labels_for_focus else "нет"
 
-        # Формируем промпт
         prompt_template = self.config.get("CONTENT.topic.prompt_template")
         if not prompt_template:
              self.logger.error("Промпт CONTENT.topic.prompt_template не найден!")
              raise ValueError("Отсутствует промпт для генерации темы.")
         prompt = prompt_template.format(focus_areas=selected_focus, exclusions=exclusions_str)
 
+        topic_response_str = "" # Инициализация на случай ошибки
         try:
             # Запрашиваем JSON ответ
             topic_response_str = self.request_openai(prompt, use_json_mode=True)
@@ -340,19 +342,19 @@ class ContentGenerator:
         if focus in used_focuses:
             used_focuses.remove(focus)
         used_focuses.insert(0, focus)
-        if len(used_focuses) > 15:
-            used_focuses.pop()
+        # Обрезаем список до 15 элементов
+        tracker["used_focuses"] = used_focuses[:15]
 
         # Обновляем список ярлыков для данного фокуса (последние 5)
         focus_labels = focus_data.setdefault(focus, [])
         if short_topic in focus_labels:
              focus_labels.remove(short_topic) # Убираем, чтобы вставить в начало
         focus_labels.insert(0, short_topic)
-        if len(focus_labels) > 5:
-            focus_labels.pop()
+        # Обрезаем список до 5 элементов
+        focus_data[focus] = focus_labels[:5]
 
         # Обновляем основной словарь tracker (переданный по ссылке)
-        tracker["used_focuses"] = used_focuses
+        # tracker["used_focuses"] = used_focuses # Уже обновлен выше
         tracker["focus_data"] = focus_data
 
         # Сохраняем обновленный трекер локально и в B2
@@ -424,10 +426,22 @@ class ContentGenerator:
                 request_args["response_format"] = {"type": "json_object"}
 
             response = openai.ChatCompletion.create(**request_args)
+            # Добавим проверку наличия ответа
+            if not response or not response.choices or not response.choices[0].message or not response.choices[0].message.content:
+                 self.logger.error("❌ OpenAI API вернул пустой или некорректный ответ.")
+                 raise ValueError("Пустой или некорректный ответ от OpenAI API")
+
             return response['choices'][0]['message']['content'].strip()
 
         except openai.error.OpenAIError as e:
             logger.error(f"❌ Ошибка при работе с OpenAI API: {e}")
+            # Дополнительная информация об ошибке, если доступна
+            if hasattr(e, 'http_body') and e.http_body:
+                 try:
+                      error_details = json.loads(e.http_body)
+                      logger.error(f"    Детали ошибки API: {error_details}")
+                 except json.JSONDecodeError:
+                      logger.error(f"    Тело ответа API (не JSON): {e.http_body}")
             raise # Пробрасываем ошибку выше
         except Exception as e:
              logger.error(f"❌ Неизвестная ошибка в request_openai: {e}", exc_info=True)
@@ -533,7 +547,8 @@ class ContentGenerator:
                         with open(self.content_output_path, 'r', encoding='utf-8') as file:
                             result_data = json.load(file)
                     else:
-                         self.logger.warning(f"⚠️ Файл {self.content_output_path} пуст, начинаем с {{}}")
+                         # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+                         self.logger.warning(f"⚠️ Файл {self.content_output_path} пуст, начинаем с {{}}") # Используем {{}} для вывода скобок
                          result_data = {}
                 except json.JSONDecodeError:
                     self.logger.warning(f"⚠️ Файл {self.content_output_path} поврежден, создаем новый.")
