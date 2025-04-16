@@ -354,38 +354,69 @@ class ContentGenerator:
             return ""
 
     def generate_sarcasm_poll(self, text, content_data={}):
+        # Проверка, включена ли генерация опросов
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.poll_enabled', True):
             self.logger.info("🔕 Генерация саркастического опроса отключена.")
-            return {}
+            return {} # Возвращаем пустой словарь
+
+        # Выбор промпта и температуры в зависимости от темы
         if "theme" in content_data and content_data["theme"] == "tragic":
             prompt = self.config.get('SARCASM.tragic_question_prompt').format(text=text)
             temperature = self.config.get('SARCASM.tragic_poll_temperature', 0.6)
+            prompt_type = "tragic"
         else:
             prompt = self.config.get('SARCASM.question_prompt').format(text=text)
             temperature = self.config.get('SARCASM.poll_temperature', 0.9)
+            prompt_type = "normal"
+
+        # Проверка, что промпт загружен
+        if not prompt:
+             self.logger.error(f"Промпт для опроса ({prompt_type}) не найден в конфигурации!")
+             return {}
+
+        max_tokens = self.config.get('SARCASM.max_tokens_poll', 250)
+        self.logger.info(f"Запрос к OpenAI для генерации опроса (тип: {prompt_type}, max_tokens: {max_tokens}, temp: {temperature})...")
+
         try:
+            # Запрашиваем JSON ответ от модели
             response = openai.ChatCompletion.create(
                 model=self.openai_model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.config.get('SARCASM.max_tokens_poll', 250),
-                temperature=temperature
+                max_tokens=max_tokens,
+                temperature=temperature,
+                # Указываем, что ожидаем JSON (если модель поддерживает, как gpt-4o)
+                # Для старых моделей этот параметр может не работать, но его наличие не должно мешать
+                response_format={"type": "json_object"}
             )
-            poll_text = response['choices'][0]['message']['content'].strip()
-            self.logger.info(f"🛑 Сырой ответ OpenAI перед разбором: {poll_text}")
-            try:
-                poll_data = json.loads(poll_text)
-                if "question" in poll_data and "options" in poll_data:
-                    return poll_data
-            except json.JSONDecodeError:
-                self.logger.warning("⚠️ OpenAI вернул текст, а не JSON. Разбираем вручную...")
-            match = re.findall(r"\d\.-\s*(.+)", poll_text)
-            if len(match) >= 4:
-                question = match[0].strip()
-                options = [opt.strip() for opt in match[1:4]]
-                return {"question": question, "options": options}
-            self.logger.error("❌ OpenAI вернул некорректный формат! Возвращаем пустой объект.")
+            response_content = response['choices'][0]['message']['content'].strip()
+            self.logger.debug(f"Сырой ответ OpenAI для опроса: {response_content[:500]}") # Логируем для отладки
+
+            # Пытаемся распарсить JSON
+            poll_data = json.loads(response_content)
+
+            # Проверяем структуру полученного JSON
+            if isinstance(poll_data, dict) and "question" in poll_data and "options" in poll_data and isinstance(poll_data["options"], list) and len(poll_data["options"]) == 3:
+                self.logger.info("✅ Опрос успешно сгенерирован и распарсен (JSON).")
+                # Дополнительно очищаем строки от лишних пробелов
+                poll_data["question"] = poll_data["question"].strip()
+                poll_data["options"] = [str(opt).strip() for opt in poll_data["options"]]
+                return poll_data
+            else:
+                self.logger.error(f"❌ OpenAI вернул JSON, но структура неверна: {poll_data}")
+                return {}
+
+        except json.JSONDecodeError as e:
+            # Ошибка, если ответ OpenAI - не валидный JSON
+            self.logger.error(f"❌ Ошибка парсинга JSON ответа OpenAI для опроса: {e}. Ответ: {response_content[:500]}")
+            # Здесь можно добавить fallback на ручной разбор, если очень нужно,
+            # но лучше добиваться от модели корректного JSON
             return {}
+        except openai.error.OpenAIError as e:
+             # Обработка ошибок API OpenAI
+             handle_error("Sarcasm Poll Generation OpenAI Error", str(e), e)
+             return {}
         except Exception as e:
+            # Обработка других непредвиденных ошибок
             handle_error("Sarcasm Poll Generation Error", str(e), e)
             return {}
 
