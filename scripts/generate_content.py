@@ -76,6 +76,7 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
         if missing_keys: logger.warning(f"⚠️ Отсутствуют ключи: {missing_keys}.")
         if null_keys: logger.warning(f"⚠️ Ключи с null: {null_keys}.")
 
+        ensure_directory_exists(local_temp_path) # Создаем папку перед записью
         with open(local_temp_path, 'w', encoding='utf-8') as f:
             json.dump(content_dict, f, ensure_ascii=False, indent=4)
         logger.debug(f"Временный файл {local_temp_path} создан.")
@@ -107,7 +108,7 @@ class ContentGenerator:
         self.adaptation_params = self.config.get('GENERATE.adaptation_parameters', {})
         self.content_output_path = self.config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
-        # --- ИЗМЕНЕНО: Инициализация OpenAI с поддержкой прокси ---
+        # --- ИСПРАВЛЕНО: Инициализация OpenAI с поддержкой прокси (версия >= 1.0) ---
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
         self.openai_client = None
@@ -119,33 +120,47 @@ class ContentGenerator:
                     # Проверяем наличие прокси в переменных окружения
                     http_proxy = os.getenv("HTTP_PROXY")
                     https_proxy = os.getenv("HTTPS_PROXY")
-                    proxies = {"http://": http_proxy, "https://": https_proxy} if http_proxy or https_proxy else None
+
+                    # Собираем словарь proxies только если есть хотя бы один прокси
+                    proxies = {}
+                    if http_proxy: proxies["http://"] = http_proxy
+                    if https_proxy: proxies["https://"] = https_proxy
 
                     if proxies:
                         self.logger.info(f"Обнаружены настройки прокси: {proxies}")
                         # Создаем httpx клиент с прокси
                         http_client = httpx.Client(proxies=proxies)
+                        # Передаем http_client в конструктор OpenAI
                         self.openai_client = openai.OpenAI(api_key=self.openai_api_key, http_client=http_client)
                         self.logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
                     else:
-                        # Инициализируем без прокси
+                        # Инициализируем без прокси (не передаем http_client)
                         self.openai_client = openai.OpenAI(api_key=self.openai_api_key)
                         self.logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
                 else:
-                    self.logger.error("❌ Класс openai.OpenAI не найден или модуль не импортирован.")
+                    # Логируем, если модуль openai или класс OpenAI не найдены
+                    if not openai:
+                        self.logger.error("❌ Модуль openai не импортирован.")
+                    elif not hasattr(openai, 'OpenAI'):
+                        self.logger.error("❌ Класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
             except Exception as e:
                  # Ловим любые ошибки инициализации
                  self.logger.error(f"❌ Ошибка инициализации клиента OpenAI: {e}", exc_info=True)
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
         self.b2_client = get_b2_client()
         if not self.b2_client: self.logger.warning("⚠️ Не удалось инициализировать B2 клиент.")
 
+        # --- ИСПРАВЛЕНО: Используем config.get для путей tracker и failsafe ---
         self.tracker_path_rel = self.config.get("FILE_PATHS.tracker_path", "data/topics_tracker.json")
         self.failsafe_path_rel = self.config.get("FILE_PATHS.failsafe_path", "config/FailSafeVault.json")
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
         self.tracker_path_abs = BASE_DIR / self.tracker_path_rel
         self.failsafe_path_abs = BASE_DIR / self.failsafe_path_rel
         self.b2_bucket_name = self.config.get("API_KEYS.b2.bucket_name", "default-bucket")
+        if not self.b2_bucket_name or self.b2_bucket_name == "default-bucket":
+            logger.warning("Имя бакета B2 не задано или используется значение по умолчанию!")
 
     def _load_additional_config(self, config_key, config_name):
         """Вспомогательный метод для загрузки доп. конфигов."""
@@ -286,7 +301,10 @@ class ContentGenerator:
         """
         Отправляет запрос к OpenAI (v > 1.0), используя настройки из prompts_config.json.
         """
-        if not self.openai_client: self.logger.error("❌ OpenAI клиент не инициализирован."); return None
+        if not self.openai_client:
+            self.logger.error("❌ OpenAI клиент не инициализирован. Запрос не может быть выполнен.")
+            # Поднимаем исключение, чтобы прервать выполнение там, где нужен клиент
+            raise RuntimeError("OpenAI client is not initialized.")
         if not self.prompts_config_data: self.logger.error("❌ Конфигурация промптов не загружена."); return None
 
         try:
@@ -302,7 +320,9 @@ class ContentGenerator:
 
             self.logger.info(f"🔎 Вызов OpenAI (Ключ: {prompt_config_key}, Модель: {self.openai_model}, JSON={use_json_mode}, t={temp:.2f}, max_tokens={max_tokens})...")
 
-            messages = [{"role": "system", "content": "Ты - AI ассистент..."}, {"role": "user", "content": prompt_text}] # Сократил system prompt для краткости
+            # Используем упрощенный системный промпт
+            messages = [{"role": "system", "content": "You are a helpful AI assistant specializing in historical content generation."},
+                        {"role": "user", "content": prompt_text}]
             request_params = { "model": self.openai_model, "messages": messages, "max_tokens": max_tokens, "temperature": temp }
             if use_json_mode: request_params["response_format"] = {"type": "json_object"}
 
@@ -310,17 +330,22 @@ class ContentGenerator:
 
             if response.choices and response.choices[0].message and response.choices[0].message.content:
                 response_content = response.choices[0].message.content.strip()
+                # Обработка возможной обертки ```json
                 if use_json_mode and response_content.startswith("```json"):
-                     response_content = response_content[7:]; response_content = response_content[:-3] if response_content.endswith("```") else response_content; response_content = response_content.strip()
+                     response_content = response_content[7:] # Убираем ```json\n
+                     response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
+                     response_content = response_content.strip()
                 self.logger.debug(f"Сырой ответ OpenAI: {response_content[:500]}...")
                 return response_content
             else: self.logger.error("❌ OpenAI API вернул пустой/некорректный ответ."); self.logger.debug(f"Запрос: {messages}"); return None
+        # Обработка специфичных ошибок OpenAI
         except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI: {e}"); return None
         except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI: {e}"); return None
         except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI: {e}"); return None
         except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI: {e.status_code} - {e.response}"); return None
         except openai.BadRequestError as e: logger.exception(f"Ошибка неверного запроса OpenAI: {e}"); return None
         except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI: {e}"); return None
+        # Обработка других исключений
         except Exception as e: logger.exception(f"Неизвестная ошибка в request_openai: {e}"); return None
 
     def _get_prompt_template(self, prompt_config_key: str) -> str | None:
@@ -439,7 +464,9 @@ class ContentGenerator:
         self.logger.info(f"--- Запуск ContentGenerator.run для ID: {generation_id} ---")
         if not generation_id: raise ValueError("generation_id не может быть пустым.")
         if not self.creative_config_data or not self.prompts_config_data: raise RuntimeError("Конфиги не загружены.")
-        if not self.openai_client: raise RuntimeError("OpenAI клиент не инициализирован.")
+        # --- ИСПРАВЛЕНО: Проверка openai_client ---
+        # if not self.openai_client: raise RuntimeError("OpenAI клиент не инициализирован.")
+        # Вместо падения здесь, ошибки будут обработаны в request_openai
 
         try:
             # Шаг 1: Подготовка
@@ -568,7 +595,11 @@ class ContentGenerator:
                     else: self.logger.error("Недостаточно данных для перевода."); translations = None
                 else: self.logger.info("Перевод пропущен.")
 
-            except (json.JSONDecodeError, ValueError) as parse_err: self.logger.error(f"❌ Ошибка шага 6: {parse_err}.")
+            except (json.JSONDecodeError, ValueError, RuntimeError) as step6_err: # Добавил RuntimeError
+                 self.logger.error(f"❌ Ошибка шага 6: {step6_err}.")
+                 # Если ошибка произошла из-за OpenAI клиента, пробрасываем исключение выше
+                 if isinstance(step6_err, RuntimeError) and "OpenAI client" in str(step6_err):
+                     raise
             except Exception as script_err: self.logger.error(f"❌ Ошибка шага 6: {script_err}", exc_info=True)
 
             # Шаг 7: Сохранение в B2
@@ -623,6 +654,8 @@ if __name__ == "__main__":
         generator = ContentGenerator(); generator.run(generation_id_main)
         logger.info(f"--- Скрипт generate_content.py успешно завершен для ID: {generation_id_main} ---")
         exit_code = 0
-    except Exception as main_err: logger.error(f"!!! КРИТИЧЕСКАЯ ОШИБКА generate_content.py для ID {generation_id_main} !!!")
+    except Exception as main_err:
+        logger.error(f"!!! КРИТИЧЕСКАЯ ОШИБКА generate_content.py для ID {generation_id_main} !!!")
+        # Логируем само исключение для большей информации
+        logger.exception(main_err)
     finally: logger.info(f"--- Завершение generate_content.py с кодом выхода: {exit_code} ---"); sys.exit(exit_code)
-
