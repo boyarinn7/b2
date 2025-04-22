@@ -39,11 +39,10 @@ except ImportError:
         def handle_error(context, message, exception=None): # Dummy function
              logger.error(f"Error in {context}: {message} | Details: {exception}")
 
-
+from pathlib import Path
 logger = get_logger("utils") # Используем ваш стандартный логгер
 
 # --- Существующие функции из вашего файла ---
-
 CONFIG_PATH = "config/config.json" # Используется в load_config, но сама load_config не вызывается в других скриптах?
 
 def generate_file_id():
@@ -70,6 +69,30 @@ def load_config():
     except Exception as e:
          logger.error(f"Неизвестная ошибка в load_config: {e}")
          return {}
+
+# Добавьте этот код в конец файла modules/utils.py
+
+def load_json_config(file_path: str): # Принимает строку, а не Path
+    """Загружает JSON конфиг из файла по строковому пути."""
+    # Используем logger, который уже должен быть определен в utils.py
+    # Если логгера нет, можно добавить базовый logging.info/error
+    # или передавать logger как аргумент
+    logger_utils = logging.getLogger("utils") # Получаем логгер utils
+
+    # Преобразуем строку в Path для проверки файла
+    file_path_obj = Path(file_path)
+    if not file_path_obj.is_file():
+        logger_utils.error(f"Файл конфигурации не найден: {file_path}")
+        return None
+    try:
+        with open(file_path_obj, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as json_err:
+         logger_utils.error(f"Ошибка декодирования JSON из {file_path}: {json_err}")
+         return None
+    except Exception as e:
+        logger_utils.error(f"Ошибка загрузки JSON из {file_path}: {e}")
+        return None
 
 # Функции для работы с topics_tracker.json (если они еще нужны)
 def load_topics_tracker():
