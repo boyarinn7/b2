@@ -18,6 +18,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path # Используем pathlib
 import logging # Добавляем logging
+import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
 
 # --- Сторонние библиотеки ---
 try:
@@ -98,15 +99,31 @@ try:
     RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-    # Инициализация клиента OpenAI (v > 1.0)
+    # Инициализация клиента OpenAI (v > 1.0) с поддержкой прокси
     openai_client = None
     if OPENAI_API_KEY:
         try:
             if openai and hasattr(openai, 'OpenAI'):
-                openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-                logger.info("Клиент OpenAI (>1.0) инициализирован для generate_media.")
+                # Проверяем наличие прокси в переменных окружения
+                http_proxy = os.getenv("HTTP_PROXY")
+                https_proxy = os.getenv("HTTPS_PROXY")
+                # Собираем словарь proxies только если есть хотя бы один прокси
+                proxies = {}
+                if http_proxy: proxies["http://"] = http_proxy
+                if https_proxy: proxies["https://"] = https_proxy
+
+                if proxies:
+                    logger.info(f"Обнаружены настройки прокси для OpenAI: {proxies}")
+                    # Создаем httpx клиент с прокси
+                    http_client = httpx.Client(proxies=proxies)
+                    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
+                else:
+                    # Инициализируем без прокси
+                    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
             else:
-                 if openai: logger.error("Класс openai.OpenAI не найден. Убедитесь, что установлена версия библиотеки OpenAI >= 1.0.")
+                 if openai: logger.error("Класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
                  else: logger.error("Модуль openai не импортирован.")
         except Exception as init_err:
             logger.error(f"Ошибка инициализации клиента OpenAI в generate_media: {init_err}")
@@ -356,7 +373,7 @@ def initiate_midjourney_task(mj_prompt: str, ref_id: str = "") -> dict | None:
     headers = { 'X-API-Key': MIDJOURNEY_API_KEY, 'Content-Type': 'application/json' }
     request_time = datetime.now(timezone.utc)
     logger.info(f"Инициация задачи MJ..."); logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
-    response = None # Инициализация response
+    response = None
     try:
         logger.info(f"Отправка запроса на {MIDJOURNEY_ENDPOINT}...")
         response = requests.post(MIDJOURNEY_ENDPOINT, headers=headers, json=payload, timeout=TASK_REQUEST_TIMEOUT)
@@ -370,17 +387,14 @@ def initiate_midjourney_task(mj_prompt: str, ref_id: str = "") -> dict | None:
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Ошибка сети/запроса MJ API: {e}")
-        # --- ИСПРАВЛЕНИЕ: Добавлен отступ ---
         if e.response is not None:
             logger.error(f"    Status: {e.response.status_code}, Body: {e.response.text}")
         return None
     except json.JSONDecodeError as e:
-        # --- ИСПРАВЛЕНИЕ: Добавлен отступ и проверка response ---
         response_text = response.text[:500] if response else "Ответ не получен"
         logger.error(f"❌ Ошибка JSON MJ API: {e}. Ответ: {response_text}");
         return None
     except Exception as e:
-        # --- ИСПРАВЛЕНИЕ: Добавлен отступ ---
         logger.error(f"❌ Неизвестная ошибка MJ: {e}", exc_info=True);
         return None
 
@@ -468,6 +482,7 @@ def main():
                     logger.info(f"Обнаружены результаты MJ. Генерация медиа...")
                     image_urls = image_urls_from_results; logger.info(f"Используем {len(image_urls)} URL.")
                     if not first_frame_description: logger.warning("Нет описания для выбора!")
+                    # Получаем настройки для промпта анализа
                     visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
                     best_image_url = select_best_image(image_urls, first_frame_description or " ", visual_analysis_settings)
                     if not best_image_url: raise ValueError("Не выбрать лучшее изображение.")
