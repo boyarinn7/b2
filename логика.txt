@@ -1,0 +1,334 @@
+# Техническое задание: Обновлённая логика системы генерации контента и медиа
+**Дата обновления**: 16 апреля 2025 г.
+
+**Цель**: Автономная система генерации контента и медиа с единым управлением через `b2_storage_manager.py`, запускаемая по расписанию (основной запуск + доп. проверки). Реализован лимит задач (1 полная задача в основной запуск), "уборка перед стройкой", интеграция с B2, отслеживание статуса Midjourney с таймаутом и fallback на имитацию видео при ошибках/таймаутах генерации.
+
+**Общие принципы**
+
+1.  **Управление через Планировщик и Состояние:**
+    * Основной цикл запускается **один раз в день** через планировщик (GitHub Actions).
+    * Дополнительные запуски `b2_storage_manager.py` по расписанию (например, через ~1ч и ~5ч после основного) выполняют **только проверку статуса Midjourney**, если есть активная задача.
+    * Координация между этапами происходит через **состояние**, сохраняемое в JSON-файлах конфигурации в B2 (`config_public.json`, `config_gen.json`, `config_midjourney.json`).
+    * Дочерние скрипты (`generate_content.py`, `generate_media.py`, `Workspace_media.py`) **не вызывают** `b2_storage_manager.py` напрямую.
+2.  **Лимит Задач:** Основной ежедневный запуск обрабатывает **не более одной полной задачи** (от генерации контента до получения медиа или имитации). Лимит задается в `config.json` (`WORKFLOW.max_tasks_per_run`, по умолчанию 1).
+3.  **"Уборка перед стройкой":** Перед попыткой генерации нового контента выполняется архивация (`handle_publish`) и сортировка папок (`process_folders`).
+4.  **Архивация по Метке:** Архивируются только те `generation_id`, которые присутствуют в списке `config_public.json["generation_id"]`. Предполагается, что этот список пополняется **внешним скриптом-публикатором** (`B2_Content_Download.py`) после успешной публикации контента. `b2_storage_manager.py` **не добавляет** ID в этот список по завершении задачи.
+5.  **Хранилище:** Новый контент и медиа создаются в папке `666/`. Сортировка перемещает готовые группы в `555/`, затем в `444/`. Архив в `archive/`.
+6.  **Флаги и Состояния (`config_midjourney.json`):**
+    * **Ожидание генерации контента:** Нет `midjourney_task`, `midjourney_results`, `generation: false`, `status: null`.
+    * **Ожидание инициации MJ:** `generation: true`, `midjourney_task: null`, `midjourney_results: {}`, `status: null`. (Требуется `generation_id` в `config_gen.json`).
+    * **Ожидание результата MJ:** `generation: false`, `midjourney_task: {"task_id": "...", "requested_at_utc": "..."}`, `midjourney_results: {}`, `status: null`.
+    * **Результат MJ получен:** `generation: false`, `midjourney_task: null`, `midjourney_results: { <полный ответ PiAPI> }`, `status: null`.
+    * **Таймаут ожидания MJ:** `generation: false`, `midjourney_task: null`, `midjourney_results: {}`, `status: "timed_out_mock_needed"`.
+7.  **Отказоустойчивость:** При ошибке генерации видео Runway или при таймауте ожидания MJ создается имитация видео (mock).
+
+---
+
+## 1. `b2_storage_manager.py`
+
+**Роль:** Координирует весь процесс, запускается по расписанию, читает состояние из конфигов B2 и вызывает соответствующие дочерние скрипты.
+
+**Шаги:**
+
+1.  **Инициализация:**
+    * Загружает основной `config.json` через `ConfigManager`.
+    * Инициализирует логгер.
+    * Читает константы (пути, параметры B2, таймаут MJ `WORKFLOW.mj_timeout_seconds`, лимит задач `WORKFLOW.max_tasks_per_run`).
+    * Парсит аргумент `--zero-delay` (влияет только на первую проверку MJ, если она случится в этом запуске).
+    * Инициализирует B2 клиент.
+    * **Проверка и установка блокировки:**
+        * Загружает `config_public.json` из B2.
+        * Если `processing_lock: true`, логирует и завершает работу (предотвращение параллельных запусков).
+        * Если `processing_lock: false`, устанавливает `processing_lock: true` и сохраняет `config_public.json` в B2. `lock_acquired = True`.
+    * Загружает `config_gen.json` и `config_midjourney.json` из B2.
+
+2.  **Основной цикл (`while tasks_processed < max_tasks_per_run`):**
+    * **Перезагрузка конфигов:** В начале каждой итерации перезагружает `config_public.json` и `config_midjourney.json` из B2 для получения актуального состояния.
+    * **Проверка состояний (в указанном порядке):**
+        * **Сценарий 0: Таймаут MJ:**
+            * **Условие:** `config_mj.get('status') == 'timed_out_mock_needed'`.
+            * **Действия:**
+                * Получить `generation_id` из `config_gen.json`. Если нет - ошибка, `break`.
+                * Запустить `generate_media.py --generation_id <id> --use-mock`.
+                * При успехе: `tasks_processed += 1`, `task_completed_successfully = True`, `break` (задача завершена имитацией).
+                * При ошибке: Логировать, `break`.
+        * **Сценарий 3: Результаты MJ Готовы:**
+            * **Условие:** `config_mj.get('midjourney_results')` содержит валиные данные (проверка на `task_result` и наличие URL внутри него).
+            * **Действия:**
+                * Получить `generation_id` из `config_gen.json`. Если нет - ошибка, `break`.
+                * Запустить `generate_media.py --generation_id <id>` (для генерации видео Runway или mock при ошибке Runway).
+                * При успехе: `tasks_processed += 1`, `task_completed_successfully = True`, `break` (задача завершена).
+                * При ошибке: Логировать, `break`.
+        * **Сценарий 2: Ожидание/Проверка MJ:**
+            * **Условие:** `config_mj.get('midjourney_task')` содержит валиные данные (словарь с `task_id` и `requested_at_utc`).
+            * **Действия:**
+                * Запустить `Workspace_media.py` для проверки статуса.
+                * При успехе `Workspace_media.py`:
+                    * Перезагрузить `config_midjourney.json` из B2.
+                    * Если в нем появились `midjourney_results` -> `continue` (следующая итерация обработает Сценарий 3).
+                    * Если результатов нет:
+                        * Проверить метку времени `requested_at_utc` из задачи.
+                        * Если `текущее_время_utc - requested_at_utc > MJ_TIMEOUT_SECONDS`:
+                            * Установить `status: "timed_out_mock_needed"`, `midjourney_task: null` в `config_mj`.
+                            * Сохранить `config_mj` в B2.
+                        * **Прервать цикл (`break`)**. Ожидаем следующего запуска по расписанию для дальнейших проверок или обработки таймаута.
+                * При ошибке `Workspace_media.py`: Логировать, `break`.
+        * **Сценарий 4: Инициация Задачи MJ:**
+            * **Условие:** `config_mj.get('generation') is True`.
+            * **Действия:**
+                * Получить `generation_id` из `config_gen.json`.
+                * **Если `generation_id` отсутствует:**
+                    * Логировать предупреждение о неконсистентности.
+                    * Установить `generation: false` в `config_mj`.
+                    * Сохранить `config_mj` в B2.
+                    * `continue` (перейти к следующей итерации для переоценки состояния).
+                * **Если `generation_id` есть:**
+                    * Запустить `generate_media.py --generation_id <id>` (для инициации задачи MJ).
+                    * При успехе: `continue` (перейти к следующей итерации для обработки `midjourney_task`).
+                    * При ошибке: Логировать, `break`.
+        * **Сценарий 1: Уборка / Генерация Контента:**
+            * **Условие:** Ни одно из предыдущих условий не выполнено.
+            * **Действия:**
+                * **"Уборка":**
+                    * `handle_publish`: Запускается. Архивирует ID из `config_public.json["generation_id"]` (этот список пополняется внешним публикатором). Обновляет `config_public.json` при успехе.
+                    * `process_folders`: Запускается. Сортирует готовые группы файлов (`666/` → `555/` → `444/`).
+                * **Проверка `666/`:** Проверить, есть ли *готовые группы* файлов в `666/`.
+                * **Если ГОТОВЫХ групп в `666/` НЕТ:**
+                    * Сгенерировать новый `generation_id` через `generate_file_id()`.
+                    * Сохранить новый ID в `config_gen.json` в B2.
+                    * Запустить `generate_content.py --generation_id <новый_id>`.
+                    * При успехе: `continue` (перейти к следующей итерации для обработки `generation: true`).
+                    * При ошибке: Логировать, `break`.
+                * **Если ГОТОВЫЕ группы в `666/` ЕСТЬ:**
+                    * Логировать "Папка 666/ содержит готовые группы. Генерация не требуется."
+                    * `break` (завершить цикл, так как основная задача на сегодня - обработать существующие).
+
+3.  **Завершение:**
+    * **После цикла `while`:**
+        * Проверить флаг `task_completed_successfully`.
+        * **Если `True`:**
+            * Загрузить `config_gen.json`.
+            * Прочитать `generation_id`.
+            * **Очистить** `generation_id` в `config_gen.json` (установить `null`).
+            * Сохранить `config_gen.json` в B2.
+            * **НЕ добавлять** `generation_id` в `config_public.json`.
+        * **Блок `finally`:**
+            * Если `lock_acquired` был `True`, установить `processing_lock: false` в `config_public.json` и сохранить его в B2.
+
+**Особенности:**
+
+* Управление потоком через состояние в конфигах B2 и внешний планировщик.
+* Обработка таймаута Midjourney с fallback на имитацию.
+* Архивация запускается на основе списка ID, формируемого внешним публикатором.
+* Добавлена обработка неконсистентного состояния (`generation: true` без `generation_id`).
+
+---
+
+## 2. `generate_content.py`
+
+**Роль:** Генерирует текст, сценарий, описание кадра, сохраняет в B2.
+
+**Шаги:**
+
+1.  **Инициализация:**
+    * Принимает обязательный аргумент `--generation_id`.
+    * Загружает основной `config.json`.
+    * Инициализирует логгер, B2 клиент.
+2.  **Генерация контента:**
+    * Загружает `topics_tracker.json` из B2 (если используется).
+    * Генерирует: Тему, Текст (обычный/трагический), Сарказм (комментарий/опрос).
+    * **Генерация сценария и описания кадра:**
+        * Запрос к OpenAI (`gpt-4o` или модель из конфига) с промптом `PROMPTS.user_prompt_combined`.
+        * Использует **JSON mode** для получения структурированного ответа: `{"script": "...", "first_frame_description": "..."}`.
+    * Формирует итоговый словарь со всеми данными (`topic`, `content`, `sarcasm`, `script`, `first_frame_description`).
+    * Сохраняет итоговый словарь как `<generation_id>.json` в папку `666/` в B2.
+3.  **Обновление состояния:**
+    * Загружает `config_midjourney.json` из B2.
+    * Устанавливает `generation: true`.
+    * Очищает `midjourney_task: null`, `midjourney_results: {}`, `status: null`.
+    * Сохраняет обновленный `config_midjourney.json` в B2.
+4.  **Завершение:** Завершает работу. **Не вызывает** `b2_storage_manager.py`.
+
+**Особенности:**
+
+* Генерирует сценарий/кадр в JSON формате.
+* Устанавливает флаг `generation: true` для следующего шага.
+
+---
+
+## 3. `generate_media.py`
+
+**Роль:** Генерирует медиа (видео Runway или имитацию) на основе готового контента и результатов Midjourney, или инициирует задачу Midjourney.
+
+**Шаги:**
+
+1.  **Инициализация:**
+    * Принимает обязательный аргумент `--generation_id`.
+    * Принимает опциональный флаг `--use-mock`.
+    * Загружает основной `config.json`.
+    * Инициализирует логгер, B2 клиент.
+    * **Добавляет небольшую паузу (`time.sleep`)** перед загрузкой файлов из B2 (для обхода возможной задержки B2).
+    * Загружает файл контента `<generation_id>.json` из папки `666/` B2. Если не найден - ошибка, выход.
+    * Загружает `config_midjourney.json` из B2.
+    * Создает временную локальную папку `temp_<generation_id>`.
+
+2.  **Основная логика (внутри `try...finally` для очистки папки):**
+    * **Если флаг `--use-mock` установлен (Таймаут MJ):**
+        * Логирует принудительную генерацию имитации.
+        * Генерирует URL для изображения-заглушки (placeholder) на основе `first_frame_description`.
+        * Скачивает заглушку во временную папку (`download_image`).
+        * Вызывает `create_mock_video` (используя `moviepy`) для создания `.mp4` из заглушки.
+        * Если ошибка - прерывание.
+        * Загружает заглушку (`.png`) и имитацию (`.mp4`) в `666/` B2.
+        * Обновляет `config_mj` в памяти: `midjourney_task: null`, `midjourney_results: {}`, `generation: false`, `status: null`.
+    * **Если флаг `--use-mock` НЕ установлен:**
+        * **Проверка результатов MJ:** Ищет URL изображений в `config_mj["midjourney_results"]["task_result"]` (приоритет у `temporary_image_urls`).
+        * **Сценарий 1: Результаты MJ ЕСТЬ:**
+            * Логирует обработку результатов.
+            * Вызывает `select_best_image` (используя OpenAI Vision) для выбора лучшего URL из списка.
+            * Скачивает выбранное изображение во временную папку (`download_image`).
+            * Выполняет ресайз изображения (`resize_existing_image`).
+            * Очищает текст скрипта (`clean_script_text`).
+            * **Вызывает `generate_runway_video`:**
+                * Читает параметры (модель, длительность, ratio, таймауты) из `config.json`.
+                * Кодирует скачанное изображение в Base64.
+                * Отправляет запрос в Runway API (`client.image_to_video.create`).
+                * Запускает цикл опроса статуса (`client.tasks.retrieve`) с таймаутом.
+                * При успехе возвращает URL видео.
+                * При ошибке или таймауте Runway возвращает `None`.
+            * **Обработка результата `generate_runway_video`:**
+                * Если получен URL: Скачивает видео во временную папку (`download_video`). Если скачивание не удалось -> fallback на `create_mock_video`.
+                * Если получен `None`: Логирует ошибку Runway -> fallback на `create_mock_video`.
+            * Если финальное видео (Runway или mock) не создано - ошибка.
+            * Загружает выбранное изображение (`.png`) и финальное видео (`.mp4`) в `666/` B2.
+            * Обновляет `config_mj` в памяти: `midjourney_task: null`, `midjourney_results: {}`, `generation: false`, `status: null`.
+        * **Сценарий 2: Результатов MJ НЕТ:**
+            * Логирует инициацию задачи MJ.
+            * Берет `first_frame_description` из данных контента. Если нет - ошибка.
+            * Вызывает `initiate_midjourney_task`:
+                * Читает параметры (версия, стиль) из `config.json`.
+                * Формирует payload (включая `style` только если он не `null`/пустой).
+                * Отправляет запрос в PiAPI (`/api/v1/task`).
+                * При успехе возвращает `{"task_id": ..., "requested_at_utc": ...}`.
+            * **Обработка результата `initiate_midjourney_task`:**
+                * Если получен `task_id`: Сохраняет словарь `{id+время}` в `config_mj["midjourney_task"]`. Устанавливает `generation: false`. Очищает `results` и `status`.
+                * Если `task_id` не получен: Логирует ошибку. Устанавливает `generation: false`. Очищает `task`, `results`, `status`.
+3.  **Загрузка артефактов:** Загружает финальное изображение (`.png`) и видео (`.mp4` - реальное или mock) из временной папки в `666/` B2.
+4.  **Очистка:** Блок `finally` удаляет временную локальную папку `temp_<generation_id>`.
+5.  **Сохранение состояния:** Сохраняет итоговое состояние `config_midjourney.json` в B2.
+6.  **Завершение:** Завершает работу. **Не вызывает** `b2_storage_manager.py`.
+
+**Особенности:**
+
+* Использует параметры Runway из `config.json`.
+* Использует Base64 для передачи изображения в Runway.
+* Реализован fallback на имитацию видео (`create_mock_video`) при ошибке Runway или таймауте MJ.
+* Сохраняет метку времени при запросе к MJ.
+* Добавлена пауза перед чтением контентного файла из B2.
+
+---
+
+## 4. `Workspace_media.py` (бывший `fetch_media.py`)
+
+**Роль:** Проверяет статус задачи Midjourney по ее ID.
+
+**Шаги:**
+
+1.  **Инициализация:**
+    * Загружает основной `config.json`.
+    * Инициализирует логгер, B2 клиент.
+    * Читает эндпоинт проверки статуса MJ и таймаут запроса из конфига.
+    * Проверяет наличие `MIDJOURNEY_API_KEY`.
+2.  **Проверка задачи:**
+    * Загружает `config_midjourney.json` из B2.
+    * Извлекает `task_id` из `config_midjourney.json["midjourney_task"]`. Если задачи нет - выход.
+    * **Вызывает `fetch_piapi_status`:**
+        * Отправляет `POST` запрос на эндпоинт `/mj/v2/fetch` с `task_id` в payload.
+        * Использует увеличенный таймаут (например, 120 сек).
+        * Возвращает полный JSON ответа или `None` при ошибке.
+    * **Обработка результата `fetch_piapi_status`:**
+        * Если результат `None` (ошибка запроса) -> Логирует ошибку, **не меняет** конфиг, выход.
+        * Если результат получен:
+            * Определяет статус задачи (`result.get("status")`).
+            * **Если статус финальный (`completed`, `finished`, `failed`):**
+                * Логирует завершение.
+                * Записывает **весь полученный JSON (`status_result`)** в `config_midjourney.json["midjourney_results"]`.
+                * Очищает `config_midjourney.json["midjourney_task"] = null`.
+                * Сбрасывает `status: null`, `generation: false`.
+                * **Сохраняет** обновленный `config_midjourney.json` в B2.
+            * **Если статус не финальный (`pending`, `processing` и т.д.):**
+                * Логирует текущий статус.
+                * **Не меняет** `config_midjourney.json`.
+3.  **Завершение:** Завершает работу. **Не вызывает** `b2_storage_manager.py`.
+
+**Особенности:**
+
+* Использует метод POST и эндпоинт `/mj/v2/fetch`.
+* Обновляет `config_midjourney.json` только при получении финального статуса.
+* Сохраняет весь ответ API в `midjourney_results`.
+
+---
+
+## 5. Взаимодействие
+
+1.  **Запуск:**
+    * **Основной:** GitHub Actions запускает `b2_storage_manager.py` раз в день (например, в 20:30 UTC).
+    * **Дополнительные проверки MJ:** GitHub Actions запускает `b2_storage_manager.py` через ~1 час и ~5 часов после основного запуска (например, в 21:30 и 01:30 UTC). Эти запуски выполнят только проверку MJ, если есть активная задача.
+2.  **Цикл (управляется состоянием в B2):**
+    * **Запуск 1 (Основной):**
+        * `b2_manager`: Уборка (`handle_publish` по списку публикатора, `process_folders`).
+        * `b2_manager`: `666/` пуста -> Запускает `generate_content`.
+        * `generate_content`: Генерирует контент, сохраняет JSON в `666/`, ставит `generation: true` в `config_mj`.
+        * `b2_manager`: (След. итерация) Видит `generation: true` -> Запускает `generate_media`.
+        * `generate_media`: Инициирует MJ, записывает `midjourney_task` (с ID и временем), ставит `generation: false` в `config_mj`.
+        * `b2_manager`: (След. итерация) Видит `midjourney_task` -> Запускает `Workspace_media`.
+        * `Workspace_media`: Проверяет статус (скорее всего `pending`), ничего не меняет в конфиге.
+        * `b2_manager`: (След. итерация) Видит `midjourney_task`, проверяет таймаут (не истек) -> **Завершает работу (`break`)**, ожидая следующего запуска по расписанию.
+    * **Запуск 2 (+1 час):**
+        * `b2_manager`: Видит `midjourney_task` -> Запускает `Workspace_media`.
+        * `Workspace_media`: Проверяет статус. Если готов -> обновляет `config_mj` (пишет `results`, чистит `task`). Если не готов -> ничего не меняет.
+        * `b2_manager`: Проверяет таймаут (не истек) -> **Завершает работу (`break`)**.
+    * **Запуск 3 (+5 часов):**
+        * `b2_manager`: Видит `midjourney_task` -> Запускает `Workspace_media`.
+        * `Workspace_media`: Проверяет статус. Если готов -> обновляет `config_mj`. Если не готов -> ничего не меняет.
+        * `b2_manager`: Проверяет таймаут. Если **истек** и результатов нет -> ставит `status: "timed_out_mock_needed"` в `config_mj`. **Завершает работу (`break`)**.
+    * **Запуск 4 (Следующий день, основной):**
+        * `b2_manager`:
+            * Если видит `status: "timed_out_mock_needed"` -> Запускает `generate_media --use-mock`. Задача завершается (имитация).
+            * Если видит `midjourney_results` (получены на Запуске 2 или 3) -> Запускает `generate_media` (для Runway/mock). Задача завершается.
+            * Если видит `midjourney_task` (очень медленный MJ) -> Повторяет проверку/таймаут.
+            * Если ничего нет -> Начинает новый цикл с Уборки/Генерации контента.
+3.  **Остановка:** 1 задача обработана за основной запуск, или папка `666/` содержит готовые группы.
+
+---
+
+## 6. Формат конфигов
+
+* **`config.json`**: (Как в `config_json_merged`, содержит секции API_KEYS, OPENAI_SETTINGS, FILE_PATHS, PROMPTS, creative_prompts, restrictions, CONTENT, SARCASM, GENERATE, IMAGE_GENERATION, VISUAL_ANALYSIS, WORKFLOW, VIDEO).
+* **`config_midjourney.json`**:
+    ```json
+    {
+      "midjourney_task": null | {"task_id": "...", "requested_at_utc": "YYYY-MM-DDTHH:MM:SS.ffffff+00:00"},
+      "midjourney_results": {} | { <полный JSON ответа от PiAPI /mj/v2/fetch> },
+      "generation": true | false,
+      "status": null | "timed_out_mock_needed"
+    }
+    ```
+* **`config_public.json`**:
+    ```json
+    {
+      "processing_lock": true | false,
+      "generation_id": [ "<id1>", "<id2>", ... ] | null // Список ID, добавленных внешним публикатором для архивации
+      // "empty": [...] // Ключ 'empty' больше не используется активно менеджером
+    }
+    ```
+* **`config_gen.json`**:
+    ```json
+    {
+      "generation_id": "<id>" | null // ID текущей активной генерации
+    }
+    ```
+* **`666/<generation_id>.json`**: (Структура как описана в `generate_content.py`, включает `topic`, `content`, `sarcasm`, `script`, `first_frame_description`).
+
+
+
