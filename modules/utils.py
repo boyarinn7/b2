@@ -12,13 +12,20 @@ import shutil
 # --- Получение логгера (предполагается, что он уже настроен где-то) ---
 # Используем стандартный logging, если кастомный недоступен на раннем этапе
 try:
+    # Абсолютный импорт, если logger.py в той же папке modules
     from .logger import get_logger
     logger = get_logger(__name__) # Используем имя модуля
 except ImportError:
-    logger = logging.getLogger(__name__)
-    if not logger.hasHandlers():
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        logger.warning("Кастомный логгер не найден, используется стандартный logging.")
+     # Относительный импорт, если структура другая (например, при прямом запуске utils.py)
+     # Или если logger.py не найден через абсолютный импорт
+     try:
+         from logger import get_logger
+         logger = get_logger(__name__)
+     except ImportError:
+        logger = logging.getLogger(__name__)
+        if not logger.hasHandlers():
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            logger.warning("Кастомный логгер не найден, используется стандартный logging.")
 
 # --- Исключения BotoCore ---
 try:
@@ -157,18 +164,18 @@ def download_video(url, local_path_str, timeout=120): # Увеличен тай�
     logger.info(f"Загрузка видео с {url} в {local_path_str}...")
     return download_file(url, local_path_str, stream=True, timeout=timeout) # Используем stream для видео
 
-def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, base_name_without_ext):
-    """Загружает локальный файл в указанную папку B2."""
+def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_filename_with_ext):
+    """
+    Загружает локальный файл в указанную папку B2.
+    Использует переданное имя файла с расширением для ключа объекта B2.
+    """
     local_path = Path(local_file_path_str)
     if not local_path.is_file():
         logger.error(f"Локальный файл для загрузки не найден: {local_path}")
         return False
 
-    # --- ИСПРАВЛЕНО: Формирование ключа B2 ---
-    # Получаем расширение из ЛОКАЛЬНОГО имени файла
-    file_extension = local_path.suffix # Например, '.png' или '.mp4'
-    # Формируем ключ объекта, используя базовое имя и расширение
-    b2_object_key = f"{target_folder.rstrip('/')}/{base_name_without_ext}{file_extension}"
+    # --- ИСПРАВЛЕНО v2: Используем переданное имя файла ---
+    b2_object_key = f"{target_folder.rstrip('/')}/{b2_filename_with_ext}"
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     logger.info(f"Загрузка {local_path} в B2 как {b2_object_key}...")
@@ -210,8 +217,8 @@ def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
                     if key == prefix and size_bytes == 0:
                          continue
                     # Пропускаем placeholder, если он есть
-                    if key.endswith('placeholder.bzEmpty'):
-                         continue
+                    # if key.endswith('placeholder.bzEmpty'):
+                    #      continue
                     contents.append({'Key': key, 'Size': size_bytes})
             # Добавляем проверку, если папка пуста (кроме placeholder)
             if not page.get('Contents') and not page.get('CommonPrefixes'):
@@ -254,3 +261,32 @@ def delete_b2_object(s3_client, bucket_name, key):
     except Exception as e:
         logger.error(f"Неизвестная ошибка при удалении {key}: {e}", exc_info=True)
         return False
+
+# --- НОВАЯ ФУНКЦИЯ is_folder_empty ---
+def is_folder_empty(s3_client, bucket_name, folder_prefix):
+    """
+    Проверяет, пуста ли папка в B2 (игнорируя placeholder).
+    Возвращает True, если папка пуста (или содержит только placeholder), иначе False.
+    """
+    logger.debug(f"Проверка на пустоту папки: {bucket_name}/{folder_prefix}")
+    try:
+        contents = list_b2_folder_contents(s3_client, bucket_name, folder_prefix)
+        # Проверяем, есть ли хоть один файл, НЕ являющийся placeholder'ом
+        for item in contents:
+            if not item.get('Key', '').endswith('placeholder.bzEmpty'):
+                logger.debug(f"Папка {folder_prefix} не пуста, найден файл: {item.get('Key')}")
+                return False # Нашли реальный файл, папка не пуста
+
+        # Если прошли по всем файлам и не нашли ничего, кроме плейсхолдера (или вообще ничего)
+        logger.debug(f"Папка {folder_prefix} пуста (или содержит только placeholder).")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при проверке пустоты папки {folder_prefix}: {e}", exc_info=True)
+        return False # В случае ошибки считаем, что не пуста (безопаснее)
+# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
+
+# --- Добавлена функция generate_file_id (если ее нет) ---
+def generate_file_id():
+    """Генерирует уникальный ID на основе текущей даты и времени UTC."""
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+# --- Конец функции generate_file_id ---
