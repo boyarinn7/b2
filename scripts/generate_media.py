@@ -87,6 +87,9 @@ except Exception as init_err:
     print(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", file=sys.stderr)
     sys.exit(1) # Выход с ошибкой
 
+# === Глобальная переменная для клиента OpenAI ===
+openai_client_instance = None
+
 # === Константы и Настройки ===
 try:
     B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
@@ -97,39 +100,7 @@ try:
     MIDJOURNEY_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
     MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
     RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-    # Инициализация клиента OpenAI (v > 1.0) с поддержкой прокси
-    openai_client = None
-    if OPENAI_API_KEY:
-        try:
-            if openai and hasattr(openai, 'OpenAI'):
-                # Проверяем наличие прокси в переменных окружения
-                http_proxy = os.getenv("HTTP_PROXY")
-                https_proxy = os.getenv("HTTPS_PROXY")
-                # Собираем словарь proxies только если есть хотя бы один прокси
-                proxies = {}
-                if http_proxy: proxies["http://"] = http_proxy
-                if https_proxy: proxies["https://"] = https_proxy
-
-                if proxies:
-                    logger.info(f"Обнаружены настройки прокси для OpenAI: {proxies}")
-                    # Создаем httpx клиент с прокси
-                    http_client = httpx.Client(proxies=proxies)
-                    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
-                else:
-                    # Инициализируем без прокси
-                    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
-            else:
-                 if openai: logger.error("Класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
-                 else: logger.error("Модуль openai не импортирован.")
-        except Exception as init_err:
-            logger.error(f"Ошибка инициализации клиента OpenAI в generate_media: {init_err}")
-    else:
-        logger.warning("API-ключ OpenAI не найден. Функции, требующие OpenAI, могут не работать.")
-
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # Ключ нужен для инициализации ниже
 
     IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png")
     VIDEO_FORMAT = "mp4"
@@ -166,19 +137,66 @@ except Exception as config_err:
 
 # === Вспомогательные Функции ===
 
+def _initialize_openai_client():
+    """Инициализирует глобальный клиент OpenAI, если он еще не создан."""
+    global openai_client_instance
+    if openai_client_instance:
+        return True # Уже инициализирован
+
+    api_key_local = os.getenv("OPENAI_API_KEY")
+    if not api_key_local:
+        logger.error("❌ Переменная окружения OPENAI_API_KEY не задана для generate_media!")
+        return False # Не можем инициализировать
+
+    try:
+        if openai and hasattr(openai, 'OpenAI'):
+            # Проверяем наличие прокси
+            http_proxy = os.getenv("HTTP_PROXY")
+            https_proxy = os.getenv("HTTPS_PROXY")
+            proxies_dict = {}
+            if http_proxy: proxies_dict["http://"] = http_proxy
+            if https_proxy: proxies_dict["https://"] = https_proxy
+
+            # Создаем httpx_client
+            if proxies_dict:
+                logger.info(f"Обнаружены настройки прокси для OpenAI (generate_media): {proxies_dict}")
+                http_client = httpx.Client(proxies=proxies_dict)
+            else:
+                logger.info("Прокси не обнаружены (generate_media), создаем httpx.Client без аргумента proxies.")
+                http_client = httpx.Client()
+
+            # Передаем http_client в OpenAI
+            openai_client_instance = openai.OpenAI(api_key=api_key_local, http_client=http_client)
+            logger.info("✅ Клиент OpenAI (>1.0) инициализирован (generate_media).")
+            return True
+        else:
+            logger.error("❌ Модуль/класс openai.OpenAI не найден в generate_media.")
+            return False
+    except Exception as init_err:
+        logger.error(f"❌ Ошибка инициализации клиента OpenAI (generate_media): {init_err}", exc_info=True)
+        if "got an unexpected keyword argument 'proxies'" in str(init_err):
+             logger.error("!!! Повторная ошибка 'unexpected keyword argument proxies' в generate_media.")
+        return False
+
+
 def select_best_image(image_urls, prompt_text, prompt_settings: dict):
     """
     Выбирает лучшее изображение из списка URL с помощью OpenAI Vision API.
     """
+    global openai_client_instance
     logger.info("Выбор лучшего изображения...")
     if not image_urls: logger.warning("Список image_urls пуст."); return None
     if not isinstance(image_urls, list):
         logger.warning(f"image_urls не список ({type(image_urls)}).");
         return image_urls if isinstance(image_urls, str) and image_urls.startswith('http') else None
 
-    if not openai_client:
-        logger.warning("Клиент OpenAI недоступен. Возвращаем первый URL.");
-        return image_urls[0] if image_urls else None
+    # --- Инициализация клиента OpenAI при необходимости ---
+    if not openai_client_instance:
+        if not _initialize_openai_client():
+            logger.warning("Клиент OpenAI недоступен. Возвращаем первый URL.")
+            return image_urls[0] if image_urls else None
+    # --- Конец инициализации ---
+
 
     # Получаем критерии из creative_config
     creative_config_path_str = config.get('FILE_PATHS.creative_config')
@@ -213,7 +231,7 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict):
     for attempt in range(MAX_ATTEMPTS):
         try:
             logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS} выбора лучшего изображения (max_tokens={max_tokens})...")
-            gpt_response = openai_client.chat.completions.create(
+            gpt_response = openai_client_instance.chat.completions.create( # Используем глобальный клиент
                 model=OPENAI_MODEL,
                 messages=[{"role": "user", "content": messages_content}],
                 max_tokens=max_tokens
@@ -225,20 +243,38 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict):
                     continue
 
                 logger.info(f"Ответ OpenAI Vision: {answer[:100]}...")
-                matches = re.findall(r'\b([1-4])\b', answer)
-                if matches:
-                    best_index_str = matches[-1]
+                matches = re.findall(r'\b([1-4])\b', answer) # Ищем цифры 1-4
+                best_index = -1 # Инициализируем
+
+                # Пытаемся найти номер изображения в ответе
+                # Сначала ищем явное указание типа "Image 2" или "Image #3"
+                explicit_match = re.search(r'[Ii]mage\s*#?(\d+)', answer)
+                if explicit_match:
+                    try:
+                        best_index = int(explicit_match.group(1)) - 1
+                        logger.debug(f"Найдено явное указание: Image {best_index + 1}")
+                    except ValueError:
+                        logger.warning(f"Не удалось извлечь число из явного указания: {explicit_match.group(1)}")
+                        best_index = -1
+
+                # Если явного указания нет, ищем просто цифру
+                if best_index == -1 and matches:
+                    best_index_str = matches[-1] # Берем последнюю найденную цифру
                     try:
                         best_index = int(best_index_str) - 1
-                        if 0 <= best_index < len(valid_image_urls):
-                            logger.info(f"Выбрано изображение #{best_index + 1} на основе ответа.")
-                            return valid_image_urls[best_index]
-                        else:
-                             logger.warning(f"Индекс {best_index + 1} вне диапазона [1, {len(valid_image_urls)}].")
+                        logger.debug(f"Найдена цифра (последняя): {best_index + 1}")
                     except ValueError:
                          logger.warning(f"Не удалось преобразовать индекс '{best_index_str}' в число.")
-                logger.warning(f"Не удалось извлечь валидный индекс из ответа: '{answer}'. Выбираем первое.")
-                return valid_image_urls[0]
+                         best_index = -1
+
+                # Проверяем валидность индекса и возвращаем URL
+                if 0 <= best_index < len(valid_image_urls):
+                    logger.info(f"Выбрано изображение #{best_index + 1} на основе ответа.")
+                    return valid_image_urls[best_index]
+                else:
+                    logger.warning(f"Не удалось извлечь валидный индекс (0-{len(valid_image_urls)-1}) из ответа: '{answer}'. Выбираем первое.")
+                    return valid_image_urls[0] # Возвращаем первый как fallback
+
             else:
                  logger.warning(f"OpenAI Vision вернул некорректный ответ на попытке {attempt + 1}: {gpt_response}")
                  continue
@@ -257,9 +293,10 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict):
                 time.sleep(5)
             else:
                 logger.error("Превышено количество попыток OpenAI Vision.");
-                return valid_image_urls[0]
+                return valid_image_urls[0] # Fallback на первый URL
     logger.error("Не удалось получить ответ от OpenAI Vision после всех попыток.")
-    return valid_image_urls[0]
+    return valid_image_urls[0] # Fallback на первый URL
+
 
 def resize_existing_image(image_path_str: str) -> bool:
     """Изменяет размер существующего изображения."""
@@ -284,53 +321,128 @@ def clean_script_text(script_text_param):
     logger.info("Очистка текста скрипта...");
     return ' '.join(script_text_param.replace('\n', ' ').replace('\r', ' ').split()) if script_text_param else ""
 
-def generate_runway_video(image_path_str: str, runway_prompt: str) -> str | None:
-    """Генерирует видео с помощью Runway ML."""
-    logger.info(f"Генерация видео Runway для {image_path_str}...")
-    if not RUNWAY_SDK_AVAILABLE: logger.error("❌ SDK Runway недоступен."); return None
-    if not RUNWAY_API_KEY: logger.error("❌ RUNWAY_API_KEY не найден."); return None
-    image_path = Path(image_path_str)
-    if not image_path.is_file(): logger.error(f"❌ Файл {image_path} не найден или не файл."); return None
-    if not runway_prompt: logger.error("❌ Промпт Runway пуст."); return None
+def generate_runway_video(image_path: str, script: str, config: ConfigManager, api_key: str) -> str | None:
+    """Генерирует видео с помощью Runway ML SDK."""
+    logger.info(f"Запуск генерации видео Runway для: {image_path}")
+    if not RUNWAY_SDK_AVAILABLE:
+        logger.error("❌ SDK RunwayML недоступен.")
+        return None
+    if not api_key:
+        logger.error("❌ API ключ Runway не предоставлен.")
+        return None
+    if not Path(image_path).is_file():
+        logger.error(f"❌ Файл изображения не найден: {image_path}")
+        return None
+    if not script:
+        logger.error("❌ Промпт для Runway пуст.")
+        return None
+
     try:
-        model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2'); duration = int(config.get('VIDEO.runway_duration', 5))
+        model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
+        duration = int(config.get('VIDEO.runway_duration', 5))
         ratio_str = config.get('VIDEO.runway_ratio', f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}")
-        poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300)); poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
+        poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300))
+        poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
         logger.info(f"Параметры Runway: model='{model_name}', duration={duration}, ratio='{ratio_str}'")
-    except Exception as cfg_err: logger.error(f"Ошибка параметров Runway: {cfg_err}. Дефолты."); model_name="gen-2"; duration=5; ratio_str="16:9"; poll_timeout=300; poll_interval=15
+    except Exception as cfg_err:
+        logger.error(f"Ошибка чтения параметров Runway из конфига: {cfg_err}. Используются значения по умолчанию.")
+        model_name="gen-2"; duration=5; ratio_str="16:9"; poll_timeout=300; poll_interval=15
+
+    # Кодирование изображения в Base64
     try:
-        with open(image_path, "rb") as f: base64_image = base64.b64encode(f.read()).decode("utf-8")
-        ext = image_path.suffix.lower(); mime_type = f"image/{'jpeg' if ext == '.jpg' else ext[1:]}"
-        image_data_uri = f"data:{mime_type};base64,{base64_image}"; logger.info(f"Изображение {image_path} кодировано.")
-    except Exception as e: logger.error(f"❌ Ошибка кодирования: {e}", exc_info=True); return None
-    client = None; task_id = 'N/A'
+        with open(image_path, "rb") as f:
+            base64_image = base64.b64encode(f.read()).decode("utf-8")
+        ext = Path(image_path).suffix.lower()
+        mime_type = f"image/{'jpeg' if ext == '.jpg' else ext[1:]}"
+        image_data_uri = f"data:{mime_type};base64,{base64_image}"
+        logger.info(f"Изображение {image_path} успешно кодировано в Base64.")
+    except Exception as e:
+        logger.error(f"❌ Ошибка кодирования изображения в Base64: {e}", exc_info=True)
+        return None
+
+    client = None
+    task_id = 'N/A' # Инициализируем task_id
     try:
-        logger.info(f"Инициализация клиента Runway..."); client = RunwayML(api_key=RUNWAY_API_KEY); logger.info("✅ Клиент Runway инициализирован.")
-        generation_params = {"model": model_name, "prompt_image": image_data_uri, "prompt_text": runway_prompt, "duration": duration, "ratio": ratio_str}
-        logger.info(f"🚀 Создание задачи Runway..."); logger.debug(f"Параметры: {json.dumps({k: v[:50] + '...' if isinstance(v, str) and len(v) > 50 else v for k, v in generation_params.items()}, indent=2)}")
-        task = client.image_to_video.create(**generation_params); task_id = getattr(task, 'id', 'N/A')
-        logger.info(f"✅ Задача Runway создана! ID: {task_id}"); logger.info(f"⏳ Опрос статуса {task_id}...")
-        start_time = time.time(); final_output_url = None
+        logger.info("Инициализация клиента RunwayML SDK...")
+        client = RunwayML(api_key=api_key)
+        logger.info("✅ Клиент RunwayML SDK инициализирован.")
+
+        generation_params = {
+            "model": model_name,
+            "prompt_image": image_data_uri,
+            "prompt_text": script,
+            "duration": duration,
+            "ratio": ratio_str
+        }
+        logger.info("🚀 Создание задачи RunwayML Image-to-Video...")
+        # Логируем параметры, обрезая длинные строки
+        log_params = {k: (v[:50] + '...' if isinstance(v, str) and len(v) > 50 else v) for k, v in generation_params.items()}
+        logger.debug(f"Параметры Runway: {json.dumps(log_params, indent=2)}")
+
+        task = client.image_to_video.create(**generation_params)
+        task_id = getattr(task, 'id', 'N/A') # Получаем ID задачи
+        logger.info(f"✅ Задача Runway создана! ID: {task_id}")
+
+        logger.info(f"⏳ Начало опроса статуса задачи Runway {task_id}...")
+        start_time = time.time()
+        final_output_url = None
+
         while time.time() - start_time < poll_timeout:
             try:
-                task_status = client.tasks.retrieve(task_id); current_status = getattr(task_status, 'status', 'UNKNOWN').upper()
+                task_status = client.tasks.retrieve(task_id)
+                current_status = getattr(task_status, 'status', 'UNKNOWN').upper()
                 logger.info(f"Статус Runway {task_id}: {current_status}")
+
                 if current_status == "SUCCEEDED":
-                    logger.info(f"✅ Задача Runway {task_id} завершена!"); task_output = getattr(task_status, 'output', None)
-                    if isinstance(task_output, list) and len(task_output) > 0 and isinstance(task_output[0], str): final_output_url = task_output[0]
-                    elif isinstance(task_output, dict) and task_output.get('url'): final_output_url = task_output['url']
-                    elif isinstance(task_output, str) and task_output.startswith('http'): final_output_url = task_output
-                    if final_output_url: logger.info(f"Получен URL видео: {final_output_url}"); return final_output_url
-                    else: logger.warning(f"Статус SUCCEEDED, но URL не найден: {task_output}")
-                    break
-                elif current_status == "FAILED": logger.error(f"❌ Задача Runway {task_id} FAILED!"); error_details = getattr(task_status, 'error_message', 'Нет деталей'); logger.error(f"Ошибка Runway: {error_details}"); break
-                elif current_status in ["PENDING", "PROCESSING", "QUEUED", "WAITING"]: time.sleep(poll_interval)
-                else: logger.warning(f"Неизвестный статус Runway: {current_status}."); break
-            except Exception as poll_err: logger.error(f"❌ Ошибка опроса Runway {task_id}: {poll_err}", exc_info=True); break
-        else: logger.warning(f"⏰ Таймаут Runway ({poll_timeout} сек) для {task_id}.")
+                    logger.info(f"✅ Задача Runway {task_id} успешно завершена!")
+                    task_output = getattr(task_status, 'output', None)
+                    # Пытаемся извлечь URL из разных возможных структур ответа
+                    if isinstance(task_output, list) and len(task_output) > 0 and isinstance(task_output[0], str):
+                        final_output_url = task_output[0]
+                    elif isinstance(task_output, dict) and task_output.get('url'):
+                        final_output_url = task_output['url']
+                    elif isinstance(task_output, str) and task_output.startswith('http'):
+                         final_output_url = task_output
+
+                    if final_output_url:
+                        logger.info(f"Получен URL видео: {final_output_url}")
+                        return final_output_url
+                    else:
+                        logger.warning(f"Статус SUCCEEDED, но URL видео не найден в ответе: {task_output}")
+                    break # Выходим из цикла опроса
+
+                elif current_status == "FAILED":
+                    logger.error(f"❌ Задача Runway {task_id} завершилась с ошибкой (FAILED)!")
+                    error_details = getattr(task_status, 'error_message', 'Детали ошибки отсутствуют в ответе API.')
+                    logger.error(f"Детали ошибки Runway: {error_details}")
+                    break # Выходим из цикла опроса
+
+                elif current_status in ["PENDING", "PROCESSING", "QUEUED", "WAITING"]:
+                    # Статус промежуточный, продолжаем опрос
+                    time.sleep(poll_interval)
+                else:
+                    logger.warning(f"Неизвестный или неожиданный статус Runway: {current_status}. Прерывание опроса.")
+                    break # Выходим при неизвестном статусе
+
+            except RunwayError as poll_sdk_err:
+                 logger.error(f"❌ Ошибка SDK Runway при опросе задачи {task_id}: {poll_sdk_err}", exc_info=True)
+                 break # Прерываем опрос при ошибке SDK
+            except Exception as poll_err:
+                logger.error(f"❌ Ошибка при опросе статуса Runway {task_id}: {poll_err}", exc_info=True)
+                break # Прерываем опрос при других ошибках
+        else:
+            # Цикл завершился по таймауту
+            logger.warning(f"⏰ Таймаут ({poll_timeout} сек) ожидания завершения задачи Runway {task_id}.")
+
+        return None # Возвращаем None, если видео не было получено
+
+    except RunwayError as r_err: # Ошибка SDK при создании задачи
+        logger.error(f"❌ Ошибка Runway SDK при создании задачи: {r_err}", exc_info=True)
         return None
-    except RunwayError as r_err: logger.error(f"❌ Ошибка Runway SDK: {r_err}", exc_info=True); return None
-    except Exception as e: logger.error(f"❌ Общая ошибка Runway: {e}", exc_info=True); return None
+    except Exception as e: # Другие ошибки
+        logger.error(f"❌ Общая ошибка при взаимодействии с Runway: {e}", exc_info=True)
+        return None
+
 
 def create_mock_video(image_path_str: str) -> str | None:
     """Создает mock-видео из изображения."""
@@ -359,31 +471,31 @@ def create_mock_video(image_path_str: str) -> str | None:
             except Exception as close_err:
                  logger.warning(f"Ошибка закрытия clip: {close_err}")
 
-def initiate_midjourney_task(mj_prompt: str, ref_id: str = "") -> dict | None:
+def initiate_midjourney_task(prompt: str, config: ConfigManager, api_key: str, endpoint: str, ref_id: str = "") -> dict | None:
     """Инициирует задачу Midjourney, используя переданный финальный промпт."""
-    if not MIDJOURNEY_API_KEY: logger.error("Нет MIDJOURNEY_API_KEY."); return None
-    if not MIDJOURNEY_ENDPOINT: logger.error("Нет API_KEYS.midjourney.endpoint."); return None
-    if not mj_prompt: logger.error("Промпт MJ пуст."); return None
-    logger.info(f"Используется финальный промпт MJ: {mj_prompt[:100]}...")
-    if "--ar" not in mj_prompt: logger.warning("Промпт MJ не содержит --ar?")
-    if "--v" not in mj_prompt: logger.warning("Промпт MJ не содержит --v?")
-    cleaned_prompt = " ".join(mj_prompt.split())
+    if not api_key: logger.error("Нет MIDJOURNEY_API_KEY."); return None
+    if not endpoint: logger.error("Нет API_KEYS.midjourney.endpoint."); return None
+    if not prompt: logger.error("Промпт MJ пуст."); return None
+    logger.info(f"Используется финальный промпт MJ: {prompt[:100]}...")
+    if "--ar" not in prompt: logger.warning("Промпт MJ не содержит --ar?")
+    if "--v" not in prompt: logger.warning("Промпт MJ не содержит --v?")
+    cleaned_prompt = " ".join(prompt.split())
     payload = {"model": "midjourney", "task_type": "imagine", "input": {"prompt": cleaned_prompt}}
     if ref_id: payload["ref"] = ref_id
-    headers = { 'X-API-Key': MIDJOURNEY_API_KEY, 'Content-Type': 'application/json' }
+    headers = { 'X-API-Key': api_key, 'Content-Type': 'application/json' }
     request_time = datetime.now(timezone.utc)
     logger.info(f"Инициация задачи MJ..."); logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
     response = None
     try:
-        logger.info(f"Отправка запроса на {MIDJOURNEY_ENDPOINT}...")
-        response = requests.post(MIDJOURNEY_ENDPOINT, headers=headers, json=payload, timeout=TASK_REQUEST_TIMEOUT)
+        logger.info(f"Отправка запроса на {endpoint}...")
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=TASK_REQUEST_TIMEOUT)
         logger.debug(f"Ответ PiAPI MJ Init: Status={response.status_code}, Body={response.text[:200]}")
         response.raise_for_status(); result = response.json()
         task_id = result.get("result", {}).get("task_id") or result.get("data", {}).get("task_id") or result.get("task_id")
         if task_id: logger.info(f"✅ Получен task_id MJ: {task_id} (запрошено в {request_time.isoformat()})"); return {"task_id": str(task_id), "requested_at_utc": request_time.isoformat()}
         else: logger.error(f"❌ Ответ MJ API не содержит task_id: {result}"); return None
     except requests.exceptions.Timeout:
-        logger.error(f"❌ Таймаут MJ API ({TASK_REQUEST_TIMEOUT} сек): {MIDJOURNEY_ENDPOINT}");
+        logger.error(f"❌ Таймаут MJ API ({TASK_REQUEST_TIMEOUT} сек): {endpoint}");
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Ошибка сети/запроса MJ API: {e}")
@@ -434,6 +546,7 @@ def main():
         logger.info("Пауза (3 сек) перед загрузкой контента..."); time.sleep(3)
         content_remote_path = f"666/{generation_id}.json"
         logger.info(f"Загрузка контента: {content_remote_path}...")
+        ensure_directory_exists(content_local_path) # Папка для temp
         content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_path, default_value=None)
         if content_data is None: logger.error(f"❌ Не удалось загрузить {content_remote_path}."); sys.exit(1)
 
@@ -445,6 +558,7 @@ def main():
         if not first_frame_description: logger.warning("Описание отсутствует!")
 
         logger.info(f"Загрузка состояния: {CONFIG_MJ_REMOTE_PATH}...")
+        ensure_directory_exists(config_mj_local_path) # Папка для temp
         config_mj = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, default_value=None)
         if config_mj is None: logger.warning(f"Не загрузить {CONFIG_MJ_REMOTE_PATH}."); config_mj = {"midjourney_task": None, "midjourney_results": {}, "generation": False, "status": None}
         else: config_mj.setdefault("midjourney_task", None); config_mj.setdefault("midjourney_results", {}); config_mj.setdefault("generation", False); config_mj.setdefault("status", None)
@@ -494,7 +608,13 @@ def main():
                     video_path_str = None
                     if not final_runway_prompt: logger.error("❌ Промпт Runway отсутствует! Mock."); video_path_str = create_mock_video(str(local_image_path))
                     else:
-                         video_url_or_path = generate_runway_video(str(local_image_path), final_runway_prompt)
+                         # Передаем необходимые параметры в generate_runway_video
+                         video_url_or_path = generate_runway_video(
+                             image_path=str(local_image_path),
+                             script=final_runway_prompt,
+                             config=config, # Передаем экземпляр ConfigManager
+                             api_key=RUNWAY_API_KEY # Передаем ключ Runway
+                         )
                          if video_url_or_path:
                              if video_url_or_path.startswith("http"):
                                  video_path_temp = temp_dir_path / f"{generation_id}_downloaded.{VIDEO_FORMAT}"
@@ -510,7 +630,14 @@ def main():
                     logger.info(f"Результаты MJ не найдены. Запуск новой задачи MJ...")
                     if not final_mj_prompt: logger.error("❌ Промпт MJ отсутствует!"); config_mj['generation'] = False; config_mj['midjourney_task'] = None; config_mj['status'] = None
                     else:
-                        task_result = initiate_midjourney_task(final_mj_prompt, generation_id)
+                        # Передаем необходимые параметры в initiate_midjourney_task
+                        task_result = initiate_midjourney_task(
+                            prompt=final_mj_prompt,
+                            config=config, # Передаем экземпляр ConfigManager
+                            api_key=MIDJOURNEY_API_KEY, # Передаем ключ MJ
+                            endpoint=MIDJOURNEY_ENDPOINT, # Передаем эндпоинт MJ
+                            ref_id=generation_id
+                        )
                         if task_result and isinstance(task_result, dict) and task_result.get("task_id"):
                             logger.info(f"Обновление config_mj: task={task_result}, generation=False.")
                             config_mj['midjourney_task'] = task_result; config_mj['generation'] = False; config_mj['midjourney_results'] = {}; config_mj['status'] = None
@@ -520,11 +647,15 @@ def main():
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), generation_id)
-            else: logger.warning(f"Изображение {local_image_path} не найдено или не Path.")
+            else:
+                if local_image_path: # Если путь был, но файл не найден
+                    logger.warning(f"Изображение {local_image_path} не найдено или не Path для загрузки.")
+                # Если local_image_path изначально None (например, при инициации MJ), ничего не логируем
+
             if video_path and isinstance(video_path, Path) and video_path.is_file():
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), generation_id)
-            elif video_path: logger.error(f"Видео {video_path} не найдено или не Path!")
-            elif image_urls_from_results or use_mock_flag: logger.warning("Видео не сгенерировано/не найдено.")
+            elif video_path: logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
+            elif image_urls_from_results or use_mock_flag: logger.warning("Видео не сгенерировано/не найдено для загрузки.")
 
             if (local_image_path and video_path):
                 if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео загружены.")
