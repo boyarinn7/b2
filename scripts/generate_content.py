@@ -52,7 +52,7 @@ logger = get_logger("generate_content")
 # --- Глобальная переменная для клиента OpenAI (будет инициализирована в call_openai) ---
 openai_client_instance = None
 
-# --- Функция вызова OpenAI API (адаптирована из iid_local_tester.py) ---
+# --- Функция вызова OpenAI API (адаптирована из iid_local_tester.py - ИСПРАВЛЕНИЕ v3) ---
 def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, temperature_override=None, max_tokens_override=None, config_manager_instance=None, prompts_config_data_instance=None):
     """
     Выполняет вызов OpenAI API (версии >=1.0), инициализируя клиент при необходимости,
@@ -73,23 +73,30 @@ def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, t
                 # Проверяем наличие прокси в переменных окружения
                 http_proxy = os.getenv("HTTP_PROXY")
                 https_proxy = os.getenv("HTTPS_PROXY")
-                proxies = {}
-                if http_proxy: proxies["http://"] = http_proxy
-                if https_proxy: proxies["https://"] = https_proxy
+                proxies_dict = {}
+                if http_proxy: proxies_dict["http://"] = http_proxy
+                if https_proxy: proxies_dict["https://"] = https_proxy
 
-                if proxies:
-                    logger.info(f"Обнаружены настройки прокси для OpenAI: {proxies}")
-                    http_client = httpx.Client(proxies=proxies)
-                    openai_client_instance = openai.OpenAI(api_key=api_key_local, http_client=http_client)
-                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
+                # Создаем httpx_client ВСЕГДА, но передаем proxies только если они есть
+                if proxies_dict:
+                    logger.info(f"Обнаружены настройки прокси для OpenAI: {proxies_dict}")
+                    http_client = httpx.Client(proxies=proxies_dict)
                 else:
-                    openai_client_instance = openai.OpenAI(api_key=api_key_local)
-                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
+                    logger.info("Прокси не обнаружены, создаем httpx.Client без аргумента proxies.")
+                    http_client = httpx.Client() # Инициализируем без proxies
+
+                # Передаем созданный http_client в OpenAI
+                openai_client_instance = openai.OpenAI(api_key=api_key_local, http_client=http_client)
+                logger.info("✅ Клиент OpenAI (>1.0) инициализирован.")
+
             else:
                 logger.error("❌ Модуль/класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
                 raise ImportError("openai.OpenAI class not found.")
         except Exception as init_err:
             logger.error(f"❌ Ошибка инициализации клиента OpenAI: {init_err}", exc_info=True)
+            # Проверяем, не связана ли ошибка с 'proxies' снова
+            if "got an unexpected keyword argument 'proxies'" in str(init_err):
+                logger.error("!!! Повторная ошибка 'unexpected keyword argument proxies'. Проблема глубже, возможно, в httpx или окружении.")
             raise RuntimeError(f"Failed to initialize OpenAI client: {init_err}") from init_err
     # --- Конец инициализации клиента ---
 
@@ -222,9 +229,6 @@ class ContentGenerator:
         self.content_output_path = self.config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
         # --- ИНИЦИАЛИЗАЦИЯ OpenAI УДАЛЕНА ОТСЮДА ---
-        # self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        # self.openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
-        # self.openai_client = None # Клиент будет создан в call_openai при первом вызове
 
         self.b2_client = get_b2_client()
         if not self.b2_client: self.logger.warning("⚠️ Не удалось инициализировать B2 клиент.")
@@ -341,7 +345,6 @@ class ContentGenerator:
 
             if not topic_data: raise ValueError("call_openai не вернул ответ для темы.")
             # topic_data уже должен быть словарем, если use_json_mode=True и парсинг успешен
-            # topic_data = json.loads(topic_response_str) # Эта строка больше не нужна
 
             full_topic = topic_data.get("full_topic"); short_topic = topic_data.get("short_topic")
             if not full_topic or not short_topic: raise ValueError(f"Ответ для темы не содержит ключи: {topic_data}")
@@ -350,8 +353,6 @@ class ContentGenerator:
             self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
             content_metadata = {"theme": "tragic" if "(т)" in selected_focus else "normal"}
             return full_topic, content_metadata
-        # except json.JSONDecodeError as e: # Ошибка парсинга теперь обрабатывается внутри call_openai
-        #     self.logger.error(f"Ошибка JSON ответа темы: {e}. Ответ: {topic_response_str[:500]}"); raise ValueError("Ошибка формата ответа темы.") from e
         except Exception as e: self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True); raise
 
     def update_tracker(self, focus, short_topic, tracker):
@@ -440,15 +441,11 @@ class ContentGenerator:
 
             if not poll_data: self.logger.error(f"❌ Ошибка генерации опроса ({prompt_config_key})."); return {}
             # poll_data уже должен быть словарем
-            # self.logger.debug(f"Сырой ответ опроса: {response_content[:500]}") # Логирование внутри call_openai
-            # poll_data = json.loads(response_content) # Парсинг внутри call_openai
 
             if isinstance(poll_data, dict) and "question" in poll_data and "options" in poll_data and isinstance(poll_data["options"], list) and len(poll_data["options"]) == 3:
                 self.logger.info("✅ Опрос сгенерирован."); poll_data["question"] = str(poll_data["question"]).strip(); poll_data["options"] = [str(opt).strip() for opt in poll_data["options"]]
                 return poll_data
             else: self.logger.error(f"❌ Структура JSON опроса неверна: {poll_data}"); return {}
-        # except json.JSONDecodeError as e: # Обрабатывается в call_openai
-        #     self.logger.error(f"❌ Ошибка парсинга JSON опроса: {e}. Ответ: {response_content[:500]}"); return {}
         except Exception as e: self.logger.error(f"❌ Исключение опроса: {e}"); return {}
 
     def save_to_generated_content(self, stage, data):
