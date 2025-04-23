@@ -9514,3 +9514,109 @@ Invalid type for parameter Key, value: None, type: <class 'NoneType'>, valid typ
 2025-04-06 00:29:38,152 - ERROR - ❌ Ошибка загрузки config/config_public.json: Unable to locate credentials
 2025-04-06 00:29:38,155 - ERROR - ❌ Ошибка в процессе генерации медиа: handle_error() missing 1 required positional argument: 'exception'
 2025-04-06 00:29:38,158 - ERROR - ❌ Ошибка в контексте 'Ошибка в процессе генерации медиа': handle_error() missing 1 required positional argument: 'exception'
+2025-04-23 03:47:30,252 - INFO - ✅ Конфигурация успешно загружена.
+2025-04-23 03:47:30,282 - INFO - ℹ️ Ключ 'FILE_PATHS.log_folder' не задан или пуст в переменных окружения, используется дефолт: logs
+2025-04-23 03:47:30,300 - INFO - ℹ️ Ключ 'FILE_PATHS.log_folder' не задан или пуст в переменных окружения, используется дефолт: logs
+2025-04-23 03:47:34,086 - INFO - ℹ️ Ключ 'FILE_PATHS.log_folder' не задан или пуст в переменных окружения, используется дефолт: logs
+2025-04-23 03:47:34,092 - INFO - ✅ Конфигурация успешно загружена.
+2025-04-23 03:47:34,095 - INFO - ✅ Конфигурация успешно загружена.
+2025-04-23 03:47:34,096 - INFO - ℹ️ Ключ 'FILE_PATHS.log_folder' не задан или пуст в переменных окружения, используется дефолт: logs
+2025-04-23 03:47:34,146 - INFO - 🔧 Значение для ключа 'API_KEYS.b2.bucket_name' взято из config.json: boyarinnbotbucket
+2025-04-23 03:47:34,150 - INFO - 🔧 Значение для ключа 'FILE_PATHS.config_midjourney' взято из config.json: config/config_midjourney.json
+2025-04-23 03:47:34,155 - INFO - 🔧 Значение для ключа 'API_KEYS.midjourney.endpoint' взято из config.json: https://api.piapi.ai/api/v1/task
+2025-04-23 03:47:34,157 - INFO - 🔧 Значение для ключа 'FILE_PATHS.output_image_format' взято из config.json: png
+2025-04-23 03:47:34,159 - INFO - 🔧 Значение для ключа 'GENERATE.max_attempts' взято из config.json: 1
+2025-04-23 03:47:34,161 - INFO - 🔧 Значение для ключа 'OPENAI_SETTINGS.model' взято из config.json: gpt-4o
+2025-04-23 03:47:34,163 - INFO - 🔧 Значение для ключа 'IMAGE_GENERATION.output_size' взято из config.json: 1280×720
+2025-04-23 03:47:34,226 - INFO - 🔧 Значение для ключа 'VIDEO.placeholder_bg_color' взято из config.json: cccccc
+2025-04-23 03:47:34,227 - INFO - 🔧 Значение для ключа 'VIDEO.placeholder_text_color' взято из config.json: 333333
+2025-04-23 03:47:34,229 - WARNING - ⚠️ Ключ 'WORKFLOW.task_request_timeout' не найден в конфигурации или равен None. Возвращается: 60
+2025-04-23 03:47:34,264 - INFO - ℹ️ Ключ 'FILE_PATHS.log_folder' не задан или пуст в переменных окружения, используется дефолт: logs
+2025-04-23 03:47:34,270 - INFO - ✅ Конфигурация успешно загружена.
+2025-04-23 03:47:34,272 - INFO - 🔧 Значение для ключа 'FILE_PATHS.config_midjourney' взято из config.json: config/config_midjourney.json
+2025-04-23 03:47:34,274 - INFO - 🔧 Значение для ключа 'API_KEYS.midjourney.task_endpoint' взято из config.json: https://api.piapi.ai/mj/v2/fetch
+2025-04-23 03:47:34,276 - INFO - 🔧 Значение для ключа 'API_KEYS.b2.bucket_name' взято из config.json: boyarinnbotbucket
+2025-04-23 03:47:34,305 - INFO - ===== Запуск полного пайплайна для файла: 20250414-1527.json =====
+2025-04-23 03:47:34,344 - INFO - ✅ Конфигурация успешно загружена.
+2025-04-23 03:47:37,792 - INFO - Клиент OpenAI (>1.0) успешно инициализирован.
+2025-04-23 03:47:37,793 - INFO - 🔧 Значение для ключа 'OPENAI_SETTINGS.model' взято из config.json: gpt-4o
+2025-04-23 03:47:37,799 - INFO - 🔧 Значение для ключа 'WORKFLOW.enable_russian_translation' взято из config.json: True
+2025-04-23 03:47:37,800 - INFO - Генерация русского перевода ВКЛЮЧЕНА (WORKFLOW.enable_russian_translation)
+2025-04-23 03:47:37,802 - INFO - Запуск генерации промптов (Шаги 1-6)...
+2025-04-23 03:47:37,804 - INFO - --- Шаг 1: Выбор Эмоционального Ядра ---
+2025-04-23 03:47:37,809 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1500)...
+2025-04-23 03:47:40,559 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:40,693 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:40,695 - INFO - --- Шаг 2: Выбор Основного Креативного Драйвера ---
+2025-04-23 03:47:40,699 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1500)...
+2025-04-23 03:47:42,044 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:42,053 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:42,054 - INFO - --- Шаг 3: Выбор Эстетического Фильтра ---
+2025-04-23 03:47:42,057 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1500)...
+2025-04-23 03:47:43,753 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:43,761 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:43,762 - INFO - --- Шаг 4: Креативный Бриф Собран ---
+2025-04-23 03:47:43,765 - INFO - --- Шаг 5: Генерация Сценария и Описания Кадра ---
+2025-04-23 03:47:43,769 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1000)...
+2025-04-23 03:47:49,078 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:49,089 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:49,105 - INFO - Сценарий: The camera slowly pans across a dimly lit, cluttered workshop. Shadows dance on the walls as moonlig...
+2025-04-23 03:47:49,110 - INFO - Описание кадра: A dimly lit workshop with a wooden table in the foreground. The camera focuses on an ancient manuscr...
+2025-04-23 03:47:49,116 - INFO - --- Шаг 6a: Адаптация Описания под Midjourney V7 ---
+2025-04-23 03:47:49,117 - INFO - 🔧 Значение для ключа 'IMAGE_GENERATION' взято из config.json: {'output_size': '1280×720', 'midjourney_version': '7.0', 'midjourney_style': None}
+2025-04-23 03:47:49,120 - INFO - Параметры MJ: --ar 16:9 --v 7
+2025-04-23 03:47:49,121 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1000)...
+2025-04-23 03:47:52,329 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:52,334 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:52,336 - INFO - MJ промпт (V7): A dimly lit, cluttered workshop with a wooden table in the foreground, its surface scattered with tools and ancient artifacts. The camera focuses on an ancient manuscript, its pages spread open and illuminated by the warm glow of a flickering candle nearby. Shadows from the window bars create an intricate lattice on the dusty floor, enhancing the chiaroscuro effect. The manuscript's delicate, cryptic text draws the eye, evoking suspenseful tension and psychological intrigue. Muted sepia tones and deep shadows dominate the scene, with a faint silhouette of a shadowy figure in the corner, hinting at hidden mysteries and unresolved secrets. The atmosphere is charged with a sense of mystery-driven visuals, enhancing the shocking revelation about Leonardo da Vinci. --ar 16:9 --v 7
+2025-04-23 03:47:52,342 - INFO - --- Шаг 6b: Адаптация Сценария под Runway (Тонкая Настройка) ---
+2025-04-23 03:47:52,344 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.7, Макс.токены: 1000)...
+2025-04-23 03:47:53,894 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:47:53,899 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:47:53,900 - INFO - Runway промпт (финальный, настроенный): Slow pan right across a dimly lit, cluttered workshop, the camera continues panning right steadily. Shadows dance subtly as moonlight filters through small windows. A dusty manuscript lies open on a wooden table, flickering with candlelight. Maintain a suspenseful tension and psychological intrigue with mystery-driven visuals throughout the pan.
+2025-04-23 03:47:53,903 - INFO - --- Шаг 6c: Перевод результатов на русский язык ---
+2025-04-23 03:47:53,905 - INFO - Вызов OpenAI (Модель: gpt-4o, Температура: 0.3, Макс.токены: 2000)...
+2025-04-23 03:48:00,511 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-04-23 03:48:00,522 - INFO - Ответ OpenAI успешно распарсен как JSON.
+2025-04-23 03:48:00,873 - INFO - ✅ Перевод на русский выполнен.
+2025-04-23 03:48:00,882 - INFO - Обновление файла 20250414-1527.json сгенерированными данными...
+2025-04-23 03:48:00,922 - INFO - Результаты успешно сохранены в файл 20250414-1527.json.
+2025-04-23 03:48:00,923 - INFO - ✅ Промпты, бриф (и переводы, если включены) успешно добавлены/обновлены в исходном JSON.
+2025-04-23 03:48:00,963 - INFO - DEBUG: Промпты готовы (считаны из JSON или сгенерированы).
+2025-04-23 03:48:00,998 - INFO - DEBUG: ПЕРЕХОД К БЛОКУ ГЕНЕРАЦИИ МЕДИА...
+2025-04-23 03:48:01,003 - INFO - ===== Начало генерации медиа =====
+2025-04-23 03:48:01,007 - INFO - DEBUG: Инициализация переменных для медиа...
+2025-04-23 03:48:01,008 - INFO - 🔧 Значение для ключа 'API_KEYS.midjourney.endpoint' взято из config.json: https://api.piapi.ai/api/v1/task
+2025-04-23 03:48:01,013 - INFO - 🔧 Значение для ключа 'API_KEYS.midjourney.task_endpoint' взято из config.json: https://api.piapi.ai/mj/v2/fetch
+2025-04-23 03:48:01,016 - INFO - Запуск генерации изображения (MJ)...
+2025-04-23 03:48:01,018 - INFO - --- Шаг 7.1a: Запуск задачи Imagine Midjourney ---
+2025-04-23 03:48:02,814 - INFO - Задача Imagine запущена, ID: 6ec28406-32b4-4db9-b3c3-5201b84520f5
+2025-04-23 03:48:02,816 - INFO - Начало опроса статуса Imagine задачи 6ec28406-32b4-4db9-b3c3-5201b84520f5...
+2025-04-23 03:48:04,147 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: pending (Прогресс: N/A)
+2025-04-23 03:48:20,446 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: processing (Прогресс: N/A)
+2025-04-23 03:48:36,648 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: processing (Прогресс: N/A)
+2025-04-23 03:48:52,878 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: processing (Прогресс: N/A)
+2025-04-23 03:49:09,168 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: processing (Прогресс: N/A)
+2025-04-23 03:49:25,442 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: processing (Прогресс: N/A)
+2025-04-23 03:49:41,888 - INFO - Статус Imagine 6ec28406-32b4-4db9-b3c3-5201b84520f5: finished (Прогресс: N/A)
+2025-04-23 03:49:41,891 - INFO - --- Шаг 7.1b: Запуск задачи 'upscale1' для 6ec28406-32b4-4db9-b3c3-5201b84520f5 ---
+2025-04-23 03:49:41,895 - INFO - Отправка запроса на действие 'upscale1' (тип: upscale) для задачи 6ec28406-32b4-4db9-b3c3-5201b84520f5 на https://api.piapi.ai/api/v1/task...
+2025-04-23 03:49:43,361 - INFO - ✅ Получен НОВЫЙ task_id для действия 'upscale1': 2687718e-b89e-4982-a1dc-62f8372095bc (запрошено в 2025-04-23T00:49:41.895608+00:00)
+2025-04-23 03:49:43,364 - INFO - Задача 'upscale1' запущена, ID: 2687718e-b89e-4982-a1dc-62f8372095bc
+2025-04-23 03:49:43,386 - INFO - Начало опроса статуса задачи 2687718e-b89e-4982-a1dc-62f8372095bc...
+2025-04-23 03:49:44,702 - INFO - Статус upscale1 2687718e-b89e-4982-a1dc-62f8372095bc: pending (Прогресс: N/A)
+2025-04-23 03:50:00,758 - INFO - Статус upscale1 2687718e-b89e-4982-a1dc-62f8372095bc: processing (Прогресс: N/A)
+2025-04-23 03:50:17,234 - INFO - Статус upscale1 2687718e-b89e-4982-a1dc-62f8372095bc: finished (Прогресс: N/A)
+2025-04-23 03:50:17,234 - INFO - Найден URL MJ в ключе 'image_url'.
+2025-04-23 03:50:17,235 - INFO - Попытка скачивания изображения Midjourney: https://img.theapi.app/mj/2687718e-b89e-4982-a1dc-62f8372095bc.png
+2025-04-23 03:50:17,236 - INFO - Загрузка изображения с https://img.theapi.app/mj/2687718e-b89e-4982-a1dc-62f8372095bc.png в C:\Users\boyar\777\555\55\20250414-1527_mj_final.png...
+2025-04-23 03:50:20,386 - INFO - ✅ Изображение успешно сохранено: C:\Users\boyar\777\555\55\20250414-1527_mj_final.png
+2025-04-23 03:50:20,387 - INFO - ✅ Финальное изображение Midjourney сохранено: C:\Users\boyar\777\555\55\20250414-1527_mj_final.png
+2025-04-23 03:50:20,452 - INFO - Изображение для Runway успешно получено из источника: Midjourney.
+2025-04-23 03:50:20,457 - INFO - --- Шаг 7.2: Запуск Runway (Источник изображения: Midjourney) ---
+2025-04-23 03:50:20,458 - INFO - Используется изображение: C:\Users\boyar\777\555\55\20250414-1527_mj_final.png
+2025-04-23 03:50:20,460 - INFO - Используется промпт Runway (финальный): Slow pan right across a dimly lit, cluttered workshop, the camera continues panning right steadily. Shadows dance subtly as moonlight filters through small windows. A dusty manuscript lies open on a wooden table, flickering with candlelight. Maintain a suspenseful tension and psychological intrigue with mystery-driven visuals throughout the pan.
+2025-04-23 03:50:20,462 - INFO - Вызов generate_runway_video (без доп. параметров)...
+2025-04-23 03:50:20,467 - ERROR - Не удалось сгенерировать или получить URL видео Runway.
+2025-04-23 03:50:20,470 - WARNING - ===== Пайплайн завершен для 20250414-1527.json (Только Изображение: Midjourney, Видео не сгенерировано) =====
+2025-04-23 03:50:20,475 - INFO - --- Завершение iid_local_tester.py с кодом выхода: 0 ---

@@ -22,3 +22,11 @@
 2025-04-06 00:29:38,152 - ERROR - ❌ Ошибка загрузки config/config_public.json: Unable to locate credentials
 2025-04-06 00:29:38,155 - ERROR - ❌ Ошибка в процессе генерации медиа: handle_error() missing 1 required positional argument: 'exception'
 2025-04-06 00:29:38,158 - ERROR - ❌ Ошибка в контексте 'Ошибка в процессе генерации медиа': handle_error() missing 1 required positional argument: 'exception'
+2025-04-23 03:47:34,136 - INFO - Logger generate_media is now active.
+2025-04-23 03:47:34,225 - INFO - Размеры изображения/плейсхолдера: 1280x720
+2025-04-23 03:48:01,020 - INFO - Используется финальный промпт MJ: A dimly lit, cluttered workshop with a wooden table in the foreground, its surface scattered with to...
+2025-04-23 03:48:01,022 - INFO - Инициация задачи MJ...
+2025-04-23 03:48:01,031 - INFO - Отправка запроса на https://api.piapi.ai/api/v1/task...
+2025-04-23 03:48:02,758 - INFO - ✅ Получен task_id MJ: 6ec28406-32b4-4db9-b3c3-5201b84520f5 (запрошено в 2025-04-23T00:48:01.022093+00:00)
+2025-04-23 03:50:20,464 - INFO - Запуск генерации видео Runway для: C:\Users\boyar\777\555\55\20250414-1527_mj_final.png
+2025-04-23 03:50:20,466 - ERROR - ❌ SDK RunwayML недоступен.

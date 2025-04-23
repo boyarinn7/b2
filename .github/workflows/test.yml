@@ -31,7 +31,11 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt не найден"; exit 1; fi
-        pip list  # Для диагностики
+        echo "--- Проверка установки runwayml ---"
+        # Добавлена явная проверка импорта runwayml
+        python -c "import runwayml; print('RunwayML version:', runwayml.__version__)" || echo "ОШИБКА: Не удалось импортировать runwayml"
+        echo "--- Вывод pip list ---"
+        pip list
 
     - name: Установка переменных среды
       run: |
@@ -46,25 +50,32 @@ jobs:
     - name: Проверка структуры директорий
       run: |
         ls -la
+        pwd # Показываем текущую рабочую директорию
         ls -la scripts || echo "Каталог scripts не найден"
+        ls -la modules || echo "Каталог modules не найден"
+        # Проверим, нет ли файла runwayml.py в корне или модулях/скриптах
+        find . -name 'runwayml.py' -o -name 'runwayml' -type f -print || echo "Локальный файл/папка runwayml не найдены."
 
-    # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
     - name: Запуск b2_storage_manager.py
       run: |
         echo "--- GITHUB ACTION: Setting PYTHONPATH ---"
-        export PYTHONPATH=$PYTHONPATH:/home/runner/work/b2/b2
+        # Убедимся, что путь к корневой папке проекта добавлен правильно
+        export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE
+        echo "PYTHONPATH is: $PYTHONPATH" # Выводим PYTHONPATH для отладки
         echo "--- GITHUB ACTION: PYTHONPATH Set. Executing Python Script (Direct Output) ---"
         # Запускаем Python НАПРЯМУЮ, без || {...} и без > logfile
         python -u scripts/b2_storage_manager.py --zero-delay
         echo "--- GITHUB ACTION: Python script finished (or failed). ---"
 
     - name: Загрузка логов как артефакта
-      # Этот шаг теперь не найдет b2_storage_manager.log, так как мы его не создаем.
-      # Его можно временно закомментировать или изменить 'path', чтобы он не вызывал ошибку,
-      # но он не является причиной зависания. Оставим пока так.
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: b2-storage-manager-logs
-        path: b2_storage_manager.log # Файл не будет найден, но шаг с if: always() не прервет workflow
+        name: all-logs # Собираем все .log файлы
+        path: |
+          logs/*.log # Собираем все файлы из папки logs
+          *.log # Собираем логи из корня, если есть
         retention-days: 7
+        # Добавим опцию, чтобы не падать, если файлы не найдены
+        if-no-files-found: warn
+

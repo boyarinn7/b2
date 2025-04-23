@@ -25,27 +25,28 @@ try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
     from PIL import Image
-    # Импортируем RunwayML и его специфичное исключение, если возможно
-    try:
-        from runwayml import RunwayML
-        from runwayml.exceptions import RunwayError # Попытка импорта специфичной ошибки
-        RUNWAY_SDK_AVAILABLE = True
-    except ImportError:
-        RunwayML = None
-        RunwayError = Exception # Используем базовый Exception как fallback
-        RUNWAY_SDK_AVAILABLE = False
-        print("Предупреждение: SDK RunwayML не найден. Функционал Runway будет недоступен.")
+    # --- ИМПОРТ RUNWAYML БЕЗ TRY...EXCEPT ---
+    # Попытка импорта напрямую. Если не сработает, скрипт упадет здесь.
+    from runwayml import RunwayML
+    from runwayml.exceptions import RunwayError
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     from moviepy.editor import ImageClip
     import openai
 except ImportError as e:
-    # Логируем предупреждение, если библиотека не найдена
-    print(f"Предупреждение: Необходимая библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
+    # Логируем предупреждение, если *другая* библиотека не найдена
+    # Ошибка импорта runwayml теперь приведет к падению скрипта выше
+    print(f"Предупреждение: Необходимая библиотека не найдена (кроме runwayml?): {e}. Некоторые функции могут быть недоступны.")
     # Устанавливаем флаги/переменные в None для проверки в коде
     if 'PIL' in str(e): Image = None
-    # RunwayML уже обработан выше
     if 'moviepy' in str(e): ImageClip = None
     if 'openai' in str(e): openai = None
+    # Если ошибка была именно с runwayml, она уже должна была произойти выше
+    if 'runwayml' not in str(e):
+        # Если ошибка не связана с runwayml, позволяем продолжить,
+        # но Runway все равно не будет доступен, если импорт выше не удался.
+        RunwayML = None
+        RunwayError = Exception
 
 # --- Ваши модули ---
 try:
@@ -324,9 +325,15 @@ def clean_script_text(script_text_param):
 def generate_runway_video(image_path: str, script: str, config: ConfigManager, api_key: str) -> str | None:
     """Генерирует видео с помощью Runway ML SDK."""
     logger.info(f"Запуск генерации видео Runway для: {image_path}")
-    if not RUNWAY_SDK_AVAILABLE:
-        logger.error("❌ SDK RunwayML недоступен.")
+
+    # --- УБРАН ЛЕНИВЫЙ ИМПОРТ, Т.К. ИМПОРТ ЕСТЬ В НАЧАЛЕ ФАЙЛА ---
+    # Если импорт в начале файла не сработал, скрипт уже должен был упасть.
+    # Если он дошел сюда, значит RunwayML должен быть доступен.
+    if RunwayML is None:
+        logger.error("❌ Класс RunwayML не доступен (ошибка импорта в начале файла?).")
         return None
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     if not api_key:
         logger.error("❌ API ключ Runway не предоставлен.")
         return None
@@ -712,4 +719,3 @@ if __name__ == "__main__":
     finally:
         # Выходим с финальным кодом
         sys.exit(exit_code_main)
-
