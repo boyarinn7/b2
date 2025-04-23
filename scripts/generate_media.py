@@ -20,7 +20,47 @@ from pathlib import Path # Используем pathlib
 import logging # Добавляем logging
 import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
 
-# --- Сторонние библиотеки ---
+# --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+temp_logger = logging.getLogger("generate_media_init")
+
+# --- Ваши модули (попытка импорта ДО инициализации основного логгера) ---
+# Это нужно, чтобы ConfigManager был доступен для инициализации основного логгера
+try:
+    BASE_DIR = Path(__file__).resolve().parent.parent # Используем pathlib
+    if str(BASE_DIR) not in sys.path:
+        sys.path.append(str(BASE_DIR))
+
+    from modules.config_manager import ConfigManager
+    from modules.logger import get_logger # Импортируем функцию, но не вызываем пока
+    from modules.utils import (
+        ensure_directory_exists, load_b2_json, save_b2_json,
+        download_image, download_video, upload_to_b2, load_json_config
+    )
+    from modules.api_clients import get_b2_client
+    from modules.error_handler import handle_error
+
+except ModuleNotFoundError as import_err:
+    temp_logger.error(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", exc_info=True)
+    sys.exit(1)
+except ImportError as import_err:
+     temp_logger.error(f"Критическая Ошибка импорта модулей проекта: {import_err}", exc_info=True)
+     sys.exit(1)
+
+# === Инициализация конфигурации и ОСНОВНОГО логгера ===
+try:
+    config = ConfigManager()
+    print("--- CONFIG MANAGER INIT DONE ---", flush=True)
+    # Инициализируем основной логгер ЗДЕСЬ
+    logger = get_logger("generate_media")
+    print("--- LOGGER INIT DONE ---", flush=True)
+    logger.info("Logger generate_media is now active.")
+except Exception as init_err:
+    temp_logger.error(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", exc_info=True)
+    sys.exit(1) # Выход с ошибкой
+
+
+# --- Сторонние библиотеки (теперь логгер доступен в except) ---
 RunwayML = None
 RunwayError = None
 try:
@@ -33,16 +73,20 @@ try:
     # --- ИМПОРТ RUNWAYML С УТОЧНЕННОЙ ОБРАБОТКОЙ ОШИБОК ---
     try:
         from runwayml import RunwayML
+        logger.info("Основной модуль runwayml импортирован.")
         # Пытаемся импортировать специфичное исключение, но не падаем, если его нет
         try:
             from runwayml.exceptions import RunwayError
+            logger.info("runwayml.exceptions.RunwayError импортирован.")
         except ImportError:
+            # Используем logger, т.к. он уже инициализирован
             logger.warning("Не удалось импортировать runwayml.exceptions.RunwayError. Будут использоваться общие исключения.")
             # Используем базовый класс ошибок Runway, если он доступен, иначе requests.HTTPError
             try:
                 # Попытка импортировать базовый класс ошибок, если он есть
                 from runwayml.exceptions import RunwayError as BaseRunwayError
                 RunwayError = BaseRunwayError
+                logger.info("Используется базовый runwayml.exceptions.RunwayError.")
             except ImportError:
                  # Если и базового нет, будем ловить requests.HTTPError
                  RunwayError = requests.HTTPError # Fallback на HTTPError
@@ -51,60 +95,25 @@ try:
     except ImportError as e:
         # Ловим только ошибку импорта самого runwayml
         if 'runwayml' in str(e).lower():
-             print(f"Предупреждение: Не удалось импортировать основную библиотеку runwayml: {e}. Функционал Runway будет недоступен.")
+             # Используем logger
+             logger.warning(f"Не удалось импортировать основную библиотеку runwayml: {e}. Функционал Runway будет недоступен.")
              RunwayML = None # Явно указываем, что модуль недоступен
              RunwayError = None
         else:
              # Если ошибка в другом импорте, пробрасываем ее дальше
+             logger.error(f"Ошибка импорта сторонней библиотеки (не runwayml): {e}", exc_info=True)
              raise e
 
 except ImportError as e:
     # Логируем предупреждение, если *другая* основная библиотека не найдена
-    print(f"Предупреждение: Необходимая основная библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
+    logger.warning(f"Необходимая основная библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
     if 'PIL' in str(e): Image = None
     if 'moviepy' in str(e): ImageClip = None
     if 'openai' in str(e): openai = None
     # RunwayML уже обработан выше
 
-# --- Ваши модули ---
-try:
-    # Добавлен BASE_DIR для надежного импорта модулей
-    BASE_DIR = Path(__file__).resolve().parent.parent # Используем pathlib
-    if str(BASE_DIR) not in sys.path:
-        sys.path.append(str(BASE_DIR))
-
-    from modules.utils import (
-        ensure_directory_exists, load_b2_json, save_b2_json,
-        download_image, download_video, upload_to_b2, load_json_config # Убедимся, что load_json_config здесь есть
-    )
-    from modules.api_clients import get_b2_client
-    from modules.logger import get_logger
-    from modules.error_handler import handle_error
-    from modules.config_manager import ConfigManager
-except ModuleNotFoundError as import_err:
-    print(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", file=sys.stderr)
-    sys.exit(1)
-except ImportError as import_err:
-     # Проверяем, не ошибка ли это импорта load_json_config
-     if 'load_json_config' in str(import_err):
-         print(f"Критическая Ошибка: Функция 'load_json_config' не найдена в 'modules.utils'. Убедитесь, что она добавлена.", file=sys.stderr)
-     else:
-          print(f"Критическая Ошибка: Не найдена функция/класс в модулях: {import_err}", file=sys.stderr)
-     sys.exit(1)
-
 print("--- IMPORTS DONE ---", flush=True)
 
-# === Инициализация конфигурации и логирования ===
-try:
-    config = ConfigManager()
-    print("--- CONFIG MANAGER INIT DONE ---", flush=True)
-    logger = get_logger("generate_media")
-    print("--- LOGGER INIT DONE ---", flush=True)
-    logger.info("Logger generate_media is now active.")
-except Exception as init_err:
-    # Используем print, так как логгер мог не инициализироваться
-    print(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", file=sys.stderr)
-    sys.exit(1) # Выход с ошибкой
 
 # === Глобальная переменная для клиента OpenAI ===
 openai_client_instance = None
@@ -455,7 +464,11 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
                  logger.error(f"❌ Ошибка HTTP при опросе задачи Runway {task_id}: {http_err.response.status_code} - {http_err.response.text}", exc_info=False) # Не выводим полный traceback для HTTP ошибок
                  break
             except Exception as poll_err: # Ловим остальные ошибки (включая возможные ошибки SDK, если RunwayError не определен)
-                logger.error(f"❌ Ошибка при опросе статуса Runway {task_id}: {poll_err}", exc_info=True)
+                # Проверяем, определено ли RunwayError и является ли ошибка его экземпляром
+                if RunwayError and isinstance(poll_err, RunwayError):
+                     logger.error(f"❌ Ошибка SDK Runway при опросе задачи {task_id}: {poll_err}", exc_info=True)
+                else:
+                     logger.error(f"❌ Общая ошибка при опросе статуса Runway {task_id}: {poll_err}", exc_info=True)
                 break # Прерываем опрос при других ошибках
             # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         else:
@@ -469,8 +482,12 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         logger.error(f"❌ Ошибка HTTP при создании задачи Runway: {http_err.response.status_code} - {http_err.response.text}", exc_info=False)
         return None
     except Exception as e: # Ловим остальные ошибки (включая возможные ошибки SDK)
-        logger.error(f"❌ Общая ошибка при взаимодействии с Runway: {e}", exc_info=True)
-        return None
+         # Проверяем, определено ли RunwayError и является ли ошибка его экземпляром
+         if RunwayError and isinstance(e, RunwayError):
+              logger.error(f"❌ Ошибка SDK Runway при создании задачи: {e}", exc_info=True)
+         else:
+              logger.error(f"❌ Общая ошибка при взаимодействии с Runway: {e}", exc_info=True)
+         return None
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
