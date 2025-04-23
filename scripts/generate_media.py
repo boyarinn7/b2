@@ -22,7 +22,7 @@ import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
 
 # --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-temp_logger = logging.getLogger("generate_media_init")
+temp_logger = logging.getLogger("generate_media_init") # Используем этот логгер для ранних сообщений
 
 # --- Ваши модули (попытка импорта ДО инициализации основного логгера) ---
 # Это нужно, чтобы ConfigManager был доступен для инициализации основного логгера
@@ -56,11 +56,12 @@ try:
     print("--- LOGGER INIT DONE ---", flush=True)
     logger.info("Logger generate_media is now active.")
 except Exception as init_err:
+    # Используем temp_logger, так как основной мог не создаться
     temp_logger.error(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", exc_info=True)
     sys.exit(1) # Выход с ошибкой
 
 
-# --- Сторонние библиотеки (теперь логгер доступен в except) ---
+# --- Сторонние библиотеки (теперь основной логгер доступен в except) ---
 RunwayML = None
 RunwayError = None
 try:
@@ -452,9 +453,11 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
                     logger.error(f"Детали ошибки Runway: {error_details}")
                     break # Выходим из цикла опроса
 
-                elif current_status in ["PENDING", "PROCESSING", "QUEUED", "WAITING"]:
+                # --- ИСПРАВЛЕНО: Добавлен статус RUNNING в список ожидаемых ---
+                elif current_status in ["PENDING", "PROCESSING", "QUEUED", "WAITING", "RUNNING"]:
                     # Статус промежуточный, продолжаем опрос
                     time.sleep(poll_interval)
+                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                 else:
                     logger.warning(f"Неизвестный или неожиданный статус Runway: {current_status}. Прерывание опроса.")
                     break # Выходим при неизвестном статусе
