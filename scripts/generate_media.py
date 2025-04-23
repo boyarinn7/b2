@@ -21,32 +21,50 @@ import logging # Добавляем logging
 import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
 
 # --- Сторонние библиотеки ---
+RunwayML = None
+RunwayError = None
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
     from PIL import Image
-    # --- ИМПОРТ RUNWAYML БЕЗ TRY...EXCEPT ---
-    # Попытка импорта напрямую. Если не сработает, скрипт упадет здесь.
-    from runwayml import RunwayML
-    from runwayml.exceptions import RunwayError
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
     from moviepy.editor import ImageClip
     import openai
+
+    # --- ИМПОРТ RUNWAYML С УТОЧНЕННОЙ ОБРАБОТКОЙ ОШИБОК ---
+    try:
+        from runwayml import RunwayML
+        # Пытаемся импортировать специфичное исключение, но не падаем, если его нет
+        try:
+            from runwayml.exceptions import RunwayError
+        except ImportError:
+            logger.warning("Не удалось импортировать runwayml.exceptions.RunwayError. Будут использоваться общие исключения.")
+            # Используем базовый класс ошибок Runway, если он доступен, иначе requests.HTTPError
+            try:
+                # Попытка импортировать базовый класс ошибок, если он есть
+                from runwayml.exceptions import RunwayError as BaseRunwayError
+                RunwayError = BaseRunwayError
+            except ImportError:
+                 # Если и базового нет, будем ловить requests.HTTPError
+                 RunwayError = requests.HTTPError # Fallback на HTTPError
+                 logger.warning("Не удалось импортировать базовый RunwayError. Fallback на requests.HTTPError.")
+
+    except ImportError as e:
+        # Ловим только ошибку импорта самого runwayml
+        if 'runwayml' in str(e).lower():
+             print(f"Предупреждение: Не удалось импортировать основную библиотеку runwayml: {e}. Функционал Runway будет недоступен.")
+             RunwayML = None # Явно указываем, что модуль недоступен
+             RunwayError = None
+        else:
+             # Если ошибка в другом импорте, пробрасываем ее дальше
+             raise e
+
 except ImportError as e:
-    # Логируем предупреждение, если *другая* библиотека не найдена
-    # Ошибка импорта runwayml теперь приведет к падению скрипта выше
-    print(f"Предупреждение: Необходимая библиотека не найдена (кроме runwayml?): {e}. Некоторые функции могут быть недоступны.")
-    # Устанавливаем флаги/переменные в None для проверки в коде
+    # Логируем предупреждение, если *другая* основная библиотека не найдена
+    print(f"Предупреждение: Необходимая основная библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
     if 'PIL' in str(e): Image = None
     if 'moviepy' in str(e): ImageClip = None
     if 'openai' in str(e): openai = None
-    # Если ошибка была именно с runwayml, она уже должна была произойти выше
-    if 'runwayml' not in str(e):
-        # Если ошибка не связана с runwayml, позволяем продолжить,
-        # но Runway все равно не будет доступен, если импорт выше не удался.
-        RunwayML = None
-        RunwayError = Exception
+    # RunwayML уже обработан выше
 
 # --- Ваши модули ---
 try:
@@ -144,13 +162,18 @@ def _initialize_openai_client():
     if openai_client_instance:
         return True # Уже инициализирован
 
+    # Проверяем, доступен ли модуль openai вообще
+    if openai is None:
+        logger.error("❌ Модуль openai не был импортирован.")
+        return False
+
     api_key_local = os.getenv("OPENAI_API_KEY")
     if not api_key_local:
         logger.error("❌ Переменная окружения OPENAI_API_KEY не задана для generate_media!")
         return False # Не можем инициализировать
 
     try:
-        if openai and hasattr(openai, 'OpenAI'):
+        if hasattr(openai, 'OpenAI'):
             # Проверяем наличие прокси
             http_proxy = os.getenv("HTTP_PROXY")
             https_proxy = os.getenv("HTTPS_PROXY")
@@ -171,7 +194,7 @@ def _initialize_openai_client():
             logger.info("✅ Клиент OpenAI (>1.0) инициализирован (generate_media).")
             return True
         else:
-            logger.error("❌ Модуль/класс openai.OpenAI не найден в generate_media.")
+            logger.error("❌ Класс openai.OpenAI не найден в generate_media.")
             return False
     except Exception as init_err:
         logger.error(f"❌ Ошибка инициализации клиента OpenAI (generate_media): {init_err}", exc_info=True)
@@ -326,13 +349,9 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
     """Генерирует видео с помощью Runway ML SDK."""
     logger.info(f"Запуск генерации видео Runway для: {image_path}")
 
-    # --- УБРАН ЛЕНИВЫЙ ИМПОРТ, Т.К. ИМПОРТ ЕСТЬ В НАЧАЛЕ ФАЙЛА ---
-    # Если импорт в начале файла не сработал, скрипт уже должен был упасть.
-    # Если он дошел сюда, значит RunwayML должен быть доступен.
     if RunwayML is None:
         logger.error("❌ Класс RunwayML не доступен (ошибка импорта в начале файла?).")
         return None
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     if not api_key:
         logger.error("❌ API ключ Runway не предоставлен.")
@@ -431,24 +450,28 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
                     logger.warning(f"Неизвестный или неожиданный статус Runway: {current_status}. Прерывание опроса.")
                     break # Выходим при неизвестном статусе
 
-            except RunwayError as poll_sdk_err:
-                 logger.error(f"❌ Ошибка SDK Runway при опросе задачи {task_id}: {poll_sdk_err}", exc_info=True)
-                 break # Прерываем опрос при ошибке SDK
-            except Exception as poll_err:
+            # --- ИЗМЕНЕН БЛОК EXCEPT ДЛЯ ОШИБОК RUNWAY ---
+            except requests.HTTPError as http_err: # Ловим HTTP ошибки от requests (которые использует SDK)
+                 logger.error(f"❌ Ошибка HTTP при опросе задачи Runway {task_id}: {http_err.response.status_code} - {http_err.response.text}", exc_info=False) # Не выводим полный traceback для HTTP ошибок
+                 break
+            except Exception as poll_err: # Ловим остальные ошибки (включая возможные ошибки SDK, если RunwayError не определен)
                 logger.error(f"❌ Ошибка при опросе статуса Runway {task_id}: {poll_err}", exc_info=True)
                 break # Прерываем опрос при других ошибках
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         else:
             # Цикл завершился по таймауту
             logger.warning(f"⏰ Таймаут ({poll_timeout} сек) ожидания завершения задачи Runway {task_id}.")
 
         return None # Возвращаем None, если видео не было получено
 
-    except RunwayError as r_err: # Ошибка SDK при создании задачи
-        logger.error(f"❌ Ошибка Runway SDK при создании задачи: {r_err}", exc_info=True)
+    # --- ИЗМЕНЕН БЛОК EXCEPT ДЛЯ ОШИБОК RUNWAY ---
+    except requests.HTTPError as http_err: # Ловим HTTP ошибки от requests при создании задачи
+        logger.error(f"❌ Ошибка HTTP при создании задачи Runway: {http_err.response.status_code} - {http_err.response.text}", exc_info=False)
         return None
-    except Exception as e: # Другие ошибки
+    except Exception as e: # Ловим остальные ошибки (включая возможные ошибки SDK)
         logger.error(f"❌ Общая ошибка при взаимодействии с Runway: {e}", exc_info=True)
         return None
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
 def create_mock_video(image_path_str: str) -> str | None:
