@@ -8,6 +8,10 @@ import time
 from pathlib import Path
 import requests
 import shutil
+# --- ДОБАВЛЕН ИМПОРТ DATETIME ---
+from datetime import datetime, timezone
+# --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
 
 # --- Получение логгера (предполагается, что он уже настроен где-то) ---
 # Используем стандартный logging, если кастомный недоступен на раннем этапе
@@ -102,10 +106,10 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
     except Exception as e:
         logger.error(f"Неизвестная ошибка при загрузке {remote_path} из B2: {e}", exc_info=True)
         return default_value
-    # finally: # Не удаляем temp файл здесь, он может быть нужен вызывающей функции
-    #     if Path(local_temp_path).exists():
-    #         try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
-    #         except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
+    finally: # Очищаем временный файл после использования
+        if Path(local_temp_path).exists():
+            try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
+            except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
 
 
 def save_b2_json(s3_client, bucket_name, remote_path, local_temp_path, data):
