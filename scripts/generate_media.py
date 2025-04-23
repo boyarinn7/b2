@@ -141,6 +141,7 @@ try:
     delimiter = None
     if '×' in output_size_str: delimiter = '×'
     elif 'x' in output_size_str: delimiter = 'x'
+    elif ':' in output_size_str: delimiter = ':' # Добавили ':'
 
     if delimiter:
         try:
@@ -152,20 +153,8 @@ try:
             logger.error(f"Ошибка преобразования размеров '{output_size_str}': {e}. Используем 1792x1024.")
             PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
     else:
-        # --- ИСПРАВЛЕНО: Попытка парсинга с двоеточием ---
-        if ':' in output_size_str:
-            try:
-                width_str, height_str = output_size_str.split(':')
-                PLACEHOLDER_WIDTH = int(width_str.strip())
-                PLACEHOLDER_HEIGHT = int(height_str.strip())
-                logger.info(f"Размеры изображения/плейсхолдера (из ':') : {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}")
-            except ValueError as e:
-                logger.error(f"Ошибка преобразования размеров '{output_size_str}' с ':': {e}. Используем 1792x1024.")
-                PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
-        else:
-            logger.error(f"Не удалось определить разделитель в IMAGE_GENERATION.output_size: '{output_size_str}'. Используем 1792x1024.")
-            PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        logger.error(f"Не удалось определить разделитель в IMAGE_GENERATION.output_size: '{output_size_str}'. Используем 1792x1024.")
+        PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
 
     PLACEHOLDER_BG_COLOR = config.get("VIDEO.placeholder_bg_color", "cccccc")
     PLACEHOLDER_TEXT_COLOR = config.get("VIDEO.placeholder_text_color", "333333")
@@ -386,12 +375,10 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
         duration = int(config.get('VIDEO.runway_duration', 5))
         ratio_str = config.get('VIDEO.runway_ratio', f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}")
-        # --- ИСПРАВЛЕНО: Проверка ratio перед использованием ---
         supported_ratios = ["1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672"]
         if ratio_str not in supported_ratios:
             logger.warning(f"Неподдерживаемое соотношение сторон '{ratio_str}' в конфиге. Используется '1280:720'.")
             ratio_str = "1280:720"
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300))
         poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
         logger.info(f"Параметры Runway: model='{model_name}', duration={duration}, ratio='{ratio_str}'")
@@ -509,7 +496,7 @@ def create_mock_video(image_path_str: str) -> str | None:
     if not image_path_obj.is_file(): logger.error(f"{image_path_obj} не найден или не файл."); return None
 
     clip = None; base_name = image_path_obj.stem
-    suffixes_to_remove = ["_mj_final", "_placeholder", "_best", "_temp"]
+    suffixes_to_remove = ["_mj_final", "_placeholder", "_best", "_temp", "_upscaled"] # Добавлено _upscaled
     for suffix in suffixes_to_remove:
         if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]; break
     output_path = str(image_path_obj.parent / f"{base_name}.{VIDEO_FORMAT}")
@@ -693,24 +680,32 @@ def main():
         else: config_mj.setdefault("midjourney_task", None); config_mj.setdefault("midjourney_results", {}); config_mj.setdefault("generation", False); config_mj.setdefault("status", None)
         logger.info("✅ Данные и конфиги загружены.")
 
-        # --- ОБНОВЛЕННАЯ ЛОГИКА С АПСКЕЙЛОМ ---
+        # --- ОБНОВЛЕННАЯ ЛОГИКА С АПСКЕЙЛОМ (v2) ---
         ensure_directory_exists(str(temp_dir_path))
         local_image_path = None; video_path = None
         final_upscaled_image_url = None
+        is_imagine_result = False
+        is_upscale_result = False
 
-        # Проверяем, есть ли уже результат апскейла
+        # Определяем тип результата в конфиге
         mj_results = config_mj.get("midjourney_results", {})
-        if isinstance(mj_results.get("task_result"), dict):
-             task_result = mj_results["task_result"]
-             # Ищем URL в результате, предполагая, что это результат апскейла
-             possible_url_keys = ["image_url", "imageUrl", "discord_image_url", "url"]
-             for key in possible_url_keys:
-                 value = task_result.get(key)
-                 # Убедимся, что это не список (результат imagine), а одна строка URL
-                 if isinstance(value, str) and value.startswith("http"):
-                     final_upscaled_image_url = value
-                     logger.info(f"Найден финальный URL MJ (предположительно апскейл) в ключе '{key}'.")
-                     break
+        task_result_data = mj_results.get("task_result") # Получаем вложенный словарь
+
+        if isinstance(task_result_data, dict):
+            # Проверяем признаки результата /imagine
+            if task_result_data.get("actions") and isinstance(task_result_data.get("temporary_image_urls"), list):
+                is_imagine_result = True
+                logger.info("Обнаружен результат задачи /imagine (есть actions и temporary_image_urls).")
+            # Проверяем признаки результата /upscale (или другого действия)
+            elif isinstance(task_result_data.get("image_url"), str) and task_result_data.get("image_url").startswith("http") and not task_result_data.get("actions"):
+                 is_upscale_result = True
+                 final_upscaled_image_url = task_result_data.get("image_url")
+                 logger.info(f"Обнаружен результат задачи /upscale (есть image_url, нет actions): {final_upscaled_image_url}")
+            else:
+                 logger.warning(f"Не удалось определить тип результата MJ в task_result: {json.dumps(task_result_data, indent=2)[:500]}...")
+        elif mj_results: # Если midjourney_results не пустой, но task_result не словарь
+             logger.warning(f"Поле 'task_result' в midjourney_results не является словарем: {mj_results}")
+
 
         # --- Основной блок обработки ---
         try:
@@ -730,9 +725,9 @@ def main():
                 video_path = Path(video_path_str)
                 logger.info("Сброс состояния MJ..."); config_mj['midjourney_task'] = None; config_mj['midjourney_results'] = {}; config_mj['generation'] = False; config_mj['status'] = None
 
-            elif final_upscaled_image_url:
+            elif is_upscale_result and final_upscaled_image_url:
                 # --- ШАГ 3: Есть результат апскейла -> Генерируем Runway ---
-                logger.info(f"Обнаружен финальный URL апскейла: {final_upscaled_image_url}. Генерация видео Runway...")
+                logger.info(f"Обработка результата /upscale. Генерация видео Runway...")
                 local_image_path = temp_dir_path / f"{generation_id}_upscaled.{IMAGE_FORMAT}" # Имя файла для апскейла
                 if not download_image(final_upscaled_image_url, str(local_image_path)):
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
@@ -763,23 +758,16 @@ def main():
                 config_mj['midjourney_results'] = {} # Очищаем результаты апскейла
                 config_mj['generation'] = False
                 config_mj['midjourney_task'] = None
-                config_mj['status'] = None
+                config_mj['status'] = None # Сбрасываем статус
 
-            elif isinstance(mj_results.get("task_result"), dict) and mj_results.get("task_result").get("actions"):
+            elif is_imagine_result:
                 # --- ШАГ 2: Есть результат imagine -> Выбираем и запускаем upscale ---
-                logger.info(f"Обнаружены результаты /imagine. Выбор лучшего и запуск /upscale...")
-                imagine_task_result = mj_results["task_result"]
+                logger.info(f"Обработка результата /imagine. Выбор лучшего и запуск /upscale...")
                 imagine_task_id = mj_results.get("task_id") # ID исходной задачи /imagine
-                image_urls = []
-                possible_url_keys = ["temporary_image_urls", "image_urls"] # Ищем списки URL
-                for key in possible_url_keys:
-                    urls = imagine_task_result.get(key)
-                    if isinstance(urls, list) and len(urls) == 4:
-                        image_urls = urls
-                        logger.debug(f"Найдены URL сетки MJ из '{key}'.")
-                        break
-                if not image_urls:
-                    logger.error(f"Не удалось найти список из 4 URL в результатах /imagine: {imagine_task_result}")
+                image_urls = task_result_data.get("temporary_image_urls", []) # Берем URL сетки
+
+                if not image_urls or len(image_urls) != 4:
+                    logger.error(f"Не найден корректный список temporary_image_urls в результатах /imagine: {task_result_data}")
                     raise ValueError("Некорректные результаты /imagine")
                 if not imagine_task_id:
                      logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}")
@@ -794,7 +782,7 @@ def main():
                     best_index = 0 # Fallback на первый
 
                 action_to_trigger = f"upscale{best_index + 1}"
-                available_actions = imagine_task_result.get("actions", [])
+                available_actions = task_result_data.get("actions", [])
                 logger.info(f"Выбран индекс {best_index}. Требуемое действие: {action_to_trigger}. Доступные: {available_actions}")
 
                 if action_to_trigger not in available_actions:
@@ -867,16 +855,16 @@ def main():
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
                  # Определяем имя файла в B2 (для апскейла или плейсхолдера)
-                 b2_image_filename = f"{generation_id}.{IMAGE_FORMAT}"
-                 upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
+                 b2_image_filename = f"{generation_id}{local_image_path.suffix}" # Используем суффикс из локального файла
+                 upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename) # Передаем полное имя
             elif local_image_path: # Если путь был, но файл не найден
                  logger.warning(f"Изображение {local_image_path} не найдено или не Path для загрузки.")
 
             if video_path and isinstance(video_path, Path) and video_path.is_file():
-                 b2_video_filename = f"{generation_id}.{VIDEO_FORMAT}"
-                 upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
+                 b2_video_filename = f"{generation_id}{video_path.suffix}" # Используем суффикс из локального файла
+                 upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename) # Передаем полное имя
             elif video_path: logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
-            elif final_upscaled_image_url or use_mock_flag: # Логируем только если ожидали видео
+            elif is_upscale_result or use_mock_flag: # Логируем только если ожидали видео
                  logger.warning("Видео не сгенерировано/не найдено для загрузки.")
 
             if (local_image_path and video_path):
