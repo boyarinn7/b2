@@ -49,6 +49,119 @@ except ImportError as e:
 # --- Инициализация логгера ---
 logger = get_logger("generate_content")
 
+# --- Глобальная переменная для клиента OpenAI (будет инициализирована в call_openai) ---
+openai_client_instance = None
+
+# --- Функция вызова OpenAI API (адаптирована из iid_local_tester.py) ---
+def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, temperature_override=None, max_tokens_override=None, config_manager_instance=None, prompts_config_data_instance=None):
+    """
+    Выполняет вызов OpenAI API (версии >=1.0), инициализируя клиент при необходимости,
+    и возвращает распарсенный JSON или строку.
+    Использует настройки из prompts_config.json.
+    """
+    global openai_client_instance # Используем глобальную переменную для клиента
+
+    # --- Инициализация клиента при первом вызове ---
+    if not openai_client_instance:
+        api_key_local = os.getenv("OPENAI_API_KEY")
+        if not api_key_local:
+            logger.error("❌ Переменная окружения OPENAI_API_KEY не задана!")
+            raise RuntimeError("OpenAI API key not found.") # Прерываем выполнение
+
+        try:
+            if openai and hasattr(openai, 'OpenAI'):
+                # Проверяем наличие прокси в переменных окружения
+                http_proxy = os.getenv("HTTP_PROXY")
+                https_proxy = os.getenv("HTTPS_PROXY")
+                proxies = {}
+                if http_proxy: proxies["http://"] = http_proxy
+                if https_proxy: proxies["https://"] = https_proxy
+
+                if proxies:
+                    logger.info(f"Обнаружены настройки прокси для OpenAI: {proxies}")
+                    http_client = httpx.Client(proxies=proxies)
+                    openai_client_instance = openai.OpenAI(api_key=api_key_local, http_client=http_client)
+                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
+                else:
+                    openai_client_instance = openai.OpenAI(api_key=api_key_local)
+                    logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
+            else:
+                logger.error("❌ Модуль/класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
+                raise ImportError("openai.OpenAI class not found.")
+        except Exception as init_err:
+            logger.error(f"❌ Ошибка инициализации клиента OpenAI: {init_err}", exc_info=True)
+            raise RuntimeError(f"Failed to initialize OpenAI client: {init_err}") from init_err
+    # --- Конец инициализации клиента ---
+
+    if not config_manager_instance:
+        logger.error("❌ Экземпляр ConfigManager не передан в call_openai.")
+        return None # Или raise exception
+    if not prompts_config_data_instance:
+        logger.error("❌ Данные prompts_config не переданы в call_openai.")
+        return None # Или raise exception
+
+    openai_model = config_manager_instance.get("OPENAI_SETTINGS.model", "gpt-4o")
+
+    try:
+        # Получение настроек промпта
+        keys = prompt_config_key.split('.')
+        prompt_settings = prompts_config_data_instance
+        for key in keys: prompt_settings = prompt_settings.get(key, {})
+        if not isinstance(prompt_settings, dict):
+            logger.warning(f"Настройки для '{prompt_config_key}' не найдены/не словарь. Дефолты."); prompt_settings = {}
+
+        default_temp = 0.7; default_max_tokens = 1500
+        temp = float(temperature_override if temperature_override is not None else prompt_settings.get('temperature', default_temp))
+        max_tokens = int(max_tokens_override if max_tokens_override is not None else prompt_settings.get('max_tokens', default_max_tokens))
+
+        logger.info(f"🔎 Вызов OpenAI (Ключ: {prompt_config_key}, Модель: {openai_model}, JSON={use_json_mode}, t={temp:.2f}, max_tokens={max_tokens})...")
+
+        messages = [{"role": "system", "content": "You are a helpful AI assistant specializing in historical content generation. Follow user instructions precisely and respond ONLY in the specified format (e.g., JSON) without any extra text."},
+                    {"role": "user", "content": prompt_text}]
+
+        request_params = { "model": openai_model, "messages": messages, "max_tokens": max_tokens, "temperature": temp }
+        if use_json_mode: request_params["response_format"] = {"type": "json_object"}
+
+        response = openai_client_instance.chat.completions.create(**request_params)
+
+        if response.choices and response.choices[0].message and response.choices[0].message.content:
+            response_content = response.choices[0].message.content.strip()
+            logger.debug(f"Сырой ответ OpenAI: {response_content[:500]}...")
+
+            # Обработка возможной обертки ```json
+            if use_json_mode and response_content.startswith("```json"):
+                 response_content = response_content[7:] # Убираем ```json\n
+                 response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
+                 response_content = response_content.strip()
+
+            # Если нужен JSON, пытаемся распарсить
+            if use_json_mode:
+                try:
+                    parsed_json = json.loads(response_content)
+                    logger.debug("Ответ OpenAI успешно распарсен как JSON.")
+                    return parsed_json
+                except json.JSONDecodeError as json_e:
+                    logger.error(f"Ошибка декодирования JSON из ответа OpenAI: {json_e}\nОтвет: {response_content}")
+                    return None # Возвращаем None при ошибке парсинга JSON
+            else:
+                # Если JSON не нужен, возвращаем как строку
+                return response_content
+        else:
+            logger.error("❌ OpenAI API вернул пустой/некорректный ответ.");
+            logger.debug(f"Запрос: {messages}")
+            return None
+
+    # Обработка специфичных ошибок OpenAI
+    except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI: {e}"); return None
+    except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI: {e}"); return None
+    except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI: {e}"); return None
+    except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI: {e.status_code} - {e.response}"); return None
+    except openai.BadRequestError as e: logger.exception(f"Ошибка неверного запроса OpenAI: {e}"); return None
+    except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI: {e}"); return None
+    # Обработка других исключений
+    except Exception as e: logger.exception(f"Неизвестная ошибка в call_openai: {e}"); return None
+
+
 # --- Функция сохранения в B2 (без изменений) ---
 def save_content_to_b2(folder, content_dict, generation_id, config_manager_instance):
     """Сохраняет словарь content_dict как JSON в указанную папку B2."""
@@ -108,53 +221,16 @@ class ContentGenerator:
         self.adaptation_params = self.config.get('GENERATE.adaptation_parameters', {})
         self.content_output_path = self.config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
-        # --- ИСПРАВЛЕНО: Инициализация OpenAI с поддержкой прокси (версия >= 1.0) ---
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
-        self.openai_client = None
-        if not self.openai_api_key:
-            self.logger.error("❌ Переменная окружения OPENAI_API_KEY не задана!")
-        else:
-            try:
-                if openai and hasattr(openai, 'OpenAI'):
-                    # Проверяем наличие прокси в переменных окружения
-                    http_proxy = os.getenv("HTTP_PROXY")
-                    https_proxy = os.getenv("HTTPS_PROXY")
-
-                    # Собираем словарь proxies только если есть хотя бы один прокси
-                    proxies = {}
-                    if http_proxy: proxies["http://"] = http_proxy
-                    if https_proxy: proxies["https://"] = https_proxy
-
-                    if proxies:
-                        self.logger.info(f"Обнаружены настройки прокси: {proxies}")
-                        # Создаем httpx клиент с прокси
-                        http_client = httpx.Client(proxies=proxies)
-                        # Передаем http_client в конструктор OpenAI
-                        self.openai_client = openai.OpenAI(api_key=self.openai_api_key, http_client=http_client)
-                        self.logger.info("✅ Клиент OpenAI (>1.0) инициализирован с прокси.")
-                    else:
-                        # Инициализируем без прокси (не передаем http_client)
-                        self.openai_client = openai.OpenAI(api_key=self.openai_api_key)
-                        self.logger.info("✅ Клиент OpenAI (>1.0) инициализирован (без прокси).")
-                else:
-                    # Логируем, если модуль openai или класс OpenAI не найдены
-                    if not openai:
-                        self.logger.error("❌ Модуль openai не импортирован.")
-                    elif not hasattr(openai, 'OpenAI'):
-                        self.logger.error("❌ Класс openai.OpenAI не найден. Убедитесь, что установлена версия >= 1.0.")
-            except Exception as e:
-                 # Ловим любые ошибки инициализации
-                 self.logger.error(f"❌ Ошибка инициализации клиента OpenAI: {e}", exc_info=True)
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        # --- ИНИЦИАЛИЗАЦИЯ OpenAI УДАЛЕНА ОТСЮДА ---
+        # self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        # self.openai_model = self.config.get("OPENAI_SETTINGS.model", "gpt-4o")
+        # self.openai_client = None # Клиент будет создан в call_openai при первом вызове
 
         self.b2_client = get_b2_client()
         if not self.b2_client: self.logger.warning("⚠️ Не удалось инициализировать B2 клиент.")
 
-        # --- ИСПРАВЛЕНО: Используем config.get для путей tracker и failsafe ---
         self.tracker_path_rel = self.config.get("FILE_PATHS.tracker_path", "data/topics_tracker.json")
         self.failsafe_path_rel = self.config.get("FILE_PATHS.failsafe_path", "config/FailSafeVault.json")
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
         self.tracker_path_abs = BASE_DIR / self.tracker_path_rel
         self.failsafe_path_abs = BASE_DIR / self.failsafe_path_rel
@@ -181,12 +257,14 @@ class ContentGenerator:
     def clear_generated_content(self):
         """Очищает локальный файл с промежуточными результатами."""
         try:
-            self.logger.info(f"🧹 Очистка {self.content_output_path}")
-            ensure_directory_exists(self.content_output_path)
-            with open(self.content_output_path, 'w', encoding='utf-8') as file: json.dump({}, file)
+            content_path_obj = Path(self.content_output_path)
+            self.logger.info(f"🧹 Очистка {content_path_obj.resolve()}") # Логируем абсолютный путь
+            ensure_directory_exists(str(content_path_obj)) # Передаем строку
+            with open(content_path_obj, 'w', encoding='utf-8') as file: json.dump({}, file)
             self.logger.info("✅ Локальный файл очищен/создан.")
         except PermissionError: handle_error("Clear Content Error", f"Нет прав на запись: {self.content_output_path}", PermissionError())
         except Exception as e: handle_error("Clear Content Error", str(e), e)
+
 
     def load_tracker(self):
         """Загружает трекер тем из B2 или локального файла."""
@@ -197,6 +275,7 @@ class ContentGenerator:
             try:
                 self.logger.info(f"Загрузка {tracker_path_rel} из B2...")
                 timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S%f"); local_temp_tracker = f"tracker_temp_{timestamp_suffix}.json"
+                ensure_directory_exists(local_temp_tracker) # Убедимся, что папка для temp есть
                 self.b2_client.download_file(bucket_name, tracker_path_rel, local_temp_tracker)
                 shutil.copyfile(local_temp_tracker, str(tracker_path_abs)); os.remove(local_temp_tracker)
                 self.logger.info(f"✅ Загружен {tracker_path_rel} из B2.")
@@ -252,11 +331,18 @@ class ContentGenerator:
         if not prompt_template: raise ValueError(f"Промпт {prompt_config_key} не найден.")
         prompt = prompt_template.format(focus_areas=selected_focus, exclusions=exclusions_str)
 
-        topic_response_str = ""
         try:
-            topic_response_str = self.request_openai(prompt, prompt_config_key=prompt_config_key, use_json_mode=True)
-            if not topic_response_str: raise ValueError("OpenAI не вернул ответ для темы.")
-            topic_data = json.loads(topic_response_str)
+            # Используем новую функцию call_openai
+            topic_data = call_openai(prompt,
+                                     prompt_config_key=prompt_config_key,
+                                     use_json_mode=True,
+                                     config_manager_instance=self.config,
+                                     prompts_config_data_instance=self.prompts_config_data)
+
+            if not topic_data: raise ValueError("call_openai не вернул ответ для темы.")
+            # topic_data уже должен быть словарем, если use_json_mode=True и парсинг успешен
+            # topic_data = json.loads(topic_response_str) # Эта строка больше не нужна
+
             full_topic = topic_data.get("full_topic"); short_topic = topic_data.get("short_topic")
             if not full_topic or not short_topic: raise ValueError(f"Ответ для темы не содержит ключи: {topic_data}")
             self.logger.info(f"Сгенерирована тема: '{full_topic}' (Ярлык: '{short_topic}')")
@@ -264,7 +350,8 @@ class ContentGenerator:
             self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
             content_metadata = {"theme": "tragic" if "(т)" in selected_focus else "normal"}
             return full_topic, content_metadata
-        except json.JSONDecodeError as e: self.logger.error(f"Ошибка JSON ответа темы: {e}. Ответ: {topic_response_str[:500]}"); raise ValueError("Ошибка формата ответа темы.") from e
+        # except json.JSONDecodeError as e: # Ошибка парсинга теперь обрабатывается внутри call_openai
+        #     self.logger.error(f"Ошибка JSON ответа темы: {e}. Ответ: {topic_response_str[:500]}"); raise ValueError("Ошибка формата ответа темы.") from e
         except Exception as e: self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True); raise
 
     def update_tracker(self, focus, short_topic, tracker):
@@ -297,56 +384,7 @@ class ContentGenerator:
             self.logger.info(f"✅ {tracker_path_rel} синхронизирован с B2.")
         except Exception as e: self.logger.error(f"⚠️ Не удалось загрузить трекер {tracker_path_rel} в B2: {e}")
 
-    def request_openai(self, prompt_text: str, prompt_config_key: str, use_json_mode=False, temperature_override=None, max_tokens_override=None):
-        """
-        Отправляет запрос к OpenAI (v > 1.0), используя настройки из prompts_config.json.
-        """
-        if not self.openai_client:
-            self.logger.error("❌ OpenAI клиент не инициализирован. Запрос не может быть выполнен.")
-            # Поднимаем исключение, чтобы прервать выполнение там, где нужен клиент
-            raise RuntimeError("OpenAI client is not initialized.")
-        if not self.prompts_config_data: self.logger.error("❌ Конфигурация промптов не загружена."); return None
-
-        try:
-            keys = prompt_config_key.split('.')
-            prompt_settings = self.prompts_config_data
-            for key in keys: prompt_settings = prompt_settings.get(key, {})
-            if not isinstance(prompt_settings, dict):
-                self.logger.warning(f"Настройки для '{prompt_config_key}' не найдены/не словарь. Дефолты."); prompt_settings = {}
-
-            default_temp = 0.7; default_max_tokens = 1500
-            temp = float(temperature_override if temperature_override is not None else prompt_settings.get('temperature', default_temp))
-            max_tokens = int(max_tokens_override if max_tokens_override is not None else prompt_settings.get('max_tokens', default_max_tokens))
-
-            self.logger.info(f"🔎 Вызов OpenAI (Ключ: {prompt_config_key}, Модель: {self.openai_model}, JSON={use_json_mode}, t={temp:.2f}, max_tokens={max_tokens})...")
-
-            # Используем упрощенный системный промпт
-            messages = [{"role": "system", "content": "You are a helpful AI assistant specializing in historical content generation."},
-                        {"role": "user", "content": prompt_text}]
-            request_params = { "model": self.openai_model, "messages": messages, "max_tokens": max_tokens, "temperature": temp }
-            if use_json_mode: request_params["response_format"] = {"type": "json_object"}
-
-            response = self.openai_client.chat.completions.create(**request_params)
-
-            if response.choices and response.choices[0].message and response.choices[0].message.content:
-                response_content = response.choices[0].message.content.strip()
-                # Обработка возможной обертки ```json
-                if use_json_mode and response_content.startswith("```json"):
-                     response_content = response_content[7:] # Убираем ```json\n
-                     response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
-                     response_content = response_content.strip()
-                self.logger.debug(f"Сырой ответ OpenAI: {response_content[:500]}...")
-                return response_content
-            else: self.logger.error("❌ OpenAI API вернул пустой/некорректный ответ."); self.logger.debug(f"Запрос: {messages}"); return None
-        # Обработка специфичных ошибок OpenAI
-        except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI: {e}"); return None
-        except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI: {e}"); return None
-        except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI: {e}"); return None
-        except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI: {e.status_code} - {e.response}"); return None
-        except openai.BadRequestError as e: logger.exception(f"Ошибка неверного запроса OpenAI: {e}"); return None
-        except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI: {e}"); return None
-        # Обработка других исключений
-        except Exception as e: logger.exception(f"Неизвестная ошибка в request_openai: {e}"); return None
+    # request_openai УДАЛЕНА, используется call_openai
 
     def _get_prompt_template(self, prompt_config_key: str) -> str | None:
         """Вспомогательный метод для получения шаблона промпта."""
@@ -371,7 +409,12 @@ class ContentGenerator:
         prompt = prompt_template.format(text=text)
         self.logger.info(f"Запрос комментария (ключ: {prompt_config_key})...")
         try:
-            comment = self.request_openai(prompt, prompt_config_key=prompt_config_key, use_json_mode=False)
+            # Используем новую функцию call_openai
+            comment = call_openai(prompt,
+                                  prompt_config_key=prompt_config_key,
+                                  use_json_mode=False, # Комментарий - строка
+                                  config_manager_instance=self.config,
+                                  prompts_config_data_instance=self.prompts_config_data)
             if comment: self.logger.info(f"✅ Комментарий: {comment}")
             else: self.logger.error(f"❌ Ошибка генерации комментария ({prompt_config_key}).")
             return comment
@@ -387,26 +430,34 @@ class ContentGenerator:
         if not prompt_template: return {}
         prompt = prompt_template.format(text=text)
         self.logger.info(f"Запрос опроса (ключ: {prompt_config_key})... JSON.")
-        response_content = ""
         try:
-            response_content = self.request_openai(prompt, prompt_config_key=prompt_config_key, use_json_mode=True)
-            if not response_content: self.logger.error(f"❌ Ошибка генерации опроса ({prompt_config_key})."); return {}
-            self.logger.debug(f"Сырой ответ опроса: {response_content[:500]}")
-            poll_data = json.loads(response_content)
+            # Используем новую функцию call_openai
+            poll_data = call_openai(prompt,
+                                    prompt_config_key=prompt_config_key,
+                                    use_json_mode=True, # Опрос - JSON
+                                    config_manager_instance=self.config,
+                                    prompts_config_data_instance=self.prompts_config_data)
+
+            if not poll_data: self.logger.error(f"❌ Ошибка генерации опроса ({prompt_config_key})."); return {}
+            # poll_data уже должен быть словарем
+            # self.logger.debug(f"Сырой ответ опроса: {response_content[:500]}") # Логирование внутри call_openai
+            # poll_data = json.loads(response_content) # Парсинг внутри call_openai
+
             if isinstance(poll_data, dict) and "question" in poll_data and "options" in poll_data and isinstance(poll_data["options"], list) and len(poll_data["options"]) == 3:
                 self.logger.info("✅ Опрос сгенерирован."); poll_data["question"] = str(poll_data["question"]).strip(); poll_data["options"] = [str(opt).strip() for opt in poll_data["options"]]
                 return poll_data
             else: self.logger.error(f"❌ Структура JSON опроса неверна: {poll_data}"); return {}
-        except json.JSONDecodeError as e: self.logger.error(f"❌ Ошибка парсинга JSON опроса: {e}. Ответ: {response_content[:500]}"); return {}
+        # except json.JSONDecodeError as e: # Обрабатывается в call_openai
+        #     self.logger.error(f"❌ Ошибка парсинга JSON опроса: {e}. Ответ: {response_content[:500]}"); return {}
         except Exception as e: self.logger.error(f"❌ Исключение опроса: {e}"); return {}
 
     def save_to_generated_content(self, stage, data):
         """Сохраняет промежуточные данные в локальный JSON файл."""
         try:
             if not self.content_output_path: raise ValueError("❌ self.content_output_path не задан!")
-            self.logger.debug(f"🔄 Обновление {self.content_output_path}, этап: {stage}")
-            ensure_directory_exists(self.content_output_path); result_data = {}
-            content_path_obj = Path(self.content_output_path) # Используем Path
+            content_path_obj = Path(self.content_output_path)
+            self.logger.debug(f"🔄 Обновление {content_path_obj.resolve()}, этап: {stage}")
+            ensure_directory_exists(str(content_path_obj)); result_data = {}
             if content_path_obj.exists():
                 try:
                     if content_path_obj.stat().st_size > 0:
@@ -429,7 +480,12 @@ class ContentGenerator:
             prompt_template = self._get_prompt_template(prompt_config_key)
             if not prompt_template or prompt_template == "...": self.logger.error(f"Промпт {prompt_config_key} не найден."); return "Промпт критики не найден."
             prompt = prompt_template.format(content=content, topic=topic)
-            critique = self.request_openai(prompt, prompt_config_key=prompt_config_key, use_json_mode=False)
+            # Используем новую функцию call_openai
+            critique = call_openai(prompt,
+                                   prompt_config_key=prompt_config_key,
+                                   use_json_mode=False, # Критика - строка
+                                   config_manager_instance=self.config,
+                                   prompts_config_data_instance=self.prompts_config_data)
             if critique: self.logger.info("✅ Критика завершена.")
             else: self.logger.error(f"❌ Ошибка критики ({prompt_config_key}).")
             return critique if critique else "Критика завершилась ошибкой."
@@ -464,9 +520,6 @@ class ContentGenerator:
         self.logger.info(f"--- Запуск ContentGenerator.run для ID: {generation_id} ---")
         if not generation_id: raise ValueError("generation_id не может быть пустым.")
         if not self.creative_config_data or not self.prompts_config_data: raise RuntimeError("Конфиги не загружены.")
-        # --- ИСПРАВЛЕНО: Проверка openai_client ---
-        # if not self.openai_client: raise RuntimeError("OpenAI клиент не инициализирован.")
-        # Вместо падения здесь, ошибки будут обработаны в request_openai
 
         try:
             # Шаг 1: Подготовка
@@ -479,7 +532,12 @@ class ContentGenerator:
                 prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"; prompt_config_key = f"content.{prompt_key_suffix}"
                 prompt_template = self._get_prompt_template(prompt_config_key)
                 if prompt_template:
-                     text_initial = self.request_openai(prompt_template.format(topic=topic), prompt_config_key=prompt_config_key, use_json_mode=False)
+                     # Используем новую функцию call_openai
+                     text_initial = call_openai(prompt_template.format(topic=topic),
+                                                prompt_config_key=prompt_config_key,
+                                                use_json_mode=False, # Текст - строка
+                                                config_manager_instance=self.config,
+                                                prompts_config_data_instance=self.prompts_config_data)
                      if text_initial: self.logger.info(f"Текст: {text_initial[:100]}..."); self.save_to_generated_content("text", {"text": text_initial})
                      else: self.logger.warning(f"Генерация текста ({prompt_config_key}) не удалась.")
                 else: self.logger.warning(f"Промпт {prompt_config_key} не найден.")
@@ -513,24 +571,25 @@ class ContentGenerator:
                 self.logger.info("--- Шаг 6.1: Ядро ---"); prompt_key1 = "multi_step.step1_core"; tmpl1 = self._get_prompt_template(prompt_key1);
                 if not tmpl1: raise ValueError(f"{prompt_key1} не найден.")
                 prompt1 = tmpl1.format(input_text=topic, moods_list_str=moods_list_str, arcs_list_str=arcs_list_str)
-                core_brief_str = self.request_openai(prompt1, prompt_config_key=prompt_key1, use_json_mode=True)
-                if not core_brief_str: raise ValueError("Шаг 6.1 не удался."); core_brief = json.loads(core_brief_str)
-                if not core_brief or not all(k in core_brief for k in ["chosen_type", "chosen_value", "justification"]): raise ValueError(f"Шаг 6.1: неверный JSON {core_brief}.")
+                core_brief = call_openai(prompt1, prompt_config_key=prompt_key1, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not core_brief: raise ValueError("Шаг 6.1 не удался."); # core_brief уже словарь
+                if not all(k in core_brief for k in ["chosen_type", "chosen_value", "justification"]): raise ValueError(f"Шаг 6.1: неверный JSON {core_brief}.")
 
                 # Шаг 6.2: Драйвер
                 self.logger.info("--- Шаг 6.2: Драйвер ---"); prompt_key2 = "multi_step.step2_driver"; tmpl2 = self._get_prompt_template(prompt_key2);
                 if not tmpl2: raise ValueError(f"{prompt_key2} не найден.")
                 prompt2 = tmpl2.format(input_text=topic, chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False, indent=2), prompts_list_str=prompts_list_str, perspectives_list_str=perspectives_list_str, metaphors_list_str=metaphors_list_str)
-                driver_brief_str = self.request_openai(prompt2, prompt_config_key=prompt_key2, use_json_mode=True)
-                if not driver_brief_str: raise ValueError("Шаг 6.2 не удался."); driver_brief = json.loads(driver_brief_str)
-                if not driver_brief or not all(k in driver_brief for k in ["chosen_driver_type", "chosen_driver_value", "justification"]): raise ValueError(f"Шаг 6.2: неверный JSON {driver_brief}.")
+                driver_brief = call_openai(prompt2, prompt_config_key=prompt_key2, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not driver_brief: raise ValueError("Шаг 6.2 не удался."); # driver_brief уже словарь
+                if not all(k in driver_brief for k in ["chosen_driver_type", "chosen_driver_value", "justification"]): raise ValueError(f"Шаг 6.2: неверный JSON {driver_brief}.")
 
                 # Шаг 6.3: Эстетика
                 self.logger.info("--- Шаг 6.3: Эстетика ---"); prompt_key3 = "multi_step.step3_aesthetic"; tmpl3 = self._get_prompt_template(prompt_key3);
                 if not tmpl3: raise ValueError(f"{prompt_key3} не найден.")
                 prompt3 = tmpl3.format(input_text=topic, chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False, indent=2), chosen_driver_json=json.dumps(driver_brief, ensure_ascii=False, indent=2), directors_list_str=directors_list_str, artists_list_str=artists_list_str)
-                aesthetic_brief_str = self.request_openai(prompt3, prompt_config_key=prompt_key3, use_json_mode=True)
-                if not aesthetic_brief_str: raise ValueError("Шаг 6.3 не удался."); aesthetic_brief = json.loads(aesthetic_brief_str)
+                aesthetic_brief = call_openai(prompt3, prompt_config_key=prompt_key3, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not aesthetic_brief: raise ValueError("Шаг 6.3 не удался."); # aesthetic_brief уже словарь
+                # Валидация aesthetic_brief (остается без изменений)
                 valid_step3 = False
                 if isinstance(aesthetic_brief, dict):
                     style_needed = aesthetic_brief.get("style_needed", False); base_keys_exist = all(k in aesthetic_brief for k in ["style_needed", "chosen_style_type", "chosen_style_value", "style_keywords", "justification"])
@@ -545,6 +604,7 @@ class ContentGenerator:
                 else: logger.error(f"Шаг 6.3: Ответ не словарь.")
                 if not valid_step3: raise ValueError("Шаг 6.3: неверный JSON.")
 
+
                 # Сборка Брифа
                 creative_brief = {"core": core_brief, "driver": driver_brief, "aesthetic": aesthetic_brief}; self.logger.info("--- Шаг 6.4: Бриф Собран ---"); self.logger.debug(f"Бриф: {json.dumps(creative_brief, ensure_ascii=False, indent=2)}"); self.save_to_generated_content("creative_brief", creative_brief)
 
@@ -552,9 +612,9 @@ class ContentGenerator:
                 self.logger.info("--- Шаг 6.5: Сценарий и Описание (EN) ---"); prompt_key5 = "multi_step.step5_script_frame"; tmpl5 = self._get_prompt_template(prompt_key5);
                 if not tmpl5: raise ValueError(f"{prompt_key5} не найден.")
                 prompt5 = tmpl5.format(input_text=topic, creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2))
-                script_frame_data_str = self.request_openai(prompt5, prompt_config_key=prompt_key5, use_json_mode=True)
-                if not script_frame_data_str: raise ValueError("Шаг 6.5 не удался."); script_frame_data = json.loads(script_frame_data_str)
-                if not script_frame_data or not all(k in script_frame_data for k in ["script", "first_frame_description"]): raise ValueError(f"Шаг 6.5: неверный JSON {script_frame_data}.")
+                script_frame_data = call_openai(prompt5, prompt_config_key=prompt_key5, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not script_frame_data: raise ValueError("Шаг 6.5 не удался."); # script_frame_data уже словарь
+                if not all(k in script_frame_data for k in ["script", "first_frame_description"]): raise ValueError(f"Шаг 6.5: неверный JSON {script_frame_data}.")
                 script_en = script_frame_data["script"]; frame_description_en = script_frame_data["first_frame_description"]
                 self.logger.info(f"Сценарий (EN): {script_en[:100]}..."); self.logger.info(f"Описание (EN): {frame_description_en[:100]}..."); self.save_to_generated_content("script_frame_en", {"script": script_en, "first_frame_description": frame_description_en})
 
@@ -564,18 +624,18 @@ class ContentGenerator:
                 prompt_key6a = "multi_step.step6a_mj_adapt"; tmpl6a = self._get_prompt_template(prompt_key6a);
                 if not tmpl6a: raise ValueError(f"{prompt_key6a} не найден.")
                 prompt6a = tmpl6a.format(first_frame_description=frame_description_en, creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2), script=script_en, input_text=topic, mj_parameters_json=mj_parameters_json_for_prompt, aspect_ratio=aspect_ratio_str, version=version_str, style_parameter_str=style_parameter_str_for_prompt)
-                mj_prompt_data_str = self.request_openai(prompt6a, prompt_config_key=prompt_key6a, use_json_mode=True)
-                if not mj_prompt_data_str: raise ValueError("Шаг 6.6a не удался."); mj_prompt_data = json.loads(mj_prompt_data_str)
-                if not mj_prompt_data or "final_mj_prompt" not in mj_prompt_data: raise ValueError(f"Шаг 6.6a: неверный JSON {mj_prompt_data}.")
+                mj_prompt_data = call_openai(prompt6a, prompt_config_key=prompt_key6a, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not mj_prompt_data: raise ValueError("Шаг 6.6a не удался."); # mj_prompt_data уже словарь
+                if "final_mj_prompt" not in mj_prompt_data: raise ValueError(f"Шаг 6.6a: неверный JSON {mj_prompt_data}.")
                 final_mj_prompt_en = mj_prompt_data["final_mj_prompt"]; self.logger.info(f"MJ промпт (EN, V{version_str}): {final_mj_prompt_en}"); self.save_to_generated_content("final_mj_prompt_en", {"final_mj_prompt": final_mj_prompt_en})
 
                 # Шаг 6.6b: Runway Промпт (EN)
                 self.logger.info("--- Шаг 6.6b: Runway Промпт (EN) ---"); prompt_key6b = "multi_step.step6b_runway_adapt"; tmpl6b = self._get_prompt_template(prompt_key6b);
                 if not tmpl6b: raise ValueError(f"{prompt_key6b} не найден.")
                 prompt6b = tmpl6b.format(script=script_en, creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2), input_text=topic)
-                runway_prompt_data_str = self.request_openai(prompt6b, prompt_config_key=prompt_key6b, use_json_mode=True)
-                if not runway_prompt_data_str: raise ValueError("Шаг 6.6b не удался."); runway_prompt_data = json.loads(runway_prompt_data_str)
-                if not runway_prompt_data or "final_runway_prompt" not in runway_prompt_data: raise ValueError(f"Шаг 6.6b: неверный JSON {runway_prompt_data}.")
+                runway_prompt_data = call_openai(prompt6b, prompt_config_key=prompt_key6b, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                if not runway_prompt_data: raise ValueError("Шаг 6.6b не удался."); # runway_prompt_data уже словарь
+                if "final_runway_prompt" not in runway_prompt_data: raise ValueError(f"Шаг 6.6b: неверный JSON {runway_prompt_data}.")
                 final_runway_prompt_en = runway_prompt_data["final_runway_prompt"]; self.logger.info(f"Runway промпт (EN): {final_runway_prompt_en}"); self.save_to_generated_content("final_runway_prompt_en", {"final_runway_prompt": final_runway_prompt_en})
 
                 # Шаг 6.6c: Перевод (RU)
@@ -585,9 +645,8 @@ class ContentGenerator:
                         prompt_key6c = "multi_step.step6c_translate"; tmpl6c = self._get_prompt_template(prompt_key6c);
                         if not tmpl6c: raise ValueError(f"{prompt_key6c} не найден.")
                         prompt6c = tmpl6c.format(script_en=script_en, frame_description_en=frame_description_en, mj_prompt_en=final_mj_prompt_en, runway_prompt_en=final_runway_prompt_en)
-                        translations_str = self.request_openai(prompt6c, prompt_config_key=prompt_key6c, use_json_mode=True)
-                        if translations_str:
-                            translations = json.loads(translations_str)
+                        translations = call_openai(prompt6c, prompt_config_key=prompt_key6c, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
+                        if translations: # translations уже словарь
                             script_ru = translations.get("script_ru"); frame_description_ru = translations.get("first_frame_description_ru"); final_mj_prompt_ru = translations.get("final_mj_prompt_ru"); final_runway_prompt_ru = translations.get("final_runway_prompt_ru")
                             if all([script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru]): self.logger.info("✅ Перевод выполнен."); self.save_to_generated_content("translations_ru", translations)
                             else: self.logger.error(f"Шаг 6.6c: Не все поля переведены. {translations}"); translations = None
@@ -628,6 +687,7 @@ class ContentGenerator:
                 timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
                 config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
                 bucket_name = self.b2_bucket_name
+                ensure_directory_exists(config_mj_local_path) # Папка для temp
                 config_mj = load_b2_json(s3_client_mj, bucket_name, config_mj_remote_path, config_mj_local_path, default_value={})
                 if config_mj is None: config_mj = {}
                 config_mj['generation'] = True; config_mj['midjourney_task'] = None; config_mj['midjourney_results'] = {}; config_mj['status'] = None
