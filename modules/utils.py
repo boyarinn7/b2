@@ -89,12 +89,19 @@ def save_local_json(file_path_str, data):
 
 def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_value=None):
     """Загружает JSON из B2, сохраняя во временный локальный файл."""
+    temp_path_obj = Path(local_temp_path) # Используем Path для работы с путем
     try:
-        ensure_directory_exists(local_temp_path) # Убедимся, что папка для temp файла существует
+        ensure_directory_exists(str(temp_path_obj)) # Убедимся, что папка для temp файла существует
         logger.debug(f"Попытка загрузки {remote_path} из B2 в {local_temp_path}...")
-        s3_client.download_file(bucket_name, remote_path, local_temp_path)
-        logger.info(f"Успешно загружен и распарсен {remote_path} из B2.")
-        return load_json_config(local_temp_path) # Загружаем уже из локального temp файла
+        s3_client.download_file(bucket_name, remote_path, str(temp_path_obj)) # Передаем строку пути
+        logger.info(f"Успешно загружен {remote_path} из B2.")
+        # Загружаем уже из локального temp файла
+        loaded_data = load_json_config(str(temp_path_obj))
+        if loaded_data is None:
+             logger.warning(f"Не удалось распарсить JSON из временного файла {local_temp_path}. Возвращаем default_value.")
+             return default_value
+        logger.info(f"Успешно распарсен JSON из {local_temp_path}.")
+        return loaded_data
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code')
         if error_code == 'NoSuchKey' or '404' in str(e):
@@ -107,29 +114,38 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
         logger.error(f"Неизвестная ошибка при загрузке {remote_path} из B2: {e}", exc_info=True)
         return default_value
     finally: # Очищаем временный файл после использования
-        if Path(local_temp_path).exists():
-            try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
-            except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
+        if temp_path_obj.exists():
+            try:
+                os.remove(temp_path_obj)
+                logger.debug(f"Удален временный файл: {local_temp_path}")
+            except OSError as remove_err:
+                logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
 
 
 def save_b2_json(s3_client, bucket_name, remote_path, local_temp_path, data):
     """Сохраняет данные в JSON файл в B2 через временный локальный файл."""
+    temp_path_obj = Path(local_temp_path) # Используем Path
     try:
-        if not save_local_json(local_temp_path, data):
+        if not save_local_json(str(temp_path_obj), data): # Передаем строку пути
              raise IOError(f"Не удалось сохранить данные локально в {local_temp_path}")
 
         logger.debug(f"Загрузка {local_temp_path} в B2 как {remote_path}...")
-        s3_client.upload_file(local_temp_path, bucket_name, remote_path)
-        logger.info(f"Данные успешно сохранены в {remote_path} в B2: {json.dumps(data, ensure_ascii=False)[:100]}...") # Логируем начало данных
+        s3_client.upload_file(str(temp_path_obj), bucket_name, remote_path) # Передаем строку пути
+        # Логируем начало данных для отладки
+        data_preview = json.dumps(data, ensure_ascii=False)[:100]
+        logger.info(f"Данные успешно сохранены в {remote_path} в B2: {data_preview}...")
         return True
     except (IOError, ClientError, NoCredentialsError, Exception) as e:
         logger.error(f"Ошибка при сохранении {remote_path} в B2: {e}", exc_info=True)
         return False
     finally:
          # Удаляем временный локальный файл после попытки загрузки
-         if Path(local_temp_path).exists():
-             try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
-             except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
+         if temp_path_obj.exists():
+             try:
+                 os.remove(temp_path_obj)
+                 logger.debug(f"Удален временный файл: {local_temp_path}")
+             except OSError as remove_err:
+                 logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
 
 def download_file(url, local_path_str, stream=False, timeout=30):
     """Скачивает файл по URL."""
@@ -179,8 +195,10 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
         return False
 
     # Формируем ключ объекта, используя переданное полное имя файла
-    b2_object_key = f"{target_folder.rstrip('/')}/{b2_filename_with_ext}"
-    # Убрано добавление расширения, так как оно уже есть в b2_filename_with_ext
+    # Убираем возможный начальный слэш из target_folder и b2_filename_with_ext
+    target_folder_clean = target_folder.strip('/')
+    b2_filename_clean = b2_filename_with_ext.strip('/')
+    b2_object_key = f"{target_folder_clean}/{b2_filename_clean}"
 
     logger.info(f"Загрузка {local_path} в B2 как {b2_object_key}...")
     try:
@@ -197,52 +215,73 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
         logger.error(f"Неизвестная ошибка при загрузке {local_path} в B2: {e}", exc_info=True)
         return False
 
-def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
-    """Возвращает список объектов и их размеров в указанной папке B2."""
+# --- ИЗМЕНЕНО: Переименована list_b2_folder_contents в list_files_in_folder ---
+# --- и добавлена проверка на .bzEmpty и соответствие паттерну ---
+def list_files_in_folder(s3_client, bucket_name, folder_prefix):
+    """
+    Возвращает список ключей файлов (не папок) в указанной папке B2,
+    удовлетворяющих паттерну FILE_NAME_PATTERN и не являющихся .bzEmpty.
+    """
     contents = []
+    # Убедимся, что префикс папки заканчивается на /
+    prefix = folder_prefix if folder_prefix.endswith('/') else folder_prefix + '/'
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
-        # Убедимся, что префикс заканчивается на /
-        prefix = folder_prefix if folder_prefix.endswith('/') else folder_prefix + '/'
-        # logger.debug(f"Листинг B2 папки: {bucket_name}/{prefix}")
-        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix, Delimiter='/'): # Используем Delimiter для имитации папок
-            # Обработка 'CommonPrefixes' (подпапки) - сейчас игнорируем
-            # if 'CommonPrefixes' in page:
-            #     for subdir in page.get('CommonPrefixes', []):
-            #         # logger.debug(f"Найдена подпапка: {subdir.get('Prefix')}")
-            #         pass # Пока не обрабатываем подпапки
-
-            # Обработка 'Contents' (файлы)
+        logger.debug(f"Листинг B2 папки: {bucket_name}/{prefix}")
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix): # Убрали Delimiter, чтобы получить все ключи
             if 'Contents' in page:
                 for obj in page.get('Contents', []):
                     key = obj.get('Key')
-                    size_bytes = obj.get('Size', 0)
-                    # Пропускаем сам префикс (пустой файл, обозначающий папку)
-                    if key == prefix and size_bytes == 0:
-                         continue
-                    # Пропускаем placeholder, если он есть
-                    # if key.endswith('placeholder.bzEmpty'):
-                    #      continue
-                    contents.append({'Key': key, 'Size': size_bytes})
-            # Добавляем проверку, если папка пуста (кроме placeholder)
-            if not page.get('Contents') and not page.get('CommonPrefixes'):
-                 # logger.debug(f"Папка {prefix} пуста в B2.")
-                 pass
+                    # Пропускаем саму папку (ключ равен префиксу)
+                    if key == prefix:
+                        continue
+                    # Пропускаем placeholder
+                    if key.endswith('.bzEmpty'):
+                        continue
 
+                    # Извлекаем имя файла из ключа
+                    base_name = os.path.basename(key)
+                    # Извлекаем ID (часть имени до первого расширения)
+                    group_id, _ = os.path.splitext(base_name)
+                    # Проверяем, соответствует ли ID паттерну
+                    if FILE_NAME_PATTERN.match(group_id):
+                         contents.append(key)
+                    else:
+                         # Логируем файлы, которые не соответствуют паттерну, если нужно
+                         # logger.debug(f"Файл {key} пропущен (не соответствует паттерну ID).")
+                         pass
+
+        logger.debug(f"Найдено файлов в {prefix}: {len(contents)}")
     except ClientError as e:
         logger.error(f"Ошибка Boto3 при листинге папки {folder_prefix}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Неизвестная ошибка при листинге папки {folder_prefix}: {e}", exc_info=True)
     return contents
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 
 def move_b2_object(s3_client, bucket_name, source_key, dest_key):
     """Перемещает объект в B2 (копирование + удаление)."""
     try:
+        # Проверяем, существует ли исходный объект
+        try:
+            s3_client.head_object(Bucket=bucket_name, Key=source_key)
+            logger.debug(f"Исходный объект {source_key} найден.")
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.warning(f"Исходный файл {source_key} не найден. Перемещение невозможно.")
+                return False
+            else:
+                logger.error(f"Ошибка при проверке {source_key}: {e}")
+                return False
+
         copy_source = {'Bucket': bucket_name, 'Key': source_key}
         logger.debug(f"Копирование {source_key} -> {dest_key}...")
         s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=dest_key)
+
         logger.debug(f"Удаление {source_key}...")
         s3_client.delete_object(Bucket=bucket_name, Key=source_key)
+
         logger.info(f"✅ Успешно перемещен: {source_key} -> {dest_key}")
         return True
     except ClientError as e:
@@ -266,32 +305,41 @@ def delete_b2_object(s3_client, bucket_name, key):
         logger.error(f"Неизвестная ошибка при удалении {key}: {e}", exc_info=True)
         return False
 
-# --- ДОБАВЛЕНА ФУНКЦИЯ is_folder_empty ---
 def is_folder_empty(s3_client, bucket_name, folder_prefix):
     """
-    Проверяет, пуста ли папка в B2 (игнорируя placeholder).
-    Возвращает True, если папка пуста (или содержит только placeholder), иначе False.
+    Проверяет, пуста ли папка в B2 (игнорируя placeholder .bzEmpty).
+    Возвращает True, если папка пуста, иначе False.
     """
-    logger.debug(f"Проверка на пустоту папки: {bucket_name}/{folder_prefix}")
+    # Убедимся, что префикс папки заканчивается на /
+    prefix = folder_prefix if folder_prefix.endswith('/') else folder_prefix + '/'
+    logger.debug(f"Проверка на пустоту папки: {bucket_name}/{prefix}")
     try:
-        contents = list_b2_folder_contents(s3_client, bucket_name, folder_prefix)
-        # Проверяем, есть ли хоть один файл, НЕ являющийся placeholder'ом
-        for item in contents:
-            if not item.get('Key', '').endswith('placeholder.bzEmpty'):
-                logger.debug(f"Папка {folder_prefix} не пуста, найден файл: {item.get('Key')}")
-                return False # Нашли реальный файл, папка не пуста
+        # Запрашиваем только один объект для проверки
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=2) # MaxKeys=2 чтобы увидеть папку и файл
 
-        # Если прошли по всем файлам и не нашли ничего, кроме плейсхолдера (или вообще ничего)
-        logger.debug(f"Папка {folder_prefix} пуста (или содержит только placeholder).")
+        if 'Contents' in response:
+            keys_in_folder = [obj['Key'] for obj in response['Contents']]
+            # Проверяем, есть ли что-то кроме самой папки и/или .bzEmpty файла
+            for key in keys_in_folder:
+                if key != prefix and not key.endswith('.bzEmpty'):
+                    logger.debug(f"Папка {prefix} не пуста, найден файл: {key}")
+                    return False # Нашли реальный файл
+
+        # Если прошли по всем (максимум 2) и не нашли реальных файлов
+        logger.debug(f"Папка {prefix} пуста (или содержит только placeholder).")
         return True
-    except Exception as e:
-        logger.error(f"Ошибка при проверке пустоты папки {folder_prefix}: {e}", exc_info=True)
+    except ClientError as e:
+        logger.error(f"Ошибка Boto3 при проверке пустоты папки {prefix}: {e}", exc_info=True)
         return False # В случае ошибки считаем, что не пуста (безопаснее)
-# --- КОНЕЦ ДОБАВЛЕННОЙ ФУНКЦИИ ---
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при проверке пустоты папки {prefix}: {e}", exc_info=True)
+        return False
 
-# --- Добавлена функция generate_file_id (если ее нет) ---
 def generate_file_id():
     """Генерирует уникальный ID на основе текущей даты и времени UTC."""
     # Убедимся, что datetime импортирован в начале файла
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-# --- Конец функции generate_file_id ---
+
+# --- Глобальная переменная для паттерна ID ---
+# Определяем здесь, чтобы была доступна везде в модуле
+FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}$")
