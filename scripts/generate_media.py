@@ -1,20 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# --- САМАЯ ПЕРВАЯ ОТЛАДКА ---
-import sys
-import os
-print(f"--- DEBUG TOP (generate_media.py): sys.argv = {sys.argv} ---", flush=True)
-print(f"--- DEBUG TOP (generate_media.py): Script name (sys.argv[0]) = {os.path.basename(sys.argv[0])} ---", flush=True)
-# --- КОНЕЦ САМОЙ ПЕРВОЙ ОТЛАДКИ ---
-
 # Отладочный вывод для проверки старта скрипта в GitHub Actions
 print("--- SCRIPT START (generate_media.py) ---", flush=True)
 
 # --- Стандартные библиотеки ---
-# import os # Уже импортирован выше
-# import sys # Уже импортирован выше
+import os
 import json
+import sys
 import time
 import argparse # <--- Импорт argparse
 import requests
@@ -23,32 +16,11 @@ import base64
 import re
 import urllib.parse
 from datetime import datetime, timezone
-from pathlib import Path # Используем pathlib
-import logging # Добавляем logging
-import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
+from pathlib import Path
+import logging
+import httpx
 
-
-# --- ПАРСИНГ АРГУМЕНТОВ (Остается наверху) ---
-parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
-parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
-parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
-
-# --- ОБРАБОТКА ОШИБОК PARSE_ARGS ---
-try:
-    args, unknown = parser.parse_known_args()
-    generation_id_arg = args.generation_id
-    use_mock_flag_arg = args.use_mock
-    print(f"--- DEBUG (generate_media.py): Args parsed OK: id={generation_id_arg}, mock={use_mock_flag_arg} ---", flush=True)
-    if unknown:
-        print(f"--- DEBUG (generate_media.py): Unknown args found: {unknown} ---", flush=True)
-except SystemExit as e:
-    print(f"--- ERROR (generate_media.py): Ошибка разбора аргументов argparse: {e} ---", flush=True)
-    print(f"--- ERROR (generate_media.py): Полученные аргументы (sys.argv): {sys.argv} ---", flush=True)
-    sys.exit(e.code)
-# --- КОНЕЦ ПЕРЕНОСА И ОБРАБОТКИ ---
-
-
-# --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
+# --- Предварительная инициализация базового логгера ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 temp_logger = logging.getLogger("generate_media_init")
 
@@ -178,7 +150,7 @@ except Exception as config_err:
      sys.exit(1)
 
 # === Вспомогательные Функции ===
-# ... (остальные вспомогательные функции без изменений) ...
+# ... (все вспомогательные функции остаются без изменений) ...
 def _initialize_openai_client():
     """Инициализирует глобальный клиент OpenAI, если он еще не создан."""
     global openai_client_instance
@@ -550,10 +522,21 @@ def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpo
 
 # === Основная Функция ===
 def main():
-    # --- Используем аргументы, распознанные ранее ---
-    generation_id = generation_id_arg
-    use_mock_flag = use_mock_flag_arg
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    # --- ПАРСИНГ АРГУМЕНТОВ ВНУТРИ MAIN ---
+    parser = argparse.ArgumentParser(prog='generate_media.py', description='Generate media or initiate Midjourney task.')
+    parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
+    parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
+
+    try:
+        args = parser.parse_args()
+        generation_id = args.generation_id
+        use_mock_flag = args.use_mock
+        logger.info(f"Аргументы успешно распознаны в main(): id={generation_id}, mock={use_mock_flag}")
+    except SystemExit as e:
+        logger.error(f"Ошибка разбора аргументов argparse в main(): {e}")
+        logger.error(f"Полученные аргументы (sys.argv): {sys.argv}")
+        sys.exit(e.code)
+    # --- КОНЕЦ ПАРСИНГА АРГУМЕНТОВ ВНУТРИ MAIN ---
 
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
         generation_id = generation_id[:-5]
@@ -715,8 +698,10 @@ def main():
             upload_success_img = False
             upload_success_vid = False
 
+            # --- ИСПРАВЛЕНИЕ ДВОЙНОГО РАСШИРЕНИЯ ---
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
                  clean_generation_id = generation_id.split('.')[0]
+                 # Явно формируем имя с нужным расширением
                  b2_image_filename = f"{clean_generation_id}.{IMAGE_FORMAT}"
                  logger.info(f"Подготовлено имя для загрузки изображения: {b2_image_filename}")
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
@@ -725,6 +710,7 @@ def main():
 
             if video_path and isinstance(video_path, Path) and video_path.is_file():
                  clean_generation_id = generation_id.split('.')[0]
+                 # Явно формируем имя с нужным расширением
                  b2_video_filename = f"{clean_generation_id}.{VIDEO_FORMAT}"
                  logger.info(f"Подготовлено имя для загрузки видео: {b2_video_filename}")
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
@@ -732,6 +718,7 @@ def main():
                  logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
             elif is_upscale_result or use_mock_flag:
                  logger.warning("Видео не сгенерировано/не найдено для загрузки.")
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             if local_image_path and video_path:
                 if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены в B2.")
@@ -767,7 +754,7 @@ def main():
 if __name__ == "__main__":
     exit_code_main = 1
     try:
-        main()
+        main() # Вызываем main, где теперь происходит парсинг
         exit_code_main = 0
     except KeyboardInterrupt: logger.info("🛑 Остановлено пользователем."); exit_code_main = 130
     except SystemExit as e:
