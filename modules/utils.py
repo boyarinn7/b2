@@ -365,3 +365,72 @@ def generate_file_id():
     # Убедимся, что datetime импортирован в начале файла
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
 
+# Добавьте этот код в ваш файл modules/utils.py
+# Убедитесь, что импорты 'logging', 'os', 'ClientError' (или его fallback) уже есть в файле
+
+# --- Вспомогательные функции ---
+# ... (другие ваши функции) ...
+
+def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
+    """
+    Возвращает список объектов (словарей с 'Key' и 'Size') в указанной папке B2.
+    Игнорирует саму папку и placeholder'ы .bzEmpty.
+    """
+    contents = []
+    # Получаем логгер (предполагается, что он уже настроен где-то в utils.py или импортирован)
+    try:
+        logger = logging.getLogger(__name__) # Используем существующий логгер
+    except NameError: # На случай, если logger не определен глобально в utils.py
+        logger = logging.getLogger("utils_fallback")
+        if not logger.hasHandlers():
+            logging.basicConfig(level=logging.INFO)
+            logger.warning("Используется fallback логгер для list_b2_folder_contents.")
+
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        # Убедимся, что префикс папки заканчивается на /
+        prefix = folder_prefix if folder_prefix.endswith('/') else folder_prefix + '/'
+        logger.debug(f"Листинг B2 папки: {bucket_name}/{prefix}")
+
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix, Delimiter='/'):
+            # Обработка 'CommonPrefixes' (подпапки) - сейчас игнорируем
+            # if 'CommonPrefixes' in page:
+            #     for subdir in page.get('CommonPrefixes', []):
+            #         logger.debug(f"Найдена подпапка: {subdir.get('Prefix')}")
+            #         pass # Пока не обрабатываем подпапки
+
+            # Обработка 'Contents' (файлы)
+            if 'Contents' in page:
+                for obj in page.get('Contents', []):
+                    key = obj.get('Key')
+                    size_bytes = obj.get('Size', 0)
+                    # Пропускаем сам префикс (пустой объект, обозначающий папку)
+                    if key == prefix:
+                         continue
+                    # Пропускаем placeholder .bzEmpty
+                    if key.endswith('.bzEmpty'):
+                         logger.debug(f"Игнорируем placeholder: {key}")
+                         continue
+                    # Добавляем объект в список
+                    contents.append({'Key': key, 'Size': size_bytes})
+                    logger.debug(f"Найден файл: {key}, Размер: {size_bytes}")
+
+            # Добавляем проверку, если папка пуста (кроме placeholder)
+            # (Эта проверка может быть избыточной, так как цикл просто не выполнится)
+            # if not page.get('Contents') and not page.get('CommonPrefixes'):
+            #      logger.debug(f"Папка {prefix} пуста в B2 (или содержит только placeholder).")
+            #      pass
+
+    except ClientError as e:
+        # Используем ClientError, импортированный в начале utils.py
+        logger.error(f"Ошибка Boto3 при листинге папки {folder_prefix}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при листинге папки {folder_prefix}: {e}", exc_info=True)
+
+    logger.debug(f"Содержимое папки {folder_prefix}: {len(contents)} объектов.")
+    return contents
+
+# ... (остальные ваши функции в utils.py) ...
+
+
+
