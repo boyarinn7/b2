@@ -237,16 +237,17 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | N
     creative_config_path_str = config.get('FILE_PATHS.creative_config')
     creative_config_data = {}
     if creative_config_path_str:
-         creative_config_path = BASE_DIR / creative_config_path_str
+         # Убедимся, что путь абсолютный
+         creative_config_path = Path(creative_config_path_str)
+         if not creative_config_path.is_absolute():
+             creative_config_path = BASE_DIR / creative_config_path
          creative_config_data = load_json_config(str(creative_config_path)) or {}
     criteria = creative_config_data.get("visual_analysis_criteria", [])
 
     # Получаем шаблон промпта и max_tokens из настроек
-    # Используем новый ключ или модифицируем старый для запроса индекса
     selection_prompt_template = prompt_settings.get("template_index") # Ищем ключ template_index
     if not selection_prompt_template:
         logger.warning("Шаблон 'template_index' не найден в prompts_config.json -> visual_analysis -> image_selection. Используем fallback.")
-        # Fallback промпт, если специальный не задан
         selection_prompt_template = """
 Analyze the following 4 images based on the original prompt and the criteria provided.
 Respond ONLY with the number (1, 2, 3, or 4) of the image that best fits the criteria and prompt. Do not add any other text.
@@ -254,7 +255,8 @@ Respond ONLY with the number (1, 2, 3, or 4) of the image that best fits the cri
 Original Prompt Context: {prompt}
 Evaluation Criteria: {criteria}
 """
-    max_tokens = int(prompt_settings.get("max_tokens", 10)) # Меньше токенов для ответа с индексом
+    # Используем max_tokens из конфига, если есть, иначе дефолт
+    max_tokens = int(prompt_settings.get("max_tokens", 500)) # Увеличил дефолт для анализа
 
     if not criteria:
          logger.warning("Критерии для выбора изображения не найдены. Выбор невозможен.")
@@ -267,7 +269,6 @@ Evaluation Criteria: {criteria}
 
     for i, url in enumerate(image_urls):
         if isinstance(url, str) and re.match(r"^(https?|data:image)", url):
-            # Добавляем нумерацию в текст перед изображением для ясности
             messages_content.append({"type": "text", "text": f"Image {i+1}:"})
             messages_content.append({"type": "image_url", "image_url": {"url": url}})
             valid_image_urls.append(url)
@@ -374,17 +375,15 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
     try:
         model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
         duration = int(config.get('VIDEO.runway_duration', 5))
-        ratio_str = config.get('VIDEO.runway_ratio', f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}")
-        supported_ratios = ["1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672"]
-        if ratio_str not in supported_ratios:
-            logger.warning(f"Неподдерживаемое соотношение сторон '{ratio_str}' в конфиге. Используется '1280:720'.")
-            ratio_str = "1280:720"
+        # Используем размеры из констант для ratio
+        ratio_str = f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"
+        logger.info(f"Используется ratio: {ratio_str}")
         poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300))
         poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
         logger.info(f"Параметры Runway: model='{model_name}', duration={duration}, ratio='{ratio_str}'")
     except Exception as cfg_err:
         logger.error(f"Ошибка чтения параметров Runway из конфига: {cfg_err}. Используются значения по умолчанию.")
-        model_name="gen-2"; duration=5; ratio_str="1280:720"; poll_timeout=300; poll_interval=15 # Исправлен дефолтный ratio
+        model_name="gen-2"; duration=5; ratio_str=f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"; poll_timeout=300; poll_interval=15
 
     # Кодирование изображения в Base64
     try:
@@ -554,75 +553,46 @@ def initiate_midjourney_task(prompt: str, config: ConfigManager, api_key: str, e
         logger.error(f"❌ Неизвестная ошибка MJ: {e}", exc_info=True);
         return None
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ UPSCALE/VARIATION (из iid_local_tester.py) ---
 def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpoint: str) -> dict | None:
     """Запускает действие (например, upscale) для задачи Midjourney через PiAPI."""
     if not api_key or not endpoint or not original_task_id or not action:
         logger.error("Недостаточно данных для запуска действия PiAPI (trigger_piapi_action).")
         return None
 
-    # Определяем тип задачи и индекс из строки action (e.g., "upscale1")
-    task_type = None
-    if action.startswith("upscale"):
-        task_type = "upscale"
-    elif action.startswith("variation"):
-        task_type = "variation"
-    else:
-        logger.error(f"Неизвестный тип действия в '{action}'. Ожидалось 'upscale<N>' или 'variation<N>'.")
-        return None
+    task_type = None; index_str = None
+    if action.startswith("upscale"): task_type = "upscale"
+    elif action.startswith("variation"): task_type = "variation"
+    else: logger.error(f"Неизвестный тип действия в '{action}'."); return None
 
     index_match = re.search(r'\d+$', action)
-    if not index_match:
-        logger.error(f"Не удалось извлечь индекс из действия '{action}'. Ожидался формат типа 'upscale1'.")
-        return None
+    if not index_match: logger.error(f"Не удалось извлечь индекс из '{action}'."); return None
     index_str = index_match.group(0)
 
-    payload = {
-        "model": "midjourney",
-        "task_type": task_type,
-        "input": {
-            "origin_task_id": original_task_id,
-            "index": index_str
-        }
-    }
-
+    payload = { "model": "midjourney", "task_type": task_type, "input": { "origin_task_id": original_task_id, "index": index_str } }
     headers = {'X-API-Key': api_key, 'Content-Type': 'application/json'}
     request_time = datetime.now(timezone.utc)
-
-    logger.info(f"Отправка запроса на действие '{action}' (тип: {task_type}) для задачи {original_task_id} на {endpoint}...")
+    logger.info(f"Отправка запроса на действие '{action}' для {original_task_id} на {endpoint}...")
     logger.debug(f"Payload действия PiAPI: {json.dumps(payload, indent=2)}")
     response = None
     try:
         response = requests.post(endpoint, headers=headers, json=payload, timeout=TASK_REQUEST_TIMEOUT)
         logger.debug(f"Ответ от PiAPI Action Trigger: Status={response.status_code}, Body={response.text[:500]}")
-        response.raise_for_status()
-        result = response.json()
-
+        response.raise_for_status(); result = response.json()
         new_task_id = result.get("result", {}).get("task_id") or result.get("data", {}).get("task_id") or result.get("task_id")
-
         if new_task_id:
             timestamp_str = request_time.isoformat()
-            logger.info(f"✅ Получен НОВЫЙ task_id для действия '{action}': {new_task_id} (запрошено в {timestamp_str})")
+            logger.info(f"✅ Получен НОВЫЙ task_id для '{action}': {new_task_id} (запрошено в {timestamp_str})")
             return {"task_id": str(new_task_id), "requested_at_utc": timestamp_str}
-        else:
-            logger.warning(f"Ответ API на действие '{action}' не содержит нового task_id. Ответ: {result}")
-            return None
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Таймаут при запросе на действие '{action}' к PiAPI: {endpoint}")
-        return None
+        else: logger.warning(f"Ответ API на '{action}' не содержит нового task_id. Ответ: {result}"); return None
+    except requests.exceptions.Timeout: logger.error(f"❌ Таймаут при запросе '{action}' к PiAPI: {endpoint}"); return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка сети/запроса на действие '{action}' к PiAPI: {e}")
-        if e.response is not None:
-            logger.error(f"    Статус: {e.response.status_code}, Тело: {e.response.text}")
+        logger.error(f"❌ Ошибка сети/запроса '{action}' к PiAPI: {e}")
+        if e.response is not None: logger.error(f"    Статус: {e.response.status_code}, Тело: {e.response.text}")
         return None
     except json.JSONDecodeError as e:
         response_text = response.text[:500] if response else "Ответ не получен"
-        logger.error(f"❌ Ошибка JSON ответа на действие '{action}' от PiAPI: {e}. Ответ: {response_text}")
-        return None
-    except Exception as e:
-        logger.exception(f"❌ Неизвестная ошибка при запуске действия '{action}' PiAPI: {e}")
-        return None
-# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
+        logger.error(f"❌ Ошибка JSON ответа '{action}' от PiAPI: {e}. Ответ: {response_text}"); return None
+    except Exception as e: logger.exception(f"❌ Неизвестная ошибка при запуске '{action}' PiAPI: {e}"); return None
 
 
 # === Основная Функция ===
@@ -680,31 +650,42 @@ def main():
         else: config_mj.setdefault("midjourney_task", None); config_mj.setdefault("midjourney_results", {}); config_mj.setdefault("generation", False); config_mj.setdefault("status", None)
         logger.info("✅ Данные и конфиги загружены.")
 
-        # --- ОБНОВЛЕННАЯ ЛОГИКА С АПСКЕЙЛОМ (v2) ---
+        # --- ОБНОВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА РЕЗУЛЬТАТА (v3) ---
         ensure_directory_exists(str(temp_dir_path))
         local_image_path = None; video_path = None
         final_upscaled_image_url = None
         is_imagine_result = False
         is_upscale_result = False
+        imagine_urls = [] # Для хранения URL сетки
 
-        # Определяем тип результата в конфиге
         mj_results = config_mj.get("midjourney_results", {})
         task_result_data = mj_results.get("task_result") # Получаем вложенный словарь
+        task_meta_data = mj_results.get("meta") # Получаем метаданные
 
         if isinstance(task_result_data, dict):
             # Проверяем признаки результата /imagine
-            if task_result_data.get("actions") and isinstance(task_result_data.get("temporary_image_urls"), list):
+            # Главный признак - наличие списка temporary_image_urls и actions
+            if isinstance(task_result_data.get("temporary_image_urls"), list) and \
+               len(task_result_data["temporary_image_urls"]) == 4 and \
+               isinstance(task_result_data.get("actions"), list):
                 is_imagine_result = True
-                logger.info("Обнаружен результат задачи /imagine (есть actions и temporary_image_urls).")
+                imagine_urls = task_result_data["temporary_image_urls"] # Сохраняем URL сетки
+                logger.info("Обнаружен результат задачи /imagine (есть temporary_image_urls[4] и actions).")
             # Проверяем признаки результата /upscale (или другого действия)
-            elif isinstance(task_result_data.get("image_url"), str) and task_result_data.get("image_url").startswith("http") and not task_result_data.get("actions"):
+            # Главный признак - наличие image_url и тип задачи 'upscale' в метаданных
+            elif isinstance(task_result_data.get("image_url"), str) and \
+                 task_result_data["image_url"].startswith("http") and \
+                 isinstance(task_meta_data, dict) and \
+                 task_meta_data.get("task_type") == "upscale":
                  is_upscale_result = True
                  final_upscaled_image_url = task_result_data.get("image_url")
-                 logger.info(f"Обнаружен результат задачи /upscale (есть image_url, нет actions): {final_upscaled_image_url}")
+                 logger.info(f"Обнаружен результат задачи /upscale (есть image_url, meta.task_type='upscale'): {final_upscaled_image_url}")
             else:
-                 logger.warning(f"Не удалось определить тип результата MJ в task_result: {json.dumps(task_result_data, indent=2)[:500]}...")
+                 # Логируем, если не удалось определить
+                 logger.warning(f"Не удалось определить тип результата MJ. task_result: {json.dumps(task_result_data, indent=2)[:500]}... meta: {task_meta_data}")
         elif mj_results: # Если midjourney_results не пустой, но task_result не словарь
              logger.warning(f"Поле 'task_result' в midjourney_results не является словарем: {mj_results}")
+        # --- КОНЕЦ ОБНОВЛЕННОЙ ЛОГИКИ ---
 
 
         # --- Основной блок обработки ---
@@ -712,7 +693,6 @@ def main():
             if use_mock_flag:
                 # Логика Mock остается без изменений
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
-                # ... (код создания плейсхолдера и mock-видео) ...
                 placeholder_text = f"MJ/Upscale Timeout\n{first_frame_description[:60]}" if first_frame_description else "MJ/Upscale Timeout"
                 encoded_text = urllib.parse.quote(placeholder_text)
                 placeholder_url = f"https://placehold.co/{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}/{PLACEHOLDER_BG_COLOR}/{PLACEHOLDER_TEXT_COLOR}?text={encoded_text}"
@@ -733,10 +713,13 @@ def main():
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
                 logger.info(f"Апскейл сохранен: {local_image_path}")
                 # Ресайз апскейла может быть не нужен, но оставим на всякий случай
-                resize_existing_image(str(local_image_path))
+                if not resize_existing_image(str(local_image_path)):
+                     logger.warning(f"Не удалось выполнить ресайз для {local_image_path}, но продолжаем.")
 
                 video_path_str = None
-                if not final_runway_prompt: logger.error("❌ Промпт Runway отсутствует! Mock."); video_path_str = create_mock_video(str(local_image_path))
+                if not final_runway_prompt:
+                    logger.error("❌ Промпт Runway отсутствует! Создание mock видео.")
+                    video_path_str = create_mock_video(str(local_image_path))
                 else:
                      video_url_or_path = generate_runway_video(
                          image_path=str(local_image_path),
@@ -746,14 +729,28 @@ def main():
                      )
                      if video_url_or_path:
                          if video_url_or_path.startswith("http"):
-                             video_path_temp = temp_dir_path / f"{generation_id}_downloaded.{VIDEO_FORMAT}"
-                             if download_video(video_url_or_path, str(video_path_temp)): video_path = video_path_temp
-                             else: logger.error(f"Не скачать видео {video_url_or_path}. Mock."); video_path_str = create_mock_video(str(local_image_path))
-                         else: video_path = Path(video_url_or_path)
-                     else: logger.error("Runway не удалась. Mock."); video_path_str = create_mock_video(str(local_image_path))
-                     if not video_path and video_path_str: video_path = Path(video_path_str)
+                             video_path_temp = temp_dir_path / f"{generation_id}_runway_final.{VIDEO_FORMAT}" # Новое имя для скачанного видео
+                             if download_video(video_url_or_path, str(video_path_temp)):
+                                 video_path = video_path_temp # Используем скачанное видео
+                                 logger.info(f"Видео Runway скачано: {video_path}")
+                             else:
+                                 logger.error(f"Не удалось скачать видео Runway {video_url_or_path}. Создание mock.")
+                                 video_path_str = create_mock_video(str(local_image_path))
+                         else:
+                             # Если generate_runway_video вернуло локальный путь (маловероятно с SDK)
+                             video_path = Path(video_url_or_path)
+                             logger.info(f"Получен локальный путь к видео Runway: {video_path}")
+                     else:
+                         logger.error("Генерация видео Runway не удалась. Создание mock.")
+                         video_path_str = create_mock_video(str(local_image_path))
 
-                if not video_path: raise Exception("Не сгенерировать видео.")
+                     # Если video_path не установлен, но есть video_path_str (mock)
+                     if not video_path and video_path_str:
+                         video_path = Path(video_path_str)
+
+                if not video_path or not video_path.is_file():
+                    raise Exception("Не удалось получить финальное видео (Runway или mock).")
+
                 logger.info("Очистка состояния MJ (после Runway)...");
                 config_mj['midjourney_results'] = {} # Очищаем результаты апскейла
                 config_mj['generation'] = False
@@ -764,18 +761,18 @@ def main():
                 # --- ШАГ 2: Есть результат imagine -> Выбираем и запускаем upscale ---
                 logger.info(f"Обработка результата /imagine. Выбор лучшего и запуск /upscale...")
                 imagine_task_id = mj_results.get("task_id") # ID исходной задачи /imagine
-                image_urls = task_result_data.get("temporary_image_urls", []) # Берем URL сетки
-
-                if not image_urls or len(image_urls) != 4:
-                    logger.error(f"Не найден корректный список temporary_image_urls в результатах /imagine: {task_result_data}")
+                # Используем imagine_urls, сохраненные при определении типа
+                if not imagine_urls: # Дополнительная проверка
+                    logger.error("Не найдены URL сетки /imagine для выбора.")
                     raise ValueError("Некорректные результаты /imagine")
+
                 if not imagine_task_id:
                      logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}")
                      raise ValueError("Отсутствует ID исходной задачи /imagine")
 
                 # Получаем настройки для промпта анализа индекса
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
-                best_index = select_best_image(image_urls, first_frame_description or " ", visual_analysis_settings)
+                best_index = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
 
                 if best_index is None or not (0 <= best_index <= 3):
                     logger.warning(f"Не удалось выбрать индекс (результат: {best_index}). Используем индекс 0.")
@@ -853,25 +850,30 @@ def main():
 
             # --- Загрузка файлов в B2 (происходит только если был создан mock или видео Runway) ---
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
+            # Загружаем изображение, если оно было скачано (плейсхолдер или апскейл)
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
-                 # Определяем имя файла в B2 (для апскейла или плейсхолдера)
-                 b2_image_filename = f"{generation_id}{local_image_path.suffix}" # Используем суффикс из локального файла
-                 upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename) # Передаем полное имя
+                 # Определяем имя файла в B2
+                 b2_image_filename = f"{generation_id}{local_image_path.suffix}"
+                 upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
+                 if not upload_success_img: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ИЗОБРАЖЕНИЯ {b2_image_filename} !!!")
             elif local_image_path: # Если путь был, но файл не найден
                  logger.warning(f"Изображение {local_image_path} не найдено или не Path для загрузки.")
 
+            # Загружаем видео, если оно было создано (Runway или mock)
             if video_path and isinstance(video_path, Path) and video_path.is_file():
-                 b2_video_filename = f"{generation_id}{video_path.suffix}" # Используем суффикс из локального файла
-                 upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename) # Передаем полное имя
+                 b2_video_filename = f"{generation_id}{video_path.suffix}"
+                 upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
+                 if not upload_success_vid: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ВИДЕО {b2_video_filename} !!!")
             elif video_path: logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
             elif is_upscale_result or use_mock_flag: # Логируем только если ожидали видео
                  logger.warning("Видео не сгенерировано/не найдено для загрузки.")
 
+            # Финальное сообщение о загрузке
             if (local_image_path and video_path):
-                if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео загружены.")
-                else: logger.warning("⚠️ Не все медиа файлы загружены.")
-            elif local_image_path and upload_success_img: logger.info("✅ Изображение загружено.")
-            elif video_path and upload_success_vid: logger.info("✅ Видео загружено.")
+                if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены и ПРОВЕРЕНЫ.")
+                else: logger.warning("⚠️ Не все медиа файлы были успешно загружены/проверены.")
+            elif local_image_path and upload_success_img: logger.info("✅ Изображение успешно загружено и ПРОВЕРЕНО.")
+            elif video_path and upload_success_vid: logger.info("✅ Видео успешно загружено и ПРОВЕРЕНО.")
 
         finally:
              # Очистка временной папки
