@@ -9,7 +9,7 @@ import os
 import json
 import sys # <--- Убедимся, что sys импортирован
 import time
-import argparse
+import argparse # <--- Импорт argparse
 import requests
 import shutil
 import base64
@@ -19,6 +19,33 @@ from datetime import datetime, timezone
 from pathlib import Path # Используем pathlib
 import logging # Добавляем logging
 import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
+
+# --- ОТЛАДКА: Выводим аргументы ДО всего остального ---
+print(f"--- DEBUG (generate_media.py): sys.argv = {sys.argv} ---", flush=True)
+
+# --- ПАРСИНГ АРГУМЕНТОВ ПЕРЕНЕСЕН НАВЕРХ ---
+parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
+parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
+parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
+
+# --- ОБРАБОТКА ОШИБОК PARSE_ARGS ---
+try:
+    # --- ИЗМЕНЕНО: Используем parse_known_args, чтобы игнорировать лишние аргументы, если они есть ---
+    args, unknown = parser.parse_known_args()
+    generation_id_arg = args.generation_id
+    use_mock_flag_arg = args.use_mock
+    print(f"--- DEBUG (generate_media.py): Args parsed OK: id={generation_id_arg}, mock={use_mock_flag_arg} ---", flush=True)
+    if unknown:
+        print(f"--- DEBUG (generate_media.py): Unknown args found: {unknown} ---", flush=True)
+except SystemExit as e:
+    # Перехватываем SystemExit, который argparse вызывает при ошибке
+    # Используем print, так как логгер еще не инициализирован
+    print(f"--- ERROR (generate_media.py): Ошибка разбора аргументов argparse: {e} ---", flush=True)
+    print(f"--- ERROR (generate_media.py): Полученные аргументы (sys.argv): {sys.argv} ---", flush=True)
+    # Выходим с тем же кодом ошибки, который дал argparse
+    sys.exit(e.code)
+# --- КОНЕЦ ПЕРЕНОСА И ОБРАБОТКИ ---
+
 
 # --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -114,12 +141,12 @@ try:
     B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
     if not B2_BUCKET_NAME: raise ValueError("B2_BUCKET_NAME не определен в конфиге или переменных окружения")
 
-    CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json") # Добавлен дефолт
+    CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json")
 
     MIDJOURNEY_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
     MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
     RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # Ключ нужен для инициализации ниже
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
     IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png").lstrip('.')
     VIDEO_FORMAT = "mp4"
@@ -529,28 +556,13 @@ def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpo
 
 # === Основная Функция ===
 def main():
-    # --- ДОБАВЛЕНА ОТЛАДКА АРГУМЕНТОВ ---
-    logger.info(f"generate_media.py запущен с аргументами: {sys.argv}")
-    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+    # --- Используем аргументы, распознанные ранее ---
+    # Переменные generation_id_arg и use_mock_flag_arg были установлены после parse_known_args
+    generation_id = generation_id_arg
+    use_mock_flag = use_mock_flag_arg
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-    parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
-    parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
-    parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
-
-    # --- ДОБАВЛЕНА ОБРАБОТКА ОШИБОК PARSE_ARGS ---
-    try:
-        args = parser.parse_args()
-        generation_id = args.generation_id
-        use_mock_flag = args.use_mock
-        logger.info(f"Аргументы успешно распознаны: generation_id={generation_id}, use_mock={use_mock_flag}")
-    except SystemExit as e:
-        # Перехватываем SystemExit, который argparse вызывает при ошибке
-        logger.error(f"Ошибка разбора аргументов argparse: {e}")
-        # Дополнительно логируем sys.argv для диагностики
-        logger.error(f"Полученные аргументы (sys.argv): {sys.argv}")
-        # Выходим с тем же кодом ошибки, который дал argparse
-        sys.exit(e.code)
-    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+    # --- Убрана повторная инициализация парсера и parse_args ---
 
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
         generation_id = generation_id[:-5]
@@ -768,11 +780,8 @@ if __name__ == "__main__":
         exit_code_main = 0
     except KeyboardInterrupt: logger.info("🛑 Остановлено пользователем."); exit_code_main = 130
     except SystemExit as e:
-        # Логируем код выхода только если это не успешное завершение (код 0)
         if e.code != 0:
              logger.error(f"Завершение с кодом ошибки: {e.code}")
-        # Не логируем успешный выход (код 0), чтобы не засорять лог
-        # else: logger.info(f"Завершение с кодом {e.code}")
         exit_code_main = e.code
     except Exception as e:
         print(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}")
@@ -780,9 +789,6 @@ if __name__ == "__main__":
         except NameError: pass
         exit_code_main = 1
     finally:
-        # --- ИЗМЕНЕНО: Убрано логирование успешного выхода ---
         if exit_code_main != 0:
              logger.info(f"--- Завершение generate_media.py с кодом ошибки: {exit_code_main} ---")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         sys.exit(exit_code_main)
-
