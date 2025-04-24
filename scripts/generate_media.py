@@ -1,13 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+# --- САМАЯ ПЕРВАЯ ОТЛАДКА ---
+import sys
+import os
+print(f"--- DEBUG TOP (generate_media.py): sys.argv = {sys.argv} ---", flush=True)
+print(f"--- DEBUG TOP (generate_media.py): Script name (sys.argv[0]) = {os.path.basename(sys.argv[0])} ---", flush=True)
+# --- КОНЕЦ САМОЙ ПЕРВОЙ ОТЛАДКИ ---
+
 # Отладочный вывод для проверки старта скрипта в GitHub Actions
 print("--- SCRIPT START (generate_media.py) ---", flush=True)
 
 # --- Стандартные библиотеки ---
-import os
+# import os # Уже импортирован выше
+# import sys # Уже импортирован выше
 import json
-import sys # <--- Убедимся, что sys импортирован
 import time
 import argparse # <--- Импорт argparse
 import requests
@@ -20,17 +27,14 @@ from pathlib import Path # Используем pathlib
 import logging # Добавляем logging
 import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
 
-# --- ОТЛАДКА: Выводим аргументы ДО всего остального ---
-print(f"--- DEBUG (generate_media.py): sys.argv = {sys.argv} ---", flush=True)
 
-# --- ПАРСИНГ АРГУМЕНТОВ ПЕРЕНЕСЕН НАВЕРХ ---
+# --- ПАРСИНГ АРГУМЕНТОВ (Остается наверху) ---
 parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
 parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
 parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
 
 # --- ОБРАБОТКА ОШИБОК PARSE_ARGS ---
 try:
-    # --- ИЗМЕНЕНО: Используем parse_known_args, чтобы игнорировать лишние аргументы, если они есть ---
     args, unknown = parser.parse_known_args()
     generation_id_arg = args.generation_id
     use_mock_flag_arg = args.use_mock
@@ -38,27 +42,24 @@ try:
     if unknown:
         print(f"--- DEBUG (generate_media.py): Unknown args found: {unknown} ---", flush=True)
 except SystemExit as e:
-    # Перехватываем SystemExit, который argparse вызывает при ошибке
-    # Используем print, так как логгер еще не инициализирован
     print(f"--- ERROR (generate_media.py): Ошибка разбора аргументов argparse: {e} ---", flush=True)
     print(f"--- ERROR (generate_media.py): Полученные аргументы (sys.argv): {sys.argv} ---", flush=True)
-    # Выходим с тем же кодом ошибки, который дал argparse
     sys.exit(e.code)
 # --- КОНЕЦ ПЕРЕНОСА И ОБРАБОТКИ ---
 
 
 # --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-temp_logger = logging.getLogger("generate_media_init") # Используем этот логгер для ранних сообщений
+temp_logger = logging.getLogger("generate_media_init")
 
-# --- Ваши модули (попытка импорта ДО инициализации основного логгера) ---
+# --- Ваши модули ---
 try:
-    BASE_DIR = Path(__file__).resolve().parent.parent # Используем pathlib
+    BASE_DIR = Path(__file__).resolve().parent.parent
     if str(BASE_DIR) not in sys.path:
         sys.path.append(str(BASE_DIR))
 
     from modules.config_manager import ConfigManager
-    from modules.logger import get_logger # Импортируем функцию, но не вызываем пока
+    from modules.logger import get_logger
     from modules.utils import (
         ensure_directory_exists, load_b2_json, save_b2_json,
         download_image, download_video, upload_to_b2, load_json_config
@@ -77,17 +78,15 @@ except ImportError as import_err:
 try:
     config = ConfigManager()
     print("--- CONFIG MANAGER INIT DONE ---", flush=True)
-    # Инициализируем основной логгер ЗДЕСЬ
     logger = get_logger("generate_media")
     print("--- LOGGER INIT DONE ---", flush=True)
     logger.info("Logger generate_media is now active.")
 except Exception as init_err:
-    # Используем temp_logger, так как основной мог не создаться
     temp_logger.error(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", exc_info=True)
-    sys.exit(1) # Выход с ошибкой
+    sys.exit(1)
 
 
-# --- Сторонние библиотеки (теперь основной логгер доступен в except) ---
+# --- Сторонние библиотеки ---
 RunwayML = None
 RunwayError = None
 try:
@@ -97,35 +96,30 @@ try:
     from moviepy.editor import ImageClip
     import openai
 
-    # --- ИМПОРТ RUNWAYML С УТОЧНЕННОЙ ОБРАБОТКОЙ ОШИБОК ---
     try:
         from runwayml import RunwayML
         logger.info("Основной модуль runwayml импортирован.")
-        # Пытаемся импортировать специфичное исключение, но не падаем, если его нет
         try:
             from runwayml.exceptions import RunwayError
             logger.info("runwayml.exceptions.RunwayError импортирован.")
         except ImportError:
-            logger.warning("Не удалось импортировать runwayml.exceptions.RunwayError. Будут использоваться общие исключения.")
+            logger.warning("Не удалось импортировать runwayml.exceptions.RunwayError.")
             try:
                 from runwayml.exceptions import RunwayError as BaseRunwayError
                 RunwayError = BaseRunwayError
                 logger.info("Используется базовый runwayml.exceptions.RunwayError.")
             except ImportError:
-                 RunwayError = requests.HTTPError # Fallback на HTTPError
-                 logger.warning("Не удалось импортировать базовый RunwayError. Fallback на requests.HTTPError.")
+                 RunwayError = requests.HTTPError
+                 logger.warning("Fallback на requests.HTTPError.")
 
     except ImportError as e:
         if 'runwayml' in str(e).lower():
-             logger.warning(f"Не удалось импортировать основную библиотеку runwayml: {e}. Функционал Runway будет недоступен.")
-             RunwayML = None
-             RunwayError = None
-        else:
-             logger.error(f"Ошибка импорта сторонней библиотеки (не runwayml): {e}", exc_info=True)
-             raise e
+             logger.warning(f"Не удалось импортировать runwayml: {e}.")
+             RunwayML = None; RunwayError = None
+        else: raise e
 
 except ImportError as e:
-    logger.warning(f"Необходимая основная библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
+    logger.warning(f"Необходимая библиотека не найдена: {e}.")
     if 'PIL' in str(e): Image = None
     if 'moviepy' in str(e): ImageClip = None
     if 'openai' in str(e): openai = None
@@ -139,7 +133,7 @@ openai_client_instance = None
 # === Константы и Настройки ===
 try:
     B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
-    if not B2_BUCKET_NAME: raise ValueError("B2_BUCKET_NAME не определен в конфиге или переменных окружения")
+    if not B2_BUCKET_NAME: raise ValueError("B2_BUCKET_NAME не определен")
 
     CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json")
 
@@ -557,12 +551,9 @@ def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpo
 # === Основная Функция ===
 def main():
     # --- Используем аргументы, распознанные ранее ---
-    # Переменные generation_id_arg и use_mock_flag_arg были установлены после parse_known_args
     generation_id = generation_id_arg
     use_mock_flag = use_mock_flag_arg
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-    # --- Убрана повторная инициализация парсера и parse_args ---
 
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
         generation_id = generation_id[:-5]
