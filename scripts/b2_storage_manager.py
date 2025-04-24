@@ -17,7 +17,7 @@ try:
     # Абсолютный импорт, если структура позволяет
     from modules.utils import (
         is_folder_empty, ensure_directory_exists, generate_file_id,
-        load_b2_json, save_b2_json, list_b2_folder_contents,
+        load_b2_json, save_b2_json, list_b2_folder_contents, # Убедимся, что list_b2_folder_contents импортирован
         move_b2_object, delete_b2_object
     )
     from modules.api_clients import get_b2_client
@@ -35,7 +35,7 @@ except ModuleNotFoundError as import_err:
 
         from modules.utils import (
             is_folder_empty, ensure_directory_exists, generate_file_id,
-            load_b2_json, save_b2_json, list_b2_folder_contents,
+            load_b2_json, save_b2_json, list_b2_folder_contents, # Убедимся, что list_b2_folder_contents импортирован
             move_b2_object, delete_b2_object
         )
         from modules.api_clients import get_b2_client
@@ -46,7 +46,11 @@ except ModuleNotFoundError as import_err:
         print(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", file=sys.stderr)
         sys.exit(1)
     except ImportError as import_err_rel:
-        print(f"Критическая Ошибка импорта (относительный): {import_err_rel}", file=sys.stderr)
+        # Проверяем, не ошибка ли это импорта list_b2_folder_contents
+        if 'list_b2_folder_contents' in str(import_err_rel):
+             print(f"Критическая Ошибка: Функция 'list_b2_folder_contents' не найдена в 'modules.utils'. Убедитесь, что она добавлена.", file=sys.stderr)
+        else:
+             print(f"Критическая Ошибка импорта (относительный): {import_err_rel}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -483,7 +487,10 @@ def main():
             config_mj.setdefault("generation", False)
             config_mj.setdefault("status", None)
 
-            logger.debug(f"Текущие состояния: config_gen={json.dumps(config_gen)}, config_mj={json.dumps(config_mj)}")
+            # *** ДОБАВЛЕНО ЛОГИРОВАНИЕ СОСТОЯНИЯ ***
+            logger.info(f"Текущее состояние config_gen: {json.dumps(config_gen)}")
+            logger.info(f"Текущее состояние config_mj: {json.dumps(config_mj)}")
+            # *** КОНЕЦ ЛОГИРОВАНИЯ ***
 
             action_taken_in_iteration = False # Флаг, что в этой итерации было выполнено действие
 
@@ -535,6 +542,10 @@ def main():
                             break
                         config_mj = config_mj_after_media # Обновляем состояние
 
+                        # *** ДОБАВЛЕНО ЛОГИРОВАНИЕ СОСТОЯНИЯ ПОСЛЕ MEDIA ***
+                        logger.info(f"Состояние config_mj ПОСЛЕ generate_media: {json.dumps(config_mj)}")
+                        # *** КОНЕЦ ЛОГИРОВАНИЯ ***
+
                         # Проверяем, была ли запущена НОВАЯ задача (upscale/variation)
                         if config_mj.get('midjourney_task') and isinstance(config_mj['midjourney_task'], dict):
                             logger.info("Обнаружена НОВАЯ задача MJ (вероятно, upscale/variation). Задача НЕ завершена. Продолжаем цикл.")
@@ -570,7 +581,9 @@ def main():
                         logger.error("Критическая ошибка: не удалось перезагрузить config_mj после проверки статуса. Прерывание."); break
                     config_mj = config_mj_reloaded # Обновляем состояние
 
-                    logger.debug(f"Состояние config_mj после перезагрузки: {json.dumps(config_mj, indent=2, ensure_ascii=False)}")
+                    # *** ДОБАВЛЕНО ЛОГИРОВАНИЕ СОСТОЯНИЯ ПОСЛЕ ПРОВЕРКИ ***
+                    logger.info(f"Состояние config_mj ПОСЛЕ Workspace_media: {json.dumps(config_mj)}")
+                    # *** КОНЕЦ ЛОГИРОВАНИЯ ***
 
                     # Проверяем, появились ли результаты ПОСЛЕ проверки
                     if config_mj.get('midjourney_results') and isinstance(config_mj['midjourney_results'].get('task_result'), dict):
