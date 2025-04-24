@@ -134,12 +134,28 @@ def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, t
         if response.choices and response.choices[0].message and response.choices[0].message.content:
             response_content = response.choices[0].message.content.strip()
             logger.debug(f"Сырой ответ OpenAI: {response_content[:500]}...")
+            # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+            # Всегда проверяем и удаляем возможную Markdown обертку JSON
+            if response_content.startswith("```json"):
+                logger.debug("Обнаружена обертка ```json в ответе, удаляем...")
+                response_content = response_content[7:]  # Убираем ```json\n
+                # Убираем ``` в конце, если он есть
+                if response_content.endswith("```"):
+                    response_content = response_content[:-3]
+                response_content = response_content.strip()  # Убираем лишние пробелы по краям
+                logger.debug(f"Ответ после удаления обертки: {response_content[:500]}...")
+            elif response_content.startswith("```") and response_content.endswith("```"):
+                # Обработка случая, если обертка просто ``` без 'json'
+                logger.debug("Обнаружена обертка ``` в ответе, удаляем...")
+                response_content = response_content[3:-3].strip()
+                logger.debug(f"Ответ после удаления обертки ```: {response_content[:500]}...")
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             # Обработка возможной обертки ```json
-            if use_json_mode and response_content.startswith("```json"):
-                 response_content = response_content[7:] # Убираем ```json\n
-                 response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
-                 response_content = response_content.strip()
+         #   if use_json_mode and response_content.startswith("```json"):
+         #        response_content = response_content[7:] # Убираем ```json\n
+         #        response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
+         #        response_content = response_content.strip()
 
             # Если нужен JSON, пытаемся распарсить
             if use_json_mode:
