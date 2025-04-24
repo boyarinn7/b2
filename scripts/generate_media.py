@@ -7,7 +7,7 @@ print("--- SCRIPT START (generate_media.py) ---", flush=True)
 # --- Стандартные библиотеки ---
 import os
 import json
-import sys
+import sys # <--- Убедимся, что sys импортирован
 import time
 import argparse
 import requests
@@ -121,15 +121,12 @@ try:
     RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # Ключ нужен для инициализации ниже
 
-    # --- ИЗМЕНЕНО: Убедимся, что формат без точки ---
     IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png").lstrip('.')
-    VIDEO_FORMAT = "mp4" # Обычно не меняется
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    VIDEO_FORMAT = "mp4"
 
     MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
     OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
 
-    # Получаем размеры из конфига
     output_size_str = config.get("IMAGE_GENERATION.output_size", "1792x1024")
     delimiter = None
     if '×' in output_size_str: delimiter = '×'
@@ -152,7 +149,6 @@ try:
     PLACEHOLDER_BG_COLOR = config.get("VIDEO.placeholder_bg_color", "cccccc")
     PLACEHOLDER_TEXT_COLOR = config.get("VIDEO.placeholder_text_color", "333333")
 
-    # Используем значение из конфига или дефолт 60
     TASK_REQUEST_TIMEOUT = int(config.get("WORKFLOW.task_request_timeout", 60))
     logger.info(f"Таймаут запроса к API (task_request_timeout): {TASK_REQUEST_TIMEOUT} сек.")
 
@@ -161,7 +157,7 @@ except Exception as config_err:
      sys.exit(1)
 
 # === Вспомогательные Функции ===
-
+# ... (остальные вспомогательные функции без изменений) ...
 def _initialize_openai_client():
     """Инициализирует глобальный клиент OpenAI, если он еще не создан."""
     global openai_client_instance
@@ -237,10 +233,8 @@ Respond ONLY with the number (1, 2, 3, or 4) of the image that best fits the cri
 Original Prompt Context: {prompt}
 Evaluation Criteria: {criteria}
 """
-    # --- ИЗМЕНЕНО: Используем max_tokens из конфига или дефолт ---
-    max_tokens = int(prompt_settings.get("max_tokens", 500)) # Вернули 500, если не задано
+    max_tokens = int(prompt_settings.get("max_tokens", 500))
     logger.info(f"Max tokens для Vision: {max_tokens}")
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     if not criteria:
          logger.warning("Критерии для выбора изображения не найдены. Выбор невозможен.")
@@ -315,26 +309,24 @@ Evaluation Criteria: {criteria}
 
 def resize_existing_image(image_path_str: str) -> bool:
     """Изменяет размер существующего изображения."""
-    if Image is None: logger.warning("Pillow не импортирован."); return True # Не ошибка, просто пропускаем
+    if Image is None: logger.warning("Pillow не импортирован."); return True
     image_path = Path(image_path_str)
     if not image_path.is_file(): logger.error(f"Ошибка ресайза: Файл не найден {image_path}"); return False
     try:
         target_width, target_height = PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT
         logger.info(f"Ресайз {image_path} до {target_width}x{target_height}...")
         with Image.open(image_path) as img:
-            # Сохраняем исходный формат
-            img_format = img.format or IMAGE_FORMAT.upper() # Используем IMAGE_FORMAT как fallback
-            if img.mode != 'RGB': img = img.convert('RGB') # Конвертируем в RGB для совместимости
+            img_format = img.format or IMAGE_FORMAT.upper()
+            if img.mode != 'RGB': img = img.convert('RGB')
             resample_filter = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
             img = img.resize((target_width, target_height), resample_filter)
-            # Сохраняем в том же формате, в котором открыли
             img.save(image_path, format=img_format)
         logger.info(f"✅ Ресайз до {target_width}x{target_height} завершен.")
         return True
     except Exception as e: logger.error(f"Ошибка ресайза {image_path}: {e}", exc_info=True); return False
 
 def clean_script_text(script_text_param):
-    """Очищает текст скрипта (убирает лишние пробелы и переносы)."""
+    """Очищает текст скрипта."""
     logger.debug("Очистка текста скрипта...");
     return ' '.join(script_text_param.replace('\n', ' ').replace('\r', ' ').split()) if script_text_param else ""
 
@@ -345,18 +337,16 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
     if RunwayML is None: logger.error("❌ Класс RunwayML не доступен."); return None
     if not api_key: logger.error("❌ API ключ Runway не предоставлен."); return None
     if not Path(image_path).is_file(): logger.error(f"❌ Файл изображения не найден: {image_path}"); return None
-    if not script: logger.warning("⚠️ Промпт для Runway пуст. Попытка генерации без текста."); script = "" # Позволяем пустой промпт
+    if not script: logger.warning("⚠️ Промпт для Runway пуст. Попытка генерации без текста."); script = ""
 
     try:
         model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
         duration = int(config.get('VIDEO.runway_duration', 5))
-        # Получаем ratio из конфига, проверяем на допустимость
         ratio_str = config.get('VIDEO.runway_ratio', f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}")
         supported_ratios = ["1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672"]
-        # Проверяем, соответствует ли ratio_str формату Ш:В
         if not re.match(r"^\d+:\d+$", ratio_str) or ratio_str not in supported_ratios:
             logger.warning(f"Неподдерживаемое или некорректное соотношение сторон '{ratio_str}' в конфиге. Используется '1280:720'.")
-            ratio_str = "1280:720" # Fallback на стандартный
+            ratio_str = "1280:720"
 
         poll_timeout = int(config.get('WORKFLOW.runway_polling_timeout', 300))
         poll_interval = int(config.get('WORKFLOW.runway_polling_interval', 15))
@@ -365,11 +355,10 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         logger.error(f"Ошибка чтения параметров Runway из конфига: {cfg_err}. Используются значения по умолчанию.")
         model_name="gen-2"; duration=5; ratio_str="1280:720"; poll_timeout=300; poll_interval=15
 
-    # Кодирование изображения в Base64
     try:
         with open(image_path, "rb") as f:
             base64_image = base64.b64encode(f.read()).decode("utf-8")
-        ext = Path(image_path).suffix.lower().lstrip('.') # Убираем точку
+        ext = Path(image_path).suffix.lower().lstrip('.')
         mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
         image_data_uri = f"data:{mime_type};base64,{base64_image}"
         logger.info(f"Изображение {image_path} успешно кодировано в Base64 (MIME: {mime_type}).")
@@ -384,11 +373,8 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         logger.info("✅ Клиент RunwayML SDK инициализирован.")
 
         generation_params = {
-            "model": model_name,
-            "prompt_image": image_data_uri,
-            "prompt_text": script, # Передаем очищенный или пустой скрипт
-            "duration": duration,
-            "ratio": ratio_str
+            "model": model_name, "prompt_image": image_data_uri, "prompt_text": script,
+            "duration": duration, "ratio": ratio_str
         }
         logger.info("🚀 Создание задачи RunwayML Image-to-Video...")
         log_params = {k: (v[:50] + '...' if isinstance(v, str) and len(v) > 50 else v) for k, v in generation_params.items()}
@@ -410,20 +396,17 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
                 if current_status == "SUCCEEDED":
                     logger.info(f"✅ Задача Runway {task_id} успешно завершена!")
                     task_output = getattr(task_status, 'output', None)
-                    # Извлекаем URL
                     if isinstance(task_output, list) and len(task_output) > 0 and isinstance(task_output[0], str): final_output_url = task_output[0]
                     elif isinstance(task_output, dict) and task_output.get('url'): final_output_url = task_output['url']
                     elif isinstance(task_output, str) and task_output.startswith('http'): final_output_url = task_output
                     if final_output_url: logger.info(f"Получен URL видео: {final_output_url}"); return final_output_url
                     else: logger.warning(f"Статус SUCCEEDED, но URL видео не найден: {task_output}")
                     break
-
                 elif current_status == "FAILED":
                     logger.error(f"❌ Задача Runway {task_id} завершилась с ошибкой (FAILED)!")
                     error_details = getattr(task_status, 'error_message', 'Детали ошибки отсутствуют.')
                     logger.error(f"Детали ошибки Runway: {error_details}")
                     break
-
                 elif current_status in ["PENDING", "PROCESSING", "QUEUED", "WAITING", "RUNNING"]: time.sleep(poll_interval)
                 else: logger.warning(f"Неизвестный статус Runway: {current_status}. Прерывание."); break
 
@@ -450,24 +433,16 @@ def create_mock_video(image_path_str: str) -> str | None:
     if not image_path_obj.is_file(): logger.error(f"{image_path_obj} не найден или не файл."); return None
 
     clip = None
-    # --- ИЗМЕНЕНО: Используем ID из имени файла, если он соответствует паттерну ---
     base_name = image_path_obj.stem
-    match = re.match(r"(\d{8}-\d{4})", base_name) # Ищем паттерн ID в начале имени
-    if match:
-        file_id = match.group(1)
-        logger.debug(f"Извлечен ID '{file_id}' из имени файла для mock видео.")
-    else:
-        # Если ID не найден, используем stem как есть (менее надежно)
-        file_id = base_name
-        logger.warning(f"Не удалось извлечь ID из '{base_name}'. Используется как есть.")
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    match = re.match(r"(\d{8}-\d{4})", base_name)
+    if match: file_id = match.group(1); logger.debug(f"Извлечен ID '{file_id}' из имени файла для mock видео.")
+    else: file_id = base_name; logger.warning(f"Не удалось извлечь ID из '{base_name}'. Используется как есть.")
 
     output_path = str(image_path_obj.parent / f"{file_id}.{VIDEO_FORMAT}")
     try:
         duration = int(config.get("VIDEO.mock_duration", 10)); fps = int(config.get("VIDEO.mock_fps", 24)); codec = config.get("VIDEO.mock_codec", "libx264")
         logger.debug(f"Параметры mock: output={output_path}, duration={duration}, fps={fps}, codec={codec}")
         clip = ImageClip(str(image_path_obj), duration=duration); clip.fps = fps
-        # Добавляем параметры для подавления вывода ffmpeg, кроме ошибок
         clip.write_videofile(output_path, codec=codec, fps=fps, audio=False, logger=None, ffmpeg_params=["-loglevel", "error"])
         logger.info(f"✅ Mock видео создано: {output_path}"); return output_path
     except Exception as e: logger.error(f"❌ Ошибка создания mock: {e}", exc_info=True); return None
@@ -554,14 +529,29 @@ def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpo
 
 # === Основная Функция ===
 def main():
+    # --- ДОБАВЛЕНА ОТЛАДКА АРГУМЕНТОВ ---
+    logger.info(f"generate_media.py запущен с аргументами: {sys.argv}")
+    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
     parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
     parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
     parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
-    args = parser.parse_args()
-    generation_id = args.generation_id
-    use_mock_flag = args.use_mock
 
-    # Очистка ID на всякий случай (если передали с .json)
+    # --- ДОБАВЛЕНА ОБРАБОТКА ОШИБОК PARSE_ARGS ---
+    try:
+        args = parser.parse_args()
+        generation_id = args.generation_id
+        use_mock_flag = args.use_mock
+        logger.info(f"Аргументы успешно распознаны: generation_id={generation_id}, use_mock={use_mock_flag}")
+    except SystemExit as e:
+        # Перехватываем SystemExit, который argparse вызывает при ошибке
+        logger.error(f"Ошибка разбора аргументов argparse: {e}")
+        # Дополнительно логируем sys.argv для диагностики
+        logger.error(f"Полученные аргументы (sys.argv): {sys.argv}")
+        # Выходим с тем же кодом ошибки, который дал argparse
+        sys.exit(e.code)
+    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
         generation_id = generation_id[:-5]
         logger.warning(f"Удалено .json из generation_id. Используется: {generation_id}")
@@ -571,7 +561,6 @@ def main():
     b2_client = None; content_data = None; config_mj = None; prompts_config_data = None
     first_frame_description = ""; final_mj_prompt = ""; final_runway_prompt = ""
 
-    # Уникальные временные пути
     timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     pid_suffix = os.getpid()
     content_local_path = f"{generation_id}_content_temp_{pid_suffix}_{timestamp_suffix}.json"
@@ -582,7 +571,6 @@ def main():
         b2_client = get_b2_client();
         if not b2_client: raise ConnectionError("Не удалось создать клиент B2.")
 
-        # Загрузка prompts_config.json
         prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
         if not prompts_config_path_str: logger.error("❌ Путь к prompts_config не найден!"); prompts_config_data = {}
         else:
@@ -598,7 +586,6 @@ def main():
         content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_path, default_value=None)
         if content_data is None: logger.error(f"❌ Не удалось загрузить {content_remote_path}."); sys.exit(1)
 
-        # Извлекаем данные
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
         final_runway_prompt = content_data.get("final_runway_prompt", "")
@@ -618,7 +605,6 @@ def main():
         is_imagine_result = False
         is_upscale_result = False
 
-        # Определяем тип результата в конфиге
         mj_results = config_mj.get("midjourney_results", {})
         task_result_data = mj_results.get("task_result")
 
@@ -631,14 +617,12 @@ def main():
             else: logger.warning(f"Не удалось определить тип результата MJ в task_result: {json.dumps(task_result_data, indent=2)[:500]}...")
         elif mj_results: logger.warning(f"Поле 'task_result' в midjourney_results не словарь: {mj_results}")
 
-        # --- Основной блок обработки ---
         try:
             if use_mock_flag:
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
                 placeholder_text = f"MJ/Upscale Timeout\n{first_frame_description[:60]}" if first_frame_description else "MJ/Upscale Timeout"
                 encoded_text = urllib.parse.quote(placeholder_text)
                 placeholder_url = f"https://placehold.co/{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}/{PLACEHOLDER_BG_COLOR}/{PLACEHOLDER_TEXT_COLOR}?text={encoded_text}"
-                # --- ИЗМЕНЕНО: Используем IMAGE_FORMAT ---
                 local_image_path = temp_dir_path / f"{generation_id}_placeholder.{IMAGE_FORMAT}"
                 logger.info(f"Создание плейсхолдера: {placeholder_url}")
                 if not download_image(placeholder_url, str(local_image_path)): raise Exception("Не скачать плейсхолдер")
@@ -650,11 +634,10 @@ def main():
 
             elif is_upscale_result and final_upscaled_image_url:
                 logger.info(f"Обработка результата /upscale. Генерация видео Runway...")
-                # --- ИЗМЕНЕНО: Используем IMAGE_FORMAT ---
                 local_image_path = temp_dir_path / f"{generation_id}_upscaled.{IMAGE_FORMAT}"
                 if not download_image(final_upscaled_image_url, str(local_image_path)): raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
                 logger.info(f"Апскейл сохранен: {local_image_path}")
-                resize_existing_image(str(local_image_path)) # Ресайз апскейла
+                resize_existing_image(str(local_image_path))
 
                 video_path_str = None
                 if not final_runway_prompt: logger.error("❌ Промпт Runway отсутствует! Создание Mock."); video_path_str = create_mock_video(str(local_image_path))
@@ -662,20 +645,19 @@ def main():
                      video_url_or_path = generate_runway_video(str(local_image_path), final_runway_prompt, config, RUNWAY_API_KEY)
                      if video_url_or_path:
                          if video_url_or_path.startswith("http"):
-                             # --- ИЗМЕНЕНО: Используем VIDEO_FORMAT ---
                              video_path_temp = temp_dir_path / f"{generation_id}_downloaded.{VIDEO_FORMAT}"
                              if download_video(video_url_or_path, str(video_path_temp)): video_path = video_path_temp
                              else: logger.error(f"Не скачать видео {video_url_or_path}. Mock."); video_path_str = create_mock_video(str(local_image_path))
-                         else: video_path = Path(video_url_or_path) # Если вернулся локальный путь
+                         else: video_path = Path(video_url_or_path)
                      else: logger.error("Runway не удалась. Mock."); video_path_str = create_mock_video(str(local_image_path))
                      if not video_path and video_path_str: video_path = Path(video_path_str)
 
                 if not video_path: raise Exception("Не сгенерировать/скачать видео.")
                 logger.info("Очистка состояния MJ (после Runway)...");
-                config_mj['midjourney_results'] = {} # Очищаем результаты апскейла
+                config_mj['midjourney_results'] = {}
                 config_mj['generation'] = False
                 config_mj['midjourney_task'] = None
-                config_mj['status'] = None # Сбрасываем статус
+                config_mj['status'] = None
 
             elif is_imagine_result:
                 logger.info(f"Обработка результата /imagine. Выбор лучшего и запуск /upscale...")
@@ -706,7 +688,7 @@ def main():
                 if upscale_task_info and upscale_task_info.get("task_id"):
                     logger.info(f"Задача /upscale запущена. Новый ID: {upscale_task_info['task_id']}")
                     config_mj['midjourney_task'] = upscale_task_info
-                    config_mj['midjourney_results'] = {} # Очищаем старые результаты imagine
+                    config_mj['midjourney_results'] = {}
                     config_mj['generation'] = False
                     config_mj['status'] = "waiting_for_upscale"
                     logger.info("Состояние обновлено для ожидания /upscale.")
@@ -726,34 +708,28 @@ def main():
 
             else: logger.warning("Не найдено активной задачи MJ, результатов или флага 'generation'. Пропуск шагов MJ/Runway.")
 
-            # --- ИЗМЕНЕНО: Явное формирование имени файла для B2 ---
             target_folder_b2 = "666/"
             upload_success_img = False
             upload_success_vid = False
 
-            # Загрузка изображения (плейсхолдер или апскейл)
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
-                 # Убираем любые возможные суффиксы из ID и добавляем нужный
-                 clean_generation_id = generation_id.split('.')[0] # На всякий случай
-                 b2_image_filename = f"{clean_generation_id}.{IMAGE_FORMAT}" # Используем IMAGE_FORMAT
+                 clean_generation_id = generation_id.split('.')[0]
+                 b2_image_filename = f"{clean_generation_id}.{IMAGE_FORMAT}"
                  logger.info(f"Подготовлено имя для загрузки изображения: {b2_image_filename}")
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
             elif local_image_path:
                  logger.warning(f"Изображение {local_image_path} не найдено или не Path для загрузки.")
 
-            # Загрузка видео (Runway или Mock)
             if video_path and isinstance(video_path, Path) and video_path.is_file():
-                 clean_generation_id = generation_id.split('.')[0] # На всякий случай
-                 b2_video_filename = f"{clean_generation_id}.{VIDEO_FORMAT}" # Используем VIDEO_FORMAT
+                 clean_generation_id = generation_id.split('.')[0]
+                 b2_video_filename = f"{clean_generation_id}.{VIDEO_FORMAT}"
                  logger.info(f"Подготовлено имя для загрузки видео: {b2_video_filename}")
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
             elif video_path:
                  logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
-            elif is_upscale_result or use_mock_flag: # Логируем отсутствие видео только если оно ожидалось
+            elif is_upscale_result or use_mock_flag:
                  logger.warning("Видео не сгенерировано/не найдено для загрузки.")
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-            # Логирование результата загрузки
             if local_image_path and video_path:
                 if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены в B2.")
                 else: logger.warning("⚠️ Не все медиа файлы были успешно загружены в B2.")
@@ -761,12 +737,10 @@ def main():
             elif video_path and upload_success_vid: logger.info("✅ Видео успешно загружено в B2.")
 
         finally:
-             # Очистка временной папки
              if temp_dir_path.exists():
                  try: shutil.rmtree(temp_dir_path); logger.debug(f"Удалена папка: {temp_dir_path}")
                  except OSError as e: logger.warning(f"Не удалить {temp_dir_path}: {e}")
 
-        # Сохранение финального состояния config_mj
         logger.info(f"Сохранение config_midjourney.json в B2...")
         if not isinstance(config_mj, dict): logger.error("config_mj не словарь!")
         elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj): logger.error("Не сохранить config_midjourney.json.")
@@ -777,7 +751,6 @@ def main():
     except ConnectionError as conn_err: logger.error(f"❌ Ошибка соединения B2: {conn_err}"); sys.exit(1)
     except Exception as e: logger.error(f"❌ Критическая ошибка в generate_media.py: {e}", exc_info=True); sys.exit(1)
     finally:
-        # Очистка временных файлов конфигов
         content_temp_path = Path(content_local_path)
         if content_temp_path.exists():
             try: os.remove(content_temp_path); logger.debug(f"Удален temp контент: {content_temp_path}")
@@ -795,12 +768,21 @@ if __name__ == "__main__":
         exit_code_main = 0
     except KeyboardInterrupt: logger.info("🛑 Остановлено пользователем."); exit_code_main = 130
     except SystemExit as e:
-        if e.code != 0: logger.error(f"Завершение с кодом ошибки: {e.code}")
-        else: logger.info(f"Завершение с кодом {e.code}")
+        # Логируем код выхода только если это не успешное завершение (код 0)
+        if e.code != 0:
+             logger.error(f"Завершение с кодом ошибки: {e.code}")
+        # Не логируем успешный выход (код 0), чтобы не засорять лог
+        # else: logger.info(f"Завершение с кодом {e.code}")
         exit_code_main = e.code
     except Exception as e:
         print(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}")
         try: logger.error(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}", exc_info=True)
         except NameError: pass
         exit_code_main = 1
-    finally: sys.exit(exit_code_main)
+    finally:
+        # --- ИЗМЕНЕНО: Убрано логирование успешного выхода ---
+        if exit_code_main != 0:
+             logger.info(f"--- Завершение generate_media.py с кодом ошибки: {exit_code_main} ---")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        sys.exit(exit_code_main)
+
