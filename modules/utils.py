@@ -10,6 +10,8 @@ import requests
 import shutil
 # --- ДОБАВЛЕН ИМПОРТ DATETIME ---
 from datetime import datetime, timezone
+# --- ДОБАВЛЕН ИМПОРТ RE ---
+import re
 # --- КОНЕЦ ДОБАВЛЕНИЯ ---
 
 
@@ -38,6 +40,11 @@ except ImportError:
     logger.warning("BotoCore не найден. Функции B2 могут быть недоступны.")
     ClientError = Exception # Fallback
     NoCredentialsError = Exception # Fallback
+
+# --- Глобальная переменная для паттерна ID ---
+# Определяем здесь, чтобы была доступна везде в модуле
+# Используем re, который теперь импортирован
+FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}$")
 
 # --- Функции ---
 
@@ -99,6 +106,7 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
         loaded_data = load_json_config(str(temp_path_obj))
         if loaded_data is None:
              logger.warning(f"Не удалось распарсить JSON из временного файла {local_temp_path}. Возвращаем default_value.")
+             # Не удаляем временный файл в этом случае, чтобы можно было посмотреть
              return default_value
         logger.info(f"Успешно распарсен JSON из {local_temp_path}.")
         return loaded_data
@@ -113,7 +121,7 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
     except Exception as e:
         logger.error(f"Неизвестная ошибка при загрузке {remote_path} из B2: {e}", exc_info=True)
         return default_value
-    finally: # Очищаем временный файл после использования
+    finally: # Очищаем временный файл после использования, если он существует
         if temp_path_obj.exists():
             try:
                 os.remove(temp_path_obj)
@@ -132,7 +140,11 @@ def save_b2_json(s3_client, bucket_name, remote_path, local_temp_path, data):
         logger.debug(f"Загрузка {local_temp_path} в B2 как {remote_path}...")
         s3_client.upload_file(str(temp_path_obj), bucket_name, remote_path) # Передаем строку пути
         # Логируем начало данных для отладки
-        data_preview = json.dumps(data, ensure_ascii=False)[:100]
+        # Преобразуем в строку безопасно, даже если data не словарь
+        try:
+            data_preview = json.dumps(data, ensure_ascii=False)[:100]
+        except TypeError:
+            data_preview = str(data)[:100]
         logger.info(f"Данные успешно сохранены в {remote_path} в B2: {data_preview}...")
         return True
     except (IOError, ClientError, NoCredentialsError, Exception) as e:
@@ -152,12 +164,15 @@ def download_file(url, local_path_str, stream=False, timeout=30):
     logger.info(f"Загрузка файла с {url} в {local_path_str}...")
     try:
         ensure_directory_exists(local_path_str)
-        with requests.get(url, stream=stream, timeout=timeout) as r:
+        # Используем User-Agent, чтобы избежать блокировок на некоторых хостингах
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        with requests.get(url, stream=stream, timeout=timeout, headers=headers) as r:
             r.raise_for_status() # Проверка на HTTP ошибки
             with open(local_path_str, 'wb') as f:
                 # Используем iter_content для потоковой записи, если stream=True
                 chunk_size = 8192 if stream else None
                 for chunk in r.iter_content(chunk_size=chunk_size):
+                    # if chunk: # filter out keep-alive new chunks
                     f.write(chunk)
         logger.info(f"✅ Файл успешно сохранен: {local_path_str}")
         return True
@@ -198,6 +213,7 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
     # Убираем возможный начальный слэш из target_folder и b2_filename_with_ext
     target_folder_clean = target_folder.strip('/')
     b2_filename_clean = b2_filename_with_ext.strip('/')
+    # Собираем ключ, гарантируя один слэш между папкой и файлом
     b2_object_key = f"{target_folder_clean}/{b2_filename_clean}"
 
     logger.info(f"Загрузка {local_path} в B2 как {b2_object_key}...")
@@ -215,8 +231,6 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
         logger.error(f"Неизвестная ошибка при загрузке {local_path} в B2: {e}", exc_info=True)
         return False
 
-# --- ИЗМЕНЕНО: Переименована list_b2_folder_contents в list_files_in_folder ---
-# --- и добавлена проверка на .bzEmpty и соответствие паттерну ---
 def list_files_in_folder(s3_client, bucket_name, folder_prefix):
     """
     Возвращает список ключей файлов (не папок) в указанной папке B2,
@@ -242,23 +256,28 @@ def list_files_in_folder(s3_client, bucket_name, folder_prefix):
                     # Извлекаем имя файла из ключа
                     base_name = os.path.basename(key)
                     # Извлекаем ID (часть имени до первого расширения)
-                    group_id, _ = os.path.splitext(base_name)
-                    # Проверяем, соответствует ли ID паттерну
-                    if FILE_NAME_PATTERN.match(group_id):
-                         contents.append(key)
+                    # Используем FILE_NAME_PATTERN для извлечения ID
+                    match = FILE_NAME_PATTERN.match(base_name)
+                    if match:
+                         group_id = match.group(0)
+                         # Проверяем, что после ID идет расширение или точка
+                         if len(base_name) > len(group_id) and base_name[len(group_id)] == '.':
+                              contents.append(key)
+                         # elif len(base_name) == len(group_id): # Случай без расширения (не должен быть)
+                         #      contents.append(key)
+                         else:
+                              logger.debug(f"Файл {key} соответствует паттерну ID, но не имеет стандартного расширения? Пропуск.")
                     else:
                          # Логируем файлы, которые не соответствуют паттерну, если нужно
-                         # logger.debug(f"Файл {key} пропущен (не соответствует паттерну ID).")
-                         pass
+                         logger.debug(f"Файл {key} пропущен (не соответствует паттерну ID).")
 
-        logger.debug(f"Найдено файлов в {prefix}: {len(contents)}")
+
+        logger.debug(f"Найдено файлов в {prefix}, соответствующих паттерну: {len(contents)}")
     except ClientError as e:
         logger.error(f"Ошибка Boto3 при листинге папки {folder_prefix}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Неизвестная ошибка при листинге папки {folder_prefix}: {e}", exc_info=True)
     return contents
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
 
 def move_b2_object(s3_client, bucket_name, source_key, dest_key):
     """Перемещает объект в B2 (копирование + удаление)."""
@@ -268,7 +287,7 @@ def move_b2_object(s3_client, bucket_name, source_key, dest_key):
             s3_client.head_object(Bucket=bucket_name, Key=source_key)
             logger.debug(f"Исходный объект {source_key} найден.")
         except ClientError as e:
-            if e.response['Error']['Code'] == '404':
+            if e.response['Error']['Code'] == '404' or 'NoSuchKey' in str(e): # Добавили NoSuchKey
                 logger.warning(f"Исходный файл {source_key} не найден. Перемещение невозможно.")
                 return False
             else:
@@ -285,6 +304,7 @@ def move_b2_object(s3_client, bucket_name, source_key, dest_key):
         logger.info(f"✅ Успешно перемещен: {source_key} -> {dest_key}")
         return True
     except ClientError as e:
+        # Логируем специфичные ошибки Boto3
         logger.error(f"Ошибка Boto3 при перемещении {source_key} -> {dest_key}: {e}", exc_info=True)
         return False
     except Exception as e:
@@ -317,6 +337,7 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
         # Запрашиваем только один объект для проверки
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=2) # MaxKeys=2 чтобы увидеть папку и файл
 
+        # Проверяем наличие 'Contents' и количество ключей
         if 'Contents' in response:
             keys_in_folder = [obj['Key'] for obj in response['Contents']]
             # Проверяем, есть ли что-то кроме самой папки и/или .bzEmpty файла
@@ -325,12 +346,16 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
                     logger.debug(f"Папка {prefix} не пуста, найден файл: {key}")
                     return False # Нашли реальный файл
 
-        # Если прошли по всем (максимум 2) и не нашли реальных файлов
+        # Если 'Contents' нет или там только папка/placeholder
         logger.debug(f"Папка {prefix} пуста (или содержит только placeholder).")
         return True
     except ClientError as e:
+        # Если папка не найдена, считаем ее пустой (хотя это странно)
+        if e.response['Error']['Code'] == 'NoSuchKey':
+             logger.warning(f"Папка {prefix} не найдена при проверке на пустоту (NoSuchKey). Считаем пустой.")
+             return True
         logger.error(f"Ошибка Boto3 при проверке пустоты папки {prefix}: {e}", exc_info=True)
-        return False # В случае ошибки считаем, что не пуста (безопаснее)
+        return False # В случае других ошибок считаем, что не пуста (безопаснее)
     except Exception as e:
         logger.error(f"Неизвестная ошибка при проверке пустоты папки {prefix}: {e}", exc_info=True)
         return False
@@ -340,6 +365,3 @@ def generate_file_id():
     # Убедимся, что datetime импортирован в начале файла
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
 
-# --- Глобальная переменная для паттерна ID ---
-# Определяем здесь, чтобы была доступна везде в модуле
-FILE_NAME_PATTERN = re.compile(r"^\d{8}-\d{4}$")
