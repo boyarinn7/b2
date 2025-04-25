@@ -1,57 +1,54 @@
 import os
-import openai
-import json
+import sys
 
-# --- Загрузка ключа API ---
-# Убедитесь, что переменная окружения OPENAI_API_KEY установлена
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    print("Ошибка: Переменная окружения OPENAI_API_KEY не найдена.")
-    exit()
+# Укажите путь к корневой папке со шрифтами
+# Используем r"" для корректной обработки обратных слешей в Windows
+root_folder_path = r"C:\Users\boyar\b2\fonts"
 
-# В старых версиях (<1.0.0) ключ API устанавливается так
-openai.api_key = api_key
+# Расширения файлов шрифтов, которые ищем (в нижнем регистре)
+font_extensions = ('.ttf', '.otf')
 
-# --- Формирование Промпта ---
-# ВАЖНО: Промпт НЕ содержит слово "серобуромалиновый"
-# и НЕ содержит инструкций по чтению файла.
-# Он просто просит назвать значение для ключа 'color'.
-prompt_text = "Назови значение для конфигурационного ключа 'color'."
+print(f"--- Попытка рекурсивного чтения папки: {root_folder_path} ---")
 
-print(f"Отправка промпта в OpenAI: '{prompt_text}'")
-print("-" * 20)
+font_files_found = []
 
-# --- Вызов OpenAI API (Синтаксис для старых версий < 1.0.0) ---
 try:
-    # Используем старый синтаксис openai.ChatCompletion.create
-    response = openai.ChatCompletion.create(
-        model="gpt-4o", # Или gpt-3.5-turbo
-        messages=[
-            {"role": "system", "content": "Ты - помощник, отвечающий на вопросы."},
-            {"role": "user", "content": prompt_text}
-        ],
-        max_tokens=50,
-        temperature=0.5 # Низкая температура для более предсказуемого ответа
-    )
+    # Проверяем, существует ли путь и является ли он папкой
+    if os.path.isdir(root_folder_path):
+        print(f"Поиск файлов шрифтов ({', '.join(font_extensions)}) в '{root_folder_path}' и подпапках...")
 
-    # --- Вывод результата ---
-    # В старых версиях доступ к ответу немного отличается
-    ai_response = response['choices'][0]['message']['content'].strip()
-    print(f"Ответ от OpenAI:")
-    print(ai_response)
-    print("-" * 20)
+        # Рекурсивно обходим все папки и файлы
+        for subdir, dirs, files in os.walk(root_folder_path):
+            for filename in files:
+                # Проверяем расширение файла (в нижнем регистре)
+                if filename.lower().endswith(font_extensions):
+                    # Добавляем имя файла (можно добавить и относительный путь, если нужно)
+                    # full_path = os.path.join(subdir, filename) # Полный путь
+                    # relative_path = os.path.relpath(full_path, root_folder_path) # Относительный путь
+                    font_files_found.append(filename) # Собираем только имена файлов
 
-    # --- Проверка (для наглядности) ---
-    if "серобуромалиновый" in ai_response.lower():
-        print("!!! Неожиданно! AI каким-то образом упомянул слово 'серобуромалиновый'.")
+        if font_files_found:
+             # Сортируем для удобства
+            font_files_found.sort()
+            print(f"\nНайденные файлы шрифтов ({len(font_files_found)} шт.):")
+            # Выводим имена файлов
+            for filename in font_files_found:
+                print(f"- {filename}")
+        else:
+            print(f"  (Файлы шрифтов с расширениями {font_extensions} не найдены)")
+
+    elif os.path.exists(root_folder_path):
+        print(f"Ошибка: Указанный путь '{root_folder_path}' не является папкой.")
+        sys.exit(1) # Выход с кодом ошибки
     else:
-        print("Как и ожидалось, AI не смог получить доступ к файлу и назвать конкретное значение.")
+        print(f"Ошибка: Папка не найдена по пути '{root_folder_path}'.")
+        sys.exit(1) # Выход с кодом ошибки
 
-# --- Обработка ошибок (Синтаксис для старых версий < 1.0.0) ---
-# Используем openai.error.AuthenticationError и другие ошибки из openai.error
-except openai.error.AuthenticationError:
-     print("Ошибка аутентификации OpenAI. Проверьте ваш API ключ.")
-except openai.error.OpenAIError as e: # Общая ошибка OpenAI для старых версий
-    print(f"Произошла ошибка API OpenAI: {e}")
+except PermissionError:
+    print(f"Ошибка: Нет прав доступа для чтения папки '{root_folder_path}' или ее подпапок.")
+    sys.exit(1) # Выход с кодом ошибки
 except Exception as e:
     print(f"Произошла непредвиденная ошибка: {e}")
+    sys.exit(1) # Выход с кодом ошибки
+
+print("--- Чтение папки завершено ---")

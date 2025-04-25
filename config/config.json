@@ -38,7 +38,9 @@
         "log_folder": "logs",
         "output_image_format": "png",
         "creative_config": "config/creative_config.json",
-        "prompts_config": "config/prompts_config.json"
+        "prompts_config": "config/prompts_config.json",
+        "fonts_folder": "fonts/"
+
     },
     "CONTENT": {
         "topic": {

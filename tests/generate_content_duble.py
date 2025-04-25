@@ -1,497 +1,317 @@
-import json
+# -*- coding: utf-8 -*-
 import os
 import sys
 import requests
-import openai
-import textstat
-import spacy
-import re
-import subprocess
-import boto3
-import io
+import json
+import time
+import argparse
+import logging
+from pathlib import Path
+from datetime import datetime, timezone
+import uuid # Для уникальных имен файлов
 
-from modules.config_manager import ConfigManager
-from modules.logger import get_logger
-from modules.error_handler import handle_error
-from datetime import datetime
-from modules.utils import ensure_directory_exists  # Если get_b2_client не определён здесь, он может быть импортирован отдельно
-from PIL import Image, ImageDraw
+# --- Попытка импорта Boto3 ---
+try:
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    ClientError = Exception # Fallback
+    NoCredentialsError = Exception # Fallback
+    logging.warning("Библиотека boto3 не найдена. Загрузка в B2 будет недоступна.")
 
-# Добавляем путь к директории modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'modules')))
+# --- Настройка Логирования ---
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[logging.StreamHandler(sys.stdout)])
+logger = logging.getLogger("mj_text_test_b2")
 
-# === Инициализация ===
-logger = get_logger("generate_content")
-config = ConfigManager()
+# --- Константы ---
+MJ_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+MJ_IMAGINE_ENDPOINT = os.getenv("MJ_IMAGINE_ENDPOINT", "https://api.piapi.ai/api/v1/task")
+MJ_FETCH_ENDPOINT = os.getenv("MJ_FETCH_ENDPOINT", "https://api.piapi.ai/mj/v2/fetch")
 
-# Дополнительная инициализация логгера (если нужно, можно оставить один)
-logger = get_logger("generate_media_launcher")
+# --- B2 Константы (из переменных окружения) ---
+B2_ENDPOINT_URL = os.getenv("B2_ENDPOINT")
+B2_ACCESS_KEY = os.getenv("B2_ACCESS_KEY")
+B2_SECRET_KEY = os.getenv("B2_SECRET_KEY")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
+# Папка в B2 для временных изображений (можно изменить)
+B2_TEMP_FOLDER = "temp_mj_input_images/"
 
-
-def create_and_upload_image(folder, generation_id):
-    """Создает имитацию изображения и загружает его в ту же папку в B2."""
-    try:
-        file_name = generation_id.replace(".json", ".png")
-        local_file_path = file_name
-
-        # Создаем имитацию изображения
-        img = Image.new('RGB', (800, 600), color=(73, 109, 137))
-        draw = ImageDraw.Draw(img)
-        draw.text((10, 10), f"ID: {generation_id}", fill=(255, 255, 255))
-        img.save(local_file_path)
-        logger.info(f"✅ Изображение '{local_file_path}' успешно создано.")
-
-        # Загрузка изображения в ту же папку в B2
-        s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
-        s3_key = f"{folder.rstrip('/')}/{file_name}"
-        s3.upload_file(local_file_path, bucket_name, s3_key)
-        logger.info(f"✅ Изображение успешно загружено в B2: {s3_key}")
-
-        os.remove(local_file_path)
-    except Exception as e:
-        handle_error("Image Upload Error", str(e))
-
+# --- Вспомогательные функции ---
 
 def get_b2_client():
-    """Создает клиент для работы с Backblaze B2."""
+    """Инициализирует и возвращает клиент boto3 для B2."""
+    if not BOTO3_AVAILABLE:
+        logger.error("Boto3 недоступен.")
+        return None
+    if not all([B2_ENDPOINT_URL, B2_ACCESS_KEY, B2_SECRET_KEY]):
+        logger.error("Не все переменные окружения B2 установлены (B2_ENDPOINT, B2_ACCESS_KEY, B2_SECRET_KEY).")
+        return None
     try:
-        return boto3.client(
+        client = boto3.client(
             's3',
-            endpoint_url=config.get("API_KEYS.b2.endpoint"),
-            aws_access_key_id=config.get("API_KEYS.b2.access_key"),
-            aws_secret_access_key=config.get("API_KEYS.b2.secret_key")
+            endpoint_url=B2_ENDPOINT_URL,
+            aws_access_key_id=B2_ACCESS_KEY,
+            aws_secret_access_key=B2_SECRET_KEY
         )
+        logger.info("Клиент B2 (boto3) успешно создан.")
+        return client
     except Exception as e:
-        handle_error("B2 Client Initialization Error", str(e))
+        logger.error(f"Ошибка инициализации клиента B2: {e}", exc_info=True)
+        return None
 
+def upload_to_b2_public(s3_client, bucket_name, local_path: Path, b2_folder: str) -> str | None:
+    """Загружает файл в B2 и возвращает публичный URL."""
+    if not s3_client:
+        logger.error("Клиент B2 не инициализирован для загрузки.")
+        return None
+    if not local_path.is_file():
+        logger.error(f"Локальный файл не найден: {local_path}")
+        return None
+    if not bucket_name:
+        logger.error("Имя бакета B2 не указано.")
+        return None
 
-def download_config_public():
-    """Загружает файл config_public.json из B2 в локальное хранилище."""
+    # Генерируем уникальное имя файла для B2
+    unique_filename = f"{uuid.uuid4()}{local_path.suffix}"
+    b2_key = f"{b2_folder.strip('/')}/{unique_filename}"
+
+    logger.info(f"Загрузка {local_path.name} в B2 как {b2_key}...")
     try:
-        s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
-        config_public_path = config.get("FILE_PATHS.config_public")
-        os.makedirs(os.path.dirname(config_public_path), exist_ok=True)
-        s3.download_file(bucket_name, config_public_path, config_public_path)
-        logger.info(f"✅ Файл config_public.json успешно загружен из B2 в {config_public_path}")
+        # Загружаем файл, делая его публично читаемым (ACL='public-read')
+        with open(local_path, "rb") as f:
+            s3_client.upload_fileobj(
+                f,
+                bucket_name,
+                b2_key,
+                ExtraArgs={'ACL': 'public-read'} # Делаем файл публичным
+            )
+
+        # Формируем публичный URL (формат может зависеть от настроек бакета и эндпоинта)
+        # Стандартный формат для B2: https://<bucket_name>.<endpoint_domain>/<file_key>
+        # Или через fXX домен: https://f<XXX>.backblazeb2.com/file/<bucket_name>/<file_key>
+        # Используем второй вариант как более надежный
+        endpoint_domain = B2_ENDPOINT_URL.replace("https://", "")
+        # Пытаемся извлечь fXXX часть, если она есть
+        f_part = endpoint_domain.split('.')[0] # e.g., "s3.us-east-005" -> "s3" or "f005" -> "f005"
+        if not f_part.startswith('f'): # Если эндпоинт вида s3.region... , URL будет другим
+             # В этом случае лучше использовать кастомный домен или стандартный URL бакета, если он настроен
+             # Для простоты теста, пока оставим URL через fXXX, но он может не сработать для s3.* эндпоинтов
+             logger.warning(f"Формат эндпоинта ({endpoint_domain}) может не подходить для стандартного URL через fXXX. URL может быть неверным.")
+             # Пытаемся угадать fXXX из региона (не надежно)
+             region_part = endpoint_domain.split('.')[1] if '.' in endpoint_domain else '005' # Пример
+             f_part = f"f{region_part[-3:]}"
+
+
+        public_url = f"https://{f_part}.backblazeb2.com/file/{bucket_name}/{b2_key}"
+
+        # Проверка доступности URL (опционально, но полезно)
+        try:
+            response = requests.head(public_url, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ Файл успешно загружен и доступен по URL: {public_url}")
+                return public_url
+            else:
+                logger.error(f"Файл загружен, но URL {public_url} недоступен (статус: {response.status_code}). Проверьте права доступа к бакету или формат URL.")
+                return None
+        except requests.exceptions.RequestException as req_err:
+            logger.error(f"Ошибка проверки доступности URL {public_url}: {req_err}")
+            logger.warning("Продолжаем работу, но URL может быть неверным.")
+            return public_url # Возвращаем URL, даже если проверка не удалась
+
+    except (ClientError, NoCredentialsError) as e:
+        logger.error(f"Ошибка Boto3/Credentials при загрузке в B2: {e}", exc_info=True)
+        return None
     except Exception as e:
-        handle_error("Download Config Public Error", str(e))
+        logger.error(f"Неизвестная ошибка при загрузке в B2: {e}", exc_info=True)
+        return None
 
+def initiate_mj_imagine_with_url(image_url: str, text_prompt: str, api_key: str, endpoint: str) -> dict | None:
+    """Инициирует /imagine с URL изображения и текстовым промптом."""
+    if not api_key: logger.error("Нет MIDJOURNEY_API_KEY."); return None
+    if not endpoint: logger.error("Нет эндпоинта для /imagine."); return None
+    if not image_url: logger.error("Нет URL изображения."); return None
+    if not text_prompt: logger.error("Текстовый промпт пуст."); return None
 
-def generate_file_id():
-    """Создает уникальный ID генерации в формате YYYYMMDD-HHmm."""
-    now = datetime.utcnow()
-    date_part = now.strftime("%Y%m%d")
-    time_part = now.strftime("%H%M")
-    return f"{date_part}-{time_part}.json"
+    # Собираем полный промпт: URL картинки + текстовая часть
+    full_prompt = f"{image_url} {text_prompt}"
+    logger.info("Полный промпт для MJ (с URL):")
+    logger.info(full_prompt) # Логируем весь промпт, т.к. URL не секретный
 
+    payload = { "model": "midjourney", "task_type": "imagine", "input": { "prompt": full_prompt } }
+    headers = {'X-API-Key': api_key, 'Content-Type': 'application/json'}
+    request_time = datetime.now(timezone.utc)
 
-def save_generation_id_to_config(file_id):
-    """Сохраняет ID генерации в файл config_gen.json."""
-    config_gen_path = os.path.join("config", "config_gen.json")
-    os.makedirs(os.path.dirname(config_gen_path), exist_ok=True)
+    logger.info(f"Отправка запроса /imagine на {endpoint}...")
     try:
-        with open(config_gen_path, "w", encoding="utf-8") as file:
-            json.dump({"generation_id": file_id}, file, ensure_ascii=False, indent=4)
-        logger.info(f"✅ ID генерации '{file_id}' успешно сохранён в config_gen.json")
-    except Exception as e:
-        handle_error("Save Generation ID Error", str(e))
-
-
-def save_to_b2(folder, content):
-    """Сохраняет контент в B2 без двойного кодирования JSON."""
-    try:
-        file_id = generate_file_id()
-        save_generation_id_to_config(file_id)
-        logger.info(f"🔄 Сохранение контента в папку B2: {folder} с именем файла {file_id}")
-
-        s3 = get_b2_client()
-        bucket_name = config.get("API_KEYS.b2.bucket_name")
-        s3_key = f"{folder.rstrip('/')}/{file_id}"
-
-        if not isinstance(content, dict):
-            logger.error("❌ Ошибка: Контент должен быть словарём!")
-            return
-
-        sarcasm_data = content.get("sarcasm", {})
-        if isinstance(sarcasm_data, str):
-            try:
-                sarcasm_data = json.loads(sarcasm_data)
-                logger.warning("⚠️ Поле 'sarcasm' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'sarcasm' имеет неверный формат!")
-                return
-
-        if "poll" in sarcasm_data and isinstance(sarcasm_data["poll"], str):
-            try:
-                sarcasm_data["poll"] = json.loads(sarcasm_data["poll"])
-                logger.warning("⚠️ Поле 'poll' было строкой, исправляем...")
-            except json.JSONDecodeError:
-                logger.error("❌ Ошибка: Поле 'poll' имеет неверный формат!")
-                sarcasm_data["poll"] = {}
-
-        content["sarcasm"] = sarcasm_data
-
-        json_bytes = io.BytesIO(json.dumps(content, ensure_ascii=False, indent=4).encode("utf-8"))
-        s3.upload_fileobj(json_bytes, bucket_name, s3_key)
-
-        logger.info(f"✅ Контент успешно сохранён в B2: {s3_key}")
-
-    except Exception as e:
-        handle_error("B2 Upload Error", str(e))
-
-
-class ContentGenerator:
-    def __init__(self):
-        self.topic_threshold = config.get('GENERATE.topic_threshold', 7)
-        self.text_threshold = config.get('GENERATE.text_threshold', 8)
-        self.max_attempts = config.get('GENERATE.max_attempts', 3)
-        self.adaptation_enabled = config.get('GENERATE.adaptation_enabled', False)
-        self.adaptation_params = config.get('GENERATE.adaptation_parameters', {})
-        self.content_output_path = config.get('FILE_PATHS.content_output_path', 'generated_content.json')
-        self.before_critique_path = config.get('FILE_PATHS.before_critique_path', 'before_critique.json')
-        self.after_critique_path = config.get('FILE_PATHS.after_critique_path', 'after_critique.json')
-
-        self.logger = logger
-        self.config = config
-
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4")
-        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.7))
-
-        if not self.openai_api_key:
-            logger.error("❌ Переменная окружения OPENAI_API_KEY не задана!")
-            raise EnvironmentError("Переменная окружения OPENAI_API_KEY отсутствует.")
-
-    def adapt_prompts(self):
-        if not self.adaptation_enabled:
-            logger.info("🔄 Адаптация промптов отключена.")
-            return
-        logger.info("🔄 Применяю адаптацию промптов на основе обратной связи...")
-        for key, value in self.adaptation_params.items():
-            logger.info(f"🔧 Параметр '{key}' обновлён до {value}")
-
-    def clear_generated_content(self):
-        try:
-            logger.info("🧹 Полная очистка файла с результатами перед записью новой темы.")
-            if not self.content_output_path:
-                raise ValueError("❌ Ошибка: content_output_path пустой!")
-            folder = os.path.dirname(self.content_output_path)
-            if folder and not os.path.exists(folder):
-                os.makedirs(folder)
-                logger.info(f"📁 Папка для сохранения данных создана: {folder}")
-            logger.info(f"🔎 Debug: Очистка файла {self.content_output_path}")
-            with open(self.content_output_path, 'w', encoding='utf-8') as file:
-                json.dump({}, file, ensure_ascii=False, indent=4)
-            logger.info("✅ Файл успешно очищен.")
-        except PermissionError:
-            handle_error("Clear Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
-        except Exception as e:
-            handle_error("Clear Content Error", str(e))
-
-    def generate_topic(self):
-        try:
-            prompt_template = config.get('CONTENT.topic.prompt_template')
-            prompt = prompt_template.format(focus_areas="новая тема")
-            logger.info("🔄 Запрос к OpenAI для генерации темы...")
-            topic = self.request_openai(prompt)
-            self.save_to_generated_content("topic", {"topic": topic})
-            logger.info(f"✅ Тема успешно сгенерирована: {topic}")
-            return topic
-        except Exception as e:
-            handle_error("Topic Generation Error", str(e))
-
-    def request_openai(self, prompt):
-        try:
-            openai.api_key = self.openai_api_key
-            max_tokens = self.config.get("API_KEYS.openai.max_tokens_text", 10)
-            self.logger.info(f"🔎 Отправка запроса в OpenAI с max_tokens={max_tokens}")
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=self.temperature,
-            )
-            return response['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            logger.error(f"❌ Ошибка при работе с OpenAI API: {e}")
-            raise
-
-    def generate_sarcastic_comment(self, text):
-        self.logger.info(f"🔎 Debug: Промпт для саркастического комментария: {self.config.get('SARCASM.comment_prompt')}")
-        self.logger.info(f"🔎 Debug: max_tokens_comment = {self.config.get('SARCASM.max_tokens_comment', 20)}")
-        if not self.config.get('SARCASM.enabled', False):
-            self.logger.info("🔕 Сарказм отключён в конфигурации.")
-            return ""
-        prompt = self.config.get('SARCASM.comment_prompt').format(text=text)
-        max_tokens = self.config.get("SARCASM.max_tokens_comment", 20)
-        self.logger.info(f"🔎 Debug: Используемый max_tokens_comment = {max_tokens}")
-        self.logger.info(f"🔎 Отправка запроса в OpenAI с max_tokens={max_tokens}")
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=self.temperature
-            )
-            comment = response['choices'][0]['message']['content'].strip()
-            self.logger.info(f"🔎 Debug: Ответ OpenAI: {comment}")
-            return comment
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка генерации саркастического комментария: {e}")
-            return ""
-
-    def generate_interactive_poll(self, text):
-        if not self.config.get('SARCASM.enabled', False):
-            self.logger.info("🔕 Сарказм отключён в конфигурации.")
-            return {}
-        prompt = self.config.get('SARCASM.question_prompt').format(text=text)
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.config.get('SARCASM.max_tokens_poll', 50),
-                temperature=self.temperature
-            )
-            poll_text = response['choices'][0]['message']['content'].strip()
-            self.logger.info(f"🛑 Сырой ответ OpenAI перед разбором: {poll_text}")
-            try:
-                poll_data = json.loads(poll_text)
-                if "question" in poll_data and "options" in poll_data:
-                    return poll_data
-            except json.JSONDecodeError:
-                self.logger.warning("⚠️ OpenAI вернул текст, а не JSON. Разбираем вручную...")
-            match = re.findall(r"\d\.-\s*(.+)", poll_text)
-            if len(match) >= 4:
-                question = match[0].strip()
-                options = [opt.strip() for opt in match[1:4]]
-                return {"question": question, "options": options}
-            self.logger.error("❌ OpenAI вернул некорректный формат! Возвращаем пустой объект.")
-            return {}
-        except Exception as e:
-            handle_error("Sarcasm Poll Generation Error", str(e))
-            return {}
-
-    def save_to_generated_content(self, stage, data):
-        try:
-            if not self.content_output_path:
-                raise ValueError("❌ Ошибка: self.content_output_path пустой!")
-            logger.info(f"🔄 Обновление данных и сохранение в файл: {self.content_output_path}")
-            folder = os.path.dirname(self.content_output_path) or "."
-            logger.info(f"📁 Проверяем папку для сохранения: {folder}")
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-                logger.info(f"📁 Папка создана: {folder}")
-            if os.path.exists(self.content_output_path):
-                logger.info(f"📄 Файл {self.content_output_path} найден, загружаем данные...")
-                with open(self.content_output_path, 'r', encoding='utf-8') as file:
-                    try:
-                        result_data = json.load(file)
-                    except json.JSONDecodeError:
-                        logger.warning(f"⚠️ Файл {self.content_output_path} поврежден, создаем новый.")
-                        result_data = {}
-            else:
-                logger.warning(f"⚠️ Файл {self.content_output_path} не найден, создаем новый.")
-                result_data = {}
-            result_data["timestamp"] = datetime.utcnow().isoformat()
-            result_data[stage] = data
-            logger.info(f"💾 Записываем данные в {self.content_output_path}...")
-            with open(self.content_output_path, 'w', encoding='utf-8') as file:
-                json.dump(result_data, file, ensure_ascii=False, indent=4)
-            logger.info(f"✅ Данные успешно обновлены и сохранены на этапе: {stage}")
-        except FileNotFoundError:
-            handle_error("Save to Generated Content Error", f"Файл не найден: {self.content_output_path}")
-        except PermissionError:
-            handle_error("Save to Generated Content Error", f"Нет прав на запись в файл: {self.content_output_path}")
-        except Exception as e:
-            handle_error("Save to Generated Content Error", str(e))
-
-    def critique_content(self, content):
-        try:
-            self.logger.info("🔄 Выполняется критика текста через OpenAI...")
-            prompt_template = self.config.get('CONTENT.critique.prompt_template')
-            prompt = prompt_template.format(content=content)
-            response = openai.ChatCompletion.create(
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.config.get('CONTENT.critique.max_tokens', 200),
-                temperature=self.temperature
-            )
-            critique = response['choices'][0]['message']['content'].strip()
-            self.logger.info("✅ Критика успешно завершена.")
-            return critique
-        except Exception as e:
-            handle_error("Critique Error", str(e))
-            return "Критика текста завершилась ошибкой."
-
-    def analyze_topic_generation(self):
-        try:
-            self.logger.info("🔍 Анализ архива успешных публикаций и обратной связи...")
-            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-            positive_feedback_topics = []
-            if os.path.exists(feedback_path):
-                with open(feedback_path, 'r', encoding='utf-8') as file:
-                    feedback_data = json.load(file)
-                    positive_feedback_topics = [
-                        entry['topic'] for entry in feedback_data if
-                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                    ]
-                self.logger.info(f"✅ Загрузили {len(positive_feedback_topics)} успешных тем из обратной связи.")
-            else:
-                self.logger.warning("⚠️ Файл обратной связи не найден.")
-            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-            successful_topics = []
-            if os.path.exists(archive_folder):
-                for filename in os.listdir(archive_folder):
-                    if filename.endswith('.json'):
-                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                            archive_data = json.load(file)
-                            if archive_data.get('success', False):
-                                successful_topics.append(archive_data.get('topic', ''))
-                self.logger.info(f"✅ Загрузили {len(successful_topics)} успешных тем из архива.")
-            else:
-                self.logger.warning("⚠️ Папка архива не найдена.")
-            valid_focus_areas = self.get_valid_focus_areas()
-            combined_topics = list(set(positive_feedback_topics + successful_topics + valid_focus_areas))
-            self.logger.info(f"📊 Итоговый список тем: {combined_topics}")
-            return combined_topics
-        except Exception as e:
-            handle_error("Topic Analysis Error", str(e))
-            return []
-
-    def get_valid_focus_areas(self):
-        try:
-            tracker_file = self.config.get('FILE_PATHS.focus_tracker', 'data/focus_tracker.json')
-            focus_areas = self.config.get('CONTENT.topic.focus_areas', [])
-            if os.path.exists(tracker_file):
-                with open(tracker_file, 'r', encoding='utf-8') as file:
-                    focus_tracker = json.load(file)
-                excluded_foci = focus_tracker[:10]
-            else:
-                excluded_foci = []
-            valid_focus_areas = [focus for focus in focus_areas if focus not in excluded_foci]
-            self.logger.info(f"✅ Доступные фокусы: {valid_focus_areas}")
-            return valid_focus_areas
-        except Exception as e:
-            handle_error("Focus Area Filtering Error", str(e))
-            return []
-
-    def prioritize_focus_from_feedback_and_archive(self, valid_focus_areas):
-        try:
-            feedback_path = self.config.get('FILE_PATHS.feedback_file', 'data/feedback.json')
-            feedback_foci = []
-            if os.path.exists(feedback_path):
-                with open(feedback_path, 'r', encoding='utf-8') as file:
-                    feedback_data = json.load(file)
-                    feedback_foci = [
-                        entry['topic'] for entry in feedback_data if
-                        entry.get('rating', 0) >= self.config.get('METRICS.success_threshold', 8)
-                    ]
-            archive_folder = self.config.get('FILE_PATHS.archive_folder', 'data/archive/')
-            archive_foci = []
-            if os.path.exists(archive_folder):
-                for filename in os.listdir(archive_folder):
-                    if filename.endswith('.json'):
-                        with open(os.path.join(archive_folder, filename), 'r', encoding='utf-8') as file:
-                            archive_data = json.load(file)
-                            if archive_data.get('success', False):
-                                archive_foci.append(archive_data.get('topic', ''))
-            for focus in feedback_foci + archive_foci:
-                if focus in valid_focus_areas:
-                    self.logger.info(f"✅ Выбран приоритетный фокус: {focus}")
-                    return focus
-            if valid_focus_areas:
-                self.logger.info(f"🔄 Используем первый доступный фокус: {valid_focus_areas[0]}")
-                return valid_focus_areas[0]
-            self.logger.warning("⚠️ Нет доступных фокусов для выбора.")
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=60)
+        logger.debug(f"Ответ PiAPI Imagine: Status={response.status_code}, Body={response.text[:500]}")
+        response.raise_for_status()
+        result = response.json()
+        task_id = result.get("result", {}).get("task_id") or result.get("data", {}).get("task_id") or result.get("task_id")
+        if task_id:
+            logger.info(f"✅ Получен task_id MJ /imagine: {task_id} (запрошено в {request_time.isoformat()})")
+            return {"task_id": str(task_id), "requested_at_utc": request_time.isoformat()}
+        else:
+            logger.error(f"❌ Ответ MJ API не содержит task_id: {result}")
             return None
-        except Exception as e:
-            handle_error("Focus Prioritization Error", str(e))
-            return None
-
-    def run(self):
-        """Основной процесс генерации контента."""
-        try:
-            download_config_public()
-            with open(config.get("FILE_PATHS.config_public"), "r", encoding="utf-8") as file:
-                config_public = json.load(file)
-            empty_folders = config_public.get("empty", [])
-            if not empty_folders:
-                logger.info("✅ Нет пустых папок. Процесс завершён.")
-                return
-
-            self.adapt_prompts()
-            self.clear_generated_content()
-
-            valid_topics = self.analyze_topic_generation()
-            chosen_focus = self.prioritize_focus_from_feedback_and_archive(valid_topics)
-            if chosen_focus:
-                self.logger.info(f"✅ Выбранный фокус: {chosen_focus}")
-            else:
-                self.logger.warning("⚠️ Фокус не найден, используем стандартный список.")
-
-            topic = self.generate_topic()
-            self.save_to_generated_content("topic", {"topic": topic})
-
-            text_initial = self.request_openai(config.get('CONTENT.text.prompt_template').format(topic=topic))
-            critique = self.critique_content(text_initial)
-            self.save_to_generated_content("critique", {"critique": critique})
-
-            sarcastic_comment = self.generate_sarcastic_comment(text_initial)
-            sarcastic_poll = self.generate_interactive_poll(text_initial)
-            self.save_to_generated_content("sarcasm", {
-                "comment": sarcastic_comment,
-                "poll": sarcastic_poll
-            })
-
-            final_text = text_initial.strip()
-            target_folder = empty_folders[0]
-
-            # -- Исправленный блок: передаём полный словарь с topic, content и sarcasm --
-            content_dict = {
-                "topic": topic,
-                "content": final_text,
-                "sarcasm": {
-                    "comment": sarcastic_comment,
-                    "poll": sarcastic_poll
-                }
-            }
-            save_to_b2(target_folder, content_dict)
-
-            with open(os.path.join("config", "config_gen.json"), "r", encoding="utf-8") as gen_file:
-                config_gen_content = json.load(gen_file)
-                generation_id = config_gen_content["generation_id"]
-
-            create_and_upload_image(target_folder, generation_id)
-
-            logger.info(f"📄 Содержимое config_public.json: {json.dumps(config_public, ensure_ascii=False, indent=4)}")
-            logger.info(f"📄 Содержимое config_gen.json: {json.dumps(config_gen_content, ensure_ascii=False, indent=4)}")
-
-            run_generate_media()
-            self.logger.info("✅ Генерация контента завершена.")
-
-        except Exception as e:
-            handle_error("Run Error", str(e))
-
-
-def run_generate_media():
-    """Запускает скрипт generate_media.py по локальному пути."""
-    try:
-        scripts_folder = config.get("FILE_PATHS.scripts_folder", "scripts")
-        script_path = os.path.join(scripts_folder, "generate_media.py")
-        if not os.path.isfile(script_path):
-            raise FileNotFoundError(f"Скрипт generate_media.py не найден по пути: {script_path}")
-        logger.info(f"🔄 Запуск скрипта: {script_path}")
-        subprocess.run(["python", script_path], check=True)
-        logger.info(f"✅ Скрипт {script_path} выполнен успешно.")
-    except subprocess.CalledProcessError as e:
-        handle_error(logger, "Script Execution Error", e)  # Исправленный вызов
-    except FileNotFoundError as e:
-        handle_error(logger, "File Not Found Error", e)
+    # ... (обработка ошибок как в предыдущей версии initiate_mj_imagine_with_image) ...
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Таймаут MJ API ({60} сек) при запросе /imagine: {endpoint}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка сети/запроса MJ API (/imagine): {e}")
+        if e.response is not None:
+            logger.error(f"    Status: {e.response.status_code}, Body: {e.response.text}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Ошибка JSON MJ API (/imagine): {e}. Ответ: {response.text[:500]}")
+        return None
     except Exception as e:
-        handle_error(logger, "Unknown Error", e)
+        logger.error(f"❌ Неизвестная ошибка MJ (/imagine): {e}", exc_info=True)
+        return None
+
+
+def fetch_piapi_status(task_id: str, api_key: str, endpoint: str) -> dict | None:
+    """Запрашивает статус задачи Midjourney по task_id через PiAPI."""
+    # (Код этой функции остается без изменений)
+    if not api_key: logger.error("Нет MIDJOURNEY_API_KEY для проверки статуса."); return None
+    if not endpoint: logger.error("Нет эндпоинта для проверки статуса."); return None
+    if not task_id: logger.error("Нет task_id для проверки статуса."); return None
+
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    payload = {"task_id": task_id}
+    logger.debug(f"Проверка статуса {task_id} на {endpoint}...")
+
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        status = result.get("status", "UNKNOWN")
+        progress = result.get("progress", "N/A")
+        logger.info(f"Статус задачи {task_id}: {status} (Прогресс: {progress})")
+        return result
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Таймаут ({120} сек) при запросе статуса {task_id}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка сети/запроса при запросе статуса {task_id}: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Ошибка декодирования JSON ответа статуса {task_id}: {e}. Ответ: {response.text[:500]}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Неизвестная ошибка при проверке статуса {task_id}: {e}", exc_info=True)
+        return None
+
+# --- Основная логика ---
+def main():
+    parser = argparse.ArgumentParser(description="Тест генерации текста на изображении через Midjourney (PiAPI) с загрузкой в B2.")
+    parser.add_argument("image_path", help="Путь к локальному PNG изображению.")
+    parser.add_argument("-t", "--text", required=True, help="Текст для надписи (в кавычках).")
+    # ... (остальные аргументы парсера без изменений) ...
+    parser.add_argument("-s", "--style", default="Атмосфера Тайны, недосказанность", help="Описание стиля.")
+    parser.add_argument("-v", "--version", default="7", help="Версия Midjourney (например, 6 или 7).")
+    parser.add_argument("-ar", "--aspect_ratio", default="16:9", help="Соотношение сторон (например, 16:9, 1:1).")
+    parser.add_argument("-q", "--quality", default="1", help="Качество (например, 0.5, 1, 2).")
+    parser.add_argument("--timeout", type=int, default=600, help="Таймаут ожидания результата MJ в секундах.")
+    parser.add_argument("--interval", type=int, default=20, help="Интервал проверки статуса MJ в секундах.")
+
+    args = parser.parse_args()
+
+    # --- Проверки ключей и эндпоинтов ---
+    if not MJ_API_KEY: logger.critical("Переменная окружения MIDJOURNEY_API_KEY не установлена! Выход."); sys.exit(1)
+    if not MJ_IMAGINE_ENDPOINT or not MJ_FETCH_ENDPOINT: logger.critical("Не установлены эндпоинты MJ_IMAGINE_ENDPOINT или MJ_FETCH_ENDPOINT! Выход."); sys.exit(1)
+    if not BOTO3_AVAILABLE: logger.critical("Boto3 недоступен. Невозможно загрузить изображение в B2. Выход."); sys.exit(1)
+    if not all([B2_ENDPOINT_URL, B2_ACCESS_KEY, B2_SECRET_KEY, B2_BUCKET_NAME]): logger.critical("Не установлены все переменные окружения для B2! Выход."); sys.exit(1)
+
+    local_image_path = Path(args.image_path)
+    # ... (получение остальных аргументов без изменений) ...
+    text_to_add = args.text
+    style_description = args.style
+    mj_version = args.version
+    aspect_ratio = args.aspect_ratio
+    quality = args.quality
+    poll_timeout = args.timeout
+    poll_interval = args.interval
+
+    logger.info(f"Используется изображение: {local_image_path}")
+    logger.info(f"Текст для надписи: \"{text_to_add}\"")
+    logger.info(f"Стиль: {style_description}")
+    logger.info(f"Параметры MJ: --v {mj_version} --ar {aspect_ratio}")
+
+    # 1. Инициализация клиента B2
+    s3_client = get_b2_client()
+    if not s3_client:
+        sys.exit(1)
+
+    # 2. Загрузка изображения в B2
+    public_image_url = upload_to_b2_public(s3_client, B2_BUCKET_NAME, local_image_path, B2_TEMP_FOLDER)
+    if not public_image_url:
+        logger.error("Не удалось загрузить изображение в B2 или получить URL.")
+        sys.exit(1)
+
+    # 3. Формируем текстовую часть промпта
+    text_en = f'"{text_to_add}"'
+    style_en = "mysterious atmosphere, ambiguity, typography"
+    context_en = "text overlay on the image, slightly blurred background if possible"
+    text_prompt_part = f'typography of the russian text {text_en}, {style_en}, {context_en} --v {mj_version} --ar {aspect_ratio}'
+
+    # 4. Запускаем /imagine с URL
+    task_info = initiate_mj_imagine_with_url(public_image_url, text_prompt_part, MJ_API_KEY, MJ_IMAGINE_ENDPOINT)
+
+    if not task_info or not task_info.get("task_id"):
+        logger.error("Не удалось запустить задачу Midjourney.")
+        # TODO: По-хорошему, здесь надо бы удалить временный файл из B2
+        sys.exit(1)
+
+    task_id = task_info["task_id"]
+    logger.info(f"Задача запущена: {task_id}. Ожидание результата...")
+
+    # 5. Ожидание результата (без изменений)
+    start_time = time.time()
+    final_result = None
+    while time.time() - start_time < poll_timeout:
+        status_result = fetch_piapi_status(task_id, MJ_API_KEY, MJ_FETCH_ENDPOINT)
+        if status_result:
+            status = status_result.get("status")
+            if status in ["finished", "completed", "success"]:
+                logger.info(f"✅ Задача {task_id} успешно завершена!")
+                final_result = status_result
+                break
+            elif status in ["failed", "error"]:
+                logger.error(f"❌ Задача {task_id} завершилась с ошибкой!")
+                logger.error(f"Детали: {json.dumps(status_result, indent=2, ensure_ascii=False)}")
+                final_result = status_result
+                break
+        else:
+            logger.warning(f"Не удалось получить статус {task_id}. Повторная попытка через {poll_interval} сек.")
+        time.sleep(poll_interval)
+    else:
+        logger.warning(f"⏰ Таймаут ({poll_timeout} сек) ожидания результата для задачи {task_id}.")
+
+    # 6. Вывод результата (без изменений)
+    if final_result:
+        logger.info("--- Финальный результат ---")
+        print(json.dumps(final_result, indent=4, ensure_ascii=False))
+        image_url = None
+        task_result_data = final_result.get("task_result", final_result.get("data", final_result))
+        if isinstance(task_result_data, dict):
+             possible_keys = ["image_url", "imageUrl", "discord_image_url", "url", "temporary_image_urls", "image_urls"]
+             for key in possible_keys:
+                 value = task_result_data.get(key)
+                 if isinstance(value, str) and value.startswith("http"): image_url = value; break
+                 elif isinstance(value, list) and value and isinstance(value[0], str) and value[0].startswith("http"): image_url = value[0]; logger.info(f"Взят первый URL из списка '{key}'."); break
+        if image_url: logger.info(f"➡️ URL Результата (или первого из сетки): {image_url}")
+        else: logger.warning("Не удалось извлечь URL изображения из финального результата.")
+    else:
+        logger.error("Финальный результат не был получен.")
+
+    # 7. TODO: Опционально - удаление временного файла из B2
+    # logger.info(f"Попытка удаления временного файла из B2: {b2_key}") # Нужно получить b2_key из upload_to_b2_public
 
 if __name__ == "__main__":
-    generator = ContentGenerator()
-    generator.run()
+    main()
