@@ -4,166 +4,172 @@
 # Отладочный вывод для проверки старта скрипта в GitHub Actions
 print("--- SCRIPT START (generate_media.py) ---", flush=True)
 
-# --- Стандартные библиотеки ---
-import os
-import json
-import sys
-import time
-import argparse
-import requests
-import shutil
-import base64
-import re
-import urllib.parse
+# В файле scripts/generate_media.py
+
+# --- Убедитесь, что все необходимые импорты присутствуют в начале файла ---
+import os, json, sys, time, argparse, requests, shutil, base64, re, urllib.parse, logging, httpx
 from datetime import datetime, timezone
-from pathlib import Path # Используем pathlib
-import logging # Добавляем logging
-import httpx # <-- ДОБАВЛЕН ИМПОРТ httpx
-
-# --- Предварительная инициализация базового логгера (на случай ошибок до основного) ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-temp_logger = logging.getLogger("generate_media_init") # Используем этот логгер для ранних сообщений
-
-# --- Ваши модули (попытка импорта ДО инициализации основного логгера) ---
-# Это нужно, чтобы ConfigManager был доступен для инициализации основного логгера
+from pathlib import Path
+# --- Импорт кастомных модулей ---
+# Попытка абсолютного импорта
 try:
-    BASE_DIR = Path(__file__).resolve().parent.parent # Используем pathlib
-    if str(BASE_DIR) not in sys.path:
-        sys.path.append(str(BASE_DIR))
-
     from modules.config_manager import ConfigManager
-    from modules.logger import get_logger # Импортируем функцию, но не вызываем пока
+    from modules.logger import get_logger
     from modules.utils import (
         ensure_directory_exists, load_b2_json, save_b2_json,
-        download_image, download_video, upload_to_b2, load_json_config
+        download_image, download_video, upload_to_b2, load_json_config,
+        add_text_to_image # <--- Функция для текста ИЗ utils.py
+        # Функции resize_existing_image и create_mock_video НЕ импортируются отсюда
     )
     from modules.api_clients import get_b2_client
-    from modules.error_handler import handle_error
+    # from modules.error_handler import handle_error # Если используется
+except ModuleNotFoundError:
+    # Попытка относительного импорта, если запускается из папки scripts
+    # или если абсолютный не сработал
+    try:
+        # Добавляем родительскую директорию в sys.path
+        _BASE_DIR_FOR_IMPORT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if _BASE_DIR_FOR_IMPORT not in sys.path:
+            sys.path.insert(0, _BASE_DIR_FOR_IMPORT) # Добавляем в начало для приоритета
 
-except ModuleNotFoundError as import_err:
-    temp_logger.error(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", exc_info=True)
-    sys.exit(1)
-except ImportError as import_err:
-     temp_logger.error(f"Критическая Ошибка импорта модулей проекта: {import_err}", exc_info=True)
-     sys.exit(1)
-
-# === Инициализация конфигурации и ОСНОВНОГО логгера ===
+        from modules.config_manager import ConfigManager
+        from modules.logger import get_logger
+        from modules.utils import (
+            ensure_directory_exists, load_b2_json, save_b2_json,
+            download_image, download_video, upload_to_b2, load_json_config,
+            add_text_to_image
+        )
+        from modules.api_clients import get_b2_client
+        # from modules.error_handler import handle_error # Если используется
+        del _BASE_DIR_FOR_IMPORT # Очищаем временную переменную
+    except ModuleNotFoundError as import_err:
+        print(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", file=sys.stderr)
+        sys.exit(1)
+    except ImportError as import_err_rel:
+        print(f"Критическая Ошибка импорта (относительный): {import_err_rel}", file=sys.stderr)
+        sys.exit(1)
+# --------------------------------------------
+# --- Импорт сторонних библиотек ---
 try:
-    config = ConfigManager()
-    print("--- CONFIG MANAGER INIT DONE ---", flush=True)
-    # Инициализируем основной логгер ЗДЕСЬ
-    logger = get_logger("generate_media")
-    print("--- LOGGER INIT DONE ---", flush=True)
-    logger.info("Logger generate_media is now active.")
-except Exception as init_err:
-    # Используем temp_logger, так как основной мог не создаться
-    temp_logger.error(f"Критическая ошибка инициализации ConfigManager или Logger: {init_err}", exc_info=True)
-    sys.exit(1) # Выход с ошибкой
-
-
-# --- Сторонние библиотеки (теперь основной логгер доступен в except) ---
-RunwayML = None
-RunwayError = None
+    from runwayml import RunwayML
+    RUNWAY_SDK_AVAILABLE = True
+    # Пытаемся импортировать специфичное исключение RunwayError
+    try:
+        from runwayml.exceptions import RunwayError
+    except ImportError:
+        # Используем базовый класс ошибок Runway, если он доступен, иначе requests.HTTPError
+        try:
+            from runwayml.exceptions import RunwayError as BaseRunwayError
+            RunwayError = BaseRunwayError
+        except ImportError:
+             RunwayError = requests.HTTPError # Fallback на HTTPError
+except ImportError:
+    RUNWAY_SDK_AVAILABLE = False; RunwayML = None; RunwayError = requests.HTTPError
+try:
+    from PIL import Image, ImageFilter, ImageFont, ImageDraw
+except ImportError:
+    Image = None; ImageFilter = None; ImageFont = None; ImageDraw = None
+try:
+    from moviepy.editor import ImageClip
+except ImportError:
+    ImageClip = None
+try:
+    import openai
+except ImportError:
+    openai = None
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
-    from PIL import Image
-    from moviepy.editor import ImageClip
-    import openai
+except ImportError:
+    # Логирование ошибки будет позже, когда logger будет инициализирован
+    pass
+# ---------------------------------------------------------------------------
 
-    # --- ИМПОРТ RUNWAYML С УТОЧНЕННОЙ ОБРАБОТКОЙ ОШИБОК ---
-    try:
-        from runwayml import RunwayML
-        logger.info("Основной модуль runwayml импортирован.")
-        # Пытаемся импортировать специфичное исключение, но не падаем, если его нет
-        try:
-            from runwayml.exceptions import RunwayError
-            logger.info("runwayml.exceptions.RunwayError импортирован.")
-        except ImportError:
-            # Используем logger, т.к. он уже инициализирован
-            logger.warning("Не удалось импортировать runwayml.exceptions.RunwayError. Будут использоваться общие исключения.")
-            # Используем базовый класс ошибок Runway, если он доступен, иначе requests.HTTPError
-            try:
-                # Попытка импортировать базовый класс ошибок, если он есть
-                from runwayml.exceptions import RunwayError as BaseRunwayError
-                RunwayError = BaseRunwayError
-                logger.info("Используется базовый runwayml.exceptions.RunwayError.")
-            except ImportError:
-                 # Если и базового нет, будем ловить requests.HTTPError
-                 RunwayError = requests.HTTPError # Fallback на HTTPError
-                 logger.warning("Не удалось импортировать базовый RunwayError. Fallback на requests.HTTPError.")
-
-    except ImportError as e:
-        # Ловим только ошибку импорта самого runwayml
-        if 'runwayml' in str(e).lower():
-             # Используем logger
-             logger.warning(f"Не удалось импортировать основную библиотеку runwayml: {e}. Функционал Runway будет недоступен.")
-             RunwayML = None # Явно указываем, что модуль недоступен
-             RunwayError = None
-        else:
-             # Если ошибка в другом импорте, пробрасываем ее дальше
-             logger.error(f"Ошибка импорта сторонней библиотеки (не runwayml): {e}", exc_info=True)
-             raise e
-
-except ImportError as e:
-    # Логируем предупреждение, если *другая* основная библиотека не найдена
-    logger.warning(f"Необходимая основная библиотека не найдена: {e}. Некоторые функции могут быть недоступны.")
-    if 'PIL' in str(e): Image = None
-    if 'moviepy' in str(e): ImageClip = None
-    if 'openai' in str(e): openai = None
-    # RunwayML уже обработан выше
-
-print("--- IMPORTS DONE ---", flush=True)
-
-
-# === Глобальная переменная для клиента OpenAI ===
-openai_client_instance = None
-
-# === Константы и Настройки ===
+# === Инициализация конфигурации и логгера ===
+# Этот блок ДОЛЖЕН идти СРАЗУ ПОСЛЕ импортов и ПЕРЕД использованием config или logger
 try:
+    config = ConfigManager()
+    # Теперь, когда config создан, можно инициализировать логгер
+    logger = get_logger("generate_media") # Используем имя скрипта для логгера
+    logger.info("ConfigManager и Logger для generate_media инициализированы.")
+except Exception as init_err:
+    # Если что-то пойдет не так на этом раннем этапе,
+    # используем стандартный logging для вывода критической ошибки.
+    # Кастомный логгер может быть еще недоступен.
+    import logging
+    logging.critical(f"Критическая ошибка инициализации ConfigManager или Logger в generate_media: {init_err}", exc_info=True)
+    # Выход из скрипта, так как без конфига или логгера работа невозможна
+    import sys
+    sys.exit(1)
+# === Конец блока инициализации ===
+
+# --- Определение BASE_DIR ---
+# Этот блок идет ПОСЛЕ инициализации config и logger
+try:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+except NameError:
+     BASE_DIR = Path.cwd()
+     # Используем logger, т.к. он уже должен быть инициализирован
+     logger.warning(f"Переменная __file__ не определена, BASE_DIR установлен как {BASE_DIR}")
+# -----------------------------
+
+# --- Глобальные константы из конфига ---
+# Этот блок идет ПОСЛЕ инициализации config и logger и определения BASE_DIR
+try:
+    # Используем УЖЕ созданный объект config
+    CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json")
     B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
-    if not B2_BUCKET_NAME: raise ValueError("B2_BUCKET_NAME не определен в конфиге или переменных окружения")
-
-    CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json") # Добавлен дефолт
-
-    MIDJOURNEY_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
-    MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
-    RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # Ключ нужен для инициализации ниже
-
     IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png")
     VIDEO_FORMAT = "mp4"
-    MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
-    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
 
-    # Получаем размеры из конфига
+    # Получаем и парсим размер изображения
     output_size_str = config.get("IMAGE_GENERATION.output_size", "1792x1024")
-    delimiter = None
-    if '×' in output_size_str: delimiter = '×'
-    elif 'x' in output_size_str: delimiter = 'x'
-    elif ':' in output_size_str: delimiter = ':' # Добавили ':'
-
-    if delimiter:
-        try:
-            width_str, height_str = output_size_str.split(delimiter)
-            PLACEHOLDER_WIDTH = int(width_str.strip())
-            PLACEHOLDER_HEIGHT = int(height_str.strip())
-            logger.info(f"Размеры изображения/плейсхолдера: {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}")
-        except ValueError as e:
-            logger.error(f"Ошибка преобразования размеров '{output_size_str}': {e}. Используем 1792x1024.")
-            PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
-    else:
-        logger.error(f"Не удалось определить разделитель в IMAGE_GENERATION.output_size: '{output_size_str}'. Используем 1792x1024.")
-        PLACEHOLDER_WIDTH = 1792; PLACEHOLDER_HEIGHT = 1024
+    delimiter = next((d for d in ['x', '×', ':'] if d in output_size_str), 'x')
+    try:
+        width_str, height_str = output_size_str.split(delimiter)
+        PLACEHOLDER_WIDTH = int(width_str.strip())
+        PLACEHOLDER_HEIGHT = int(height_str.strip())
+    except ValueError:
+        # Используем logger для записи ошибки
+        logger.error(f"Ошибка парсинга размеров '{output_size_str}'. Используем 1792x1024.")
+        PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT = 1792, 1024
 
     PLACEHOLDER_BG_COLOR = config.get("VIDEO.placeholder_bg_color", "cccccc")
     PLACEHOLDER_TEXT_COLOR = config.get("VIDEO.placeholder_text_color", "333333")
+    MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+    RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    MJ_IMAGINE_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
+    MJ_FETCH_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
 
+    # Добавляем константы, которые были в удаленном блоке, если они нужны
+    MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
+    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
     TASK_REQUEST_TIMEOUT = int(config.get("WORKFLOW.task_request_timeout", 60))
 
-except Exception as config_err:
-     logger.error(f"Критическая ошибка при чтении настроек: {config_err}", exc_info=True)
-     sys.exit(1)
+    # Проверка наличия ключей API
+    if not B2_BUCKET_NAME: logger.warning("B2_BUCKET_NAME не определен.")
+    if not MIDJOURNEY_API_KEY: logger.warning("MIDJOURNEY_API_KEY не найден в переменных окружения.")
+    if not RUNWAY_API_KEY: logger.warning("RUNWAY_API_KEY не найден в переменных окружения.")
+    if not OPENAI_API_KEY: logger.warning("OPENAI_API_KEY не найден в переменных окружения.")
+    if not MJ_IMAGINE_ENDPOINT: logger.warning("API_KEYS.midjourney.endpoint не найден в конфиге.")
+    if not MJ_FETCH_ENDPOINT: logger.warning("API_KEYS.midjourney.task_endpoint не найден в конфиге.")
+
+except Exception as _cfg_err:
+    # Используем logger для записи ошибки
+    logger.critical(f"Критическая ошибка при загрузке констант из конфига: {_cfg_err}", exc_info=True)
+    sys.exit(1)
+# ------------------------------------
+
+# --- Проверка доступности сторонних библиотек (после инициализации logger) ---
+if not RUNWAY_SDK_AVAILABLE: logger.warning("RunwayML SDK недоступен.")
+if Image is None: logger.warning("Библиотека Pillow (PIL) недоступна.")
+if ImageClip is None: logger.warning("Библиотека MoviePy недоступна.")
+if openai is None: logger.warning("Библиотека OpenAI недоступна.")
+# ---------------------------------------------------------------------------
+
+# === Глобальная переменная для клиента OpenAI ===
+openai_client_instance = None
 
 # === Вспомогательные Функции ===
 
@@ -178,8 +184,8 @@ def _initialize_openai_client():
         logger.error("❌ Модуль openai не был импортирован.")
         return False
 
-    api_key_local = os.getenv("OPENAI_API_KEY")
-    if not api_key_local:
+    # Используем OPENAI_API_KEY из констант
+    if not OPENAI_API_KEY:
         logger.error("❌ Переменная окружения OPENAI_API_KEY не задана для generate_media!")
         return False # Не можем инициализировать
 
@@ -201,7 +207,7 @@ def _initialize_openai_client():
                 http_client = httpx.Client()
 
             # Передаем http_client в OpenAI
-            openai_client_instance = openai.OpenAI(api_key=api_key_local, http_client=http_client)
+            openai_client_instance = openai.OpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
             logger.info("✅ Клиент OpenAI (>1.0) инициализирован (generate_media).")
             return True
         else:
@@ -240,6 +246,7 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | N
          # Убедимся, что путь абсолютный
          creative_config_path = Path(creative_config_path_str)
          if not creative_config_path.is_absolute():
+             # BASE_DIR уже должен быть определен
              creative_config_path = BASE_DIR / creative_config_path
          creative_config_data = load_json_config(str(creative_config_path)) or {}
     criteria = creative_config_data.get("visual_analysis_criteria", [])
@@ -333,7 +340,7 @@ Evaluation Criteria: {criteria}
 
 def resize_existing_image(image_path_str: str) -> bool:
     """Изменяет размер существующего изображения."""
-    if Image is None: logger.warning("Pillow не импортирован."); return True
+    if Image is None: logger.warning("Pillow не импортирован."); return True # Не ошибка, просто пропускаем
     image_path = Path(image_path_str)
     if not image_path.is_file(): logger.error(f"Ошибка ресайза: Файл не найден {image_path}"); return False
     try:
@@ -597,310 +604,594 @@ def trigger_piapi_action(original_task_id: str, action: str, api_key: str, endpo
 
 # === Основная Функция ===
 def main():
+    """
+    Основная функция скрипта generate_media.py.
+    Обрабатывает разные состояния задачи, генерирует заголовок с текстом,
+    запускает апскейл и генерацию видео.
+    """
+    # --- Инициализация переменных перед try блоком ---
+    # config и logger уже должны быть инициализированы ГЛОБАЛЬНО выше
+    b2_client = None
+    # openai_client_instance инициализируется в _initialize_openai_client()
+    # --- ИСПРАВЛЕНИЕ: Инициализация переменных, используемых в finally ---
+    generation_id = None # Будет переопределен из args
+    timestamp_suffix = None
+    config_mj_local_path = None
+    temp_dir_path = None
+    # -------------------------------------------------------------------
+
+    # --- Инициализация B2 клиента и проверка глобальных config/logger ---
+    try:
+        # Проверка, что глобальные config и logger доступны
+        if 'config' not in globals() or config is None:
+             raise RuntimeError("Глобальный объект 'config' не инициализирован.")
+        if 'logger' not in globals() or logger is None:
+             raise RuntimeError("Глобальный объект 'logger' не инициализирован.")
+
+        b2_client = get_b2_client()
+        if not b2_client: raise ConnectionError("Не удалось создать клиент B2.")
+
+        # --- Инициализация клиента OpenAI (вынесена в функцию _initialize_openai_client) ---
+        # Вызов _initialize_openai_client() будет происходить по мере необходимости,
+        # например, перед вызовом select_best_image.
+        # -------------------------------------------------
+    except (RuntimeError, ConnectionError) as init_err:
+        # Используем стандартный logging, так как кастомный мог не создаться
+        logging.critical(f"Критическая ошибка инициализации в main(): {init_err}", exc_info=True)
+        sys.exit(1)
+    # -----------------------------------------
+
     parser = argparse.ArgumentParser(description='Generate media or initiate Midjourney task.')
     parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
     parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
     args = parser.parse_args()
+    # --- ИСПРАВЛЕНИЕ: Присваиваем generation_id здесь ---
     generation_id = args.generation_id
+    # ----------------------------------------------------
     use_mock_flag = args.use_mock
 
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
         generation_id = generation_id[:-5]
     logger.info(f"--- Запуск generate_media для ID: {generation_id} (Use Mock: {use_mock_flag}) ---")
 
-    b2_client = None; content_data = None; config_mj = None; prompts_config_data = None
-    first_frame_description = ""; final_mj_prompt = ""; final_runway_prompt = ""
+    # --- Переменные для путей и состояния ---
+    content_data = None
+    config_mj = None
+    local_image_path = None # Путь к финальному PNG для загрузки
+    video_path = None # Путь к финальному MP4 для загрузки
 
+    # --- ИСПРАВЛЕНИЕ: Определяем timestamp_suffix и пути здесь, чтобы они были доступны в finally ---
     timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    content_local_path = f"{generation_id}_content_temp_{timestamp_suffix}.json"
+    temp_dir_path = Path(f"temp_{generation_id}_{timestamp_suffix}")
     config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
-    temp_dir_path = Path(f"temp_{generation_id}_{timestamp_suffix}") # Определяем здесь для finally
+    ensure_directory_exists(config_mj_local_path) # Убедимся, что папка для temp файла есть
+    # ----------------------------------------------------------------------------------------
 
     try:
-        b2_client = get_b2_client();
-        if not b2_client: raise ConnectionError("Не удалось создать клиент B2.")
-
-        # Загрузка prompts_config.json
-        prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
-        if not prompts_config_path_str: logger.error("❌ Путь к prompts_config не найден!"); prompts_config_data = {}
-        else:
-            prompts_config_path = BASE_DIR / prompts_config_path_str
-            prompts_config_data = load_json_config(str(prompts_config_path))
-            if not prompts_config_data: logger.error(f"❌ Не загрузить prompts_config из {prompts_config_path}!"); prompts_config_data = {}
-            else: logger.info("✅ Конфигурация промптов загружена.")
-
-        logger.info("Пауза (3 сек) перед загрузкой контента..."); time.sleep(3)
+        # --- Загрузка content_data ---
+        logger.info("Загрузка данных контента...")
         content_remote_path = f"666/{generation_id}.json"
-        logger.info(f"Загрузка контента: {content_remote_path}...")
-        ensure_directory_exists(content_local_path) # Папка для temp
-        content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_path, default_value=None)
-        if content_data is None: logger.error(f"❌ Не удалось загрузить {content_remote_path}."); sys.exit(1)
+        content_local_temp_path = f"{generation_id}_content_temp_{timestamp_suffix}.json"
+        ensure_directory_exists(content_local_temp_path)
+        content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_temp_path, default_value=None)
+        if content_data is None:
+            logger.error(f"❌ Не удалось загрузить {content_remote_path}.");
+            sys.exit(1)
+        else:
+            logger.info("✅ Данные контента загружены.")
+            # Удаляем временный файл контента СРАЗУ после успешной загрузки
+            if Path(content_local_temp_path).exists():
+                try: os.remove(content_local_temp_path); logger.debug(f"Удален temp контент: {content_local_temp_path}")
+                except OSError as e: logger.warning(f"Не удалить {content_local_temp_path}: {e}")
+        # -----------------------------
 
-        # Извлекаем данные
+        # --- Извлечение полей из content_data ---
+        topic = content_data.get("topic", "Нет темы")
+        selected_focus = content_data.get("selected_focus")
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
         final_runway_prompt = content_data.get("final_runway_prompt", "")
-        logger.info("Данные из контента:"); logger.info(f"  - Описание: '{first_frame_description[:100]}...'"); logger.info(f"  - MJ Промпт: '{final_mj_prompt[:100]}...'"); logger.info(f"  - Runway Промпт: '{final_runway_prompt[:100]}...'")
-        if not first_frame_description: logger.warning("Описание отсутствует!")
+        logger.info(f"Тема: '{topic[:100]}...'")
+        logger.info(f"Выбранный фокус: {selected_focus}")
+        # ------------------------------------
 
+        # --- Загрузка config_mj ---
         logger.info(f"Загрузка состояния: {CONFIG_MJ_REMOTE_PATH}...")
-        ensure_directory_exists(config_mj_local_path) # Папка для temp
+        # Используем config_mj_local_path, определенный ранее
         config_mj = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, default_value=None)
-        if config_mj is None: logger.warning(f"Не загрузить {CONFIG_MJ_REMOTE_PATH}."); config_mj = {"midjourney_task": None, "midjourney_results": {}, "generation": False, "status": None}
-        else: config_mj.setdefault("midjourney_task", None); config_mj.setdefault("midjourney_results", {}); config_mj.setdefault("generation", False); config_mj.setdefault("status", None)
-        logger.info("✅ Данные и конфиги загружены.")
+        if config_mj is None:
+            logger.warning(f"Не загрузить {CONFIG_MJ_REMOTE_PATH}. Создание структуры по умолчанию.");
+            config_mj = {"midjourney_task": None, "midjourney_results": {}, "generation": False, "status": None}
+        else:
+            # Гарантируем наличие ключей
+            config_mj.setdefault("midjourney_task", None)
+            config_mj.setdefault("midjourney_results", {})
+            config_mj.setdefault("generation", False)
+            config_mj.setdefault("status", None)
+        logger.info("✅ Конфиг MJ загружен.")
+        # --------------------------
 
-        # --- ОБНОВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА РЕЗУЛЬТАТА (v3) ---
-        ensure_directory_exists(str(temp_dir_path))
-        local_image_path = None; video_path = None
-        final_upscaled_image_url = None
+        # --- Определение типа результата MJ ---
+        mj_results = config_mj.get("midjourney_results", {})
+        task_result_data = mj_results.get("task_result")
+        task_meta_data = mj_results.get("meta")
         is_imagine_result = False
         is_upscale_result = False
-        imagine_urls = [] # Для хранения URL сетки
-
-        mj_results = config_mj.get("midjourney_results", {})
-        task_result_data = mj_results.get("task_result") # Получаем вложенный словарь
-        task_meta_data = mj_results.get("meta") # Получаем метаданные
+        imagine_urls = []
+        final_upscaled_image_url = None
 
         if isinstance(task_result_data, dict):
-            # Проверяем признаки результата /imagine
-            # Главный признак - наличие списка temporary_image_urls и actions
+            # Проверка на результат /imagine
             if isinstance(task_result_data.get("temporary_image_urls"), list) and \
                len(task_result_data["temporary_image_urls"]) == 4 and \
                isinstance(task_result_data.get("actions"), list):
                 is_imagine_result = True
-                imagine_urls = task_result_data["temporary_image_urls"] # Сохраняем URL сетки
-                logger.info("Обнаружен результат задачи /imagine (есть temporary_image_urls[4] и actions).")
-            # Проверяем признаки результата /upscale (или другого действия)
-            # Главный признак - наличие image_url и тип задачи 'upscale' в метаданных
+                imagine_urls = task_result_data["temporary_image_urls"]
+                logger.info("Обнаружен результат задачи /imagine (сетка 2x2).")
+            # Проверка на результат /upscale
             elif isinstance(task_result_data.get("image_url"), str) and \
                  task_result_data["image_url"].startswith("http") and \
                  isinstance(task_meta_data, dict) and \
                  task_meta_data.get("task_type") == "upscale":
                  is_upscale_result = True
                  final_upscaled_image_url = task_result_data.get("image_url")
-                 logger.info(f"Обнаружен результат задачи /upscale (есть image_url, meta.task_type='upscale'): {final_upscaled_image_url}")
+                 logger.info(f"Обнаружен результат задачи /upscale: {final_upscaled_image_url[:60]}...")
+            # Если есть результаты, но не опознаны
             else:
-                 # Логируем, если не удалось определить
-                 logger.warning(f"Не удалось определить тип результата MJ. task_result: {json.dumps(task_result_data, indent=2)[:500]}... meta: {task_meta_data}")
-        elif mj_results: # Если midjourney_results не пустой, но task_result не словарь
+                 if mj_results and not is_imagine_result and not is_upscale_result:
+                      logger.warning(f"Не удалось определить тип результата MJ. task_result: {json.dumps(task_result_data, indent=2)[:500]}... meta: {task_meta_data}")
+        elif mj_results: # Если midjourney_results есть, но task_result не словарь
              logger.warning(f"Поле 'task_result' в midjourney_results не является словарем: {mj_results}")
-        # --- КОНЕЦ ОБНОВЛЕННОЙ ЛОГИКИ ---
+        # ------------------------------------
 
-
-        # --- Основной блок обработки ---
+        # --- Основной блок обработки сценариев ---
+        # --- ИСПРАВЛЕНИЕ: Вложенный try...finally для очистки temp_dir_path ---
         try:
+            # --- Создание временной директории ---
+            # temp_dir_path уже определен выше
+            ensure_directory_exists(str(temp_dir_path))
+            logger.info(f"Создана временная папка: {temp_dir_path}")
+            # ------------------------------------
+
             if use_mock_flag:
-                # Логика Mock остается без изменений
+                # --- Сценарий 0: Принудительный Mock ---
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
-                placeholder_text = f"MJ/Upscale Timeout\n{first_frame_description[:60]}" if first_frame_description else "MJ/Upscale Timeout"
+                placeholder_text = f"MJ Timeout\n{topic[:60]}"
                 encoded_text = urllib.parse.quote(placeholder_text)
                 placeholder_url = f"https://placehold.co/{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}/{PLACEHOLDER_BG_COLOR}/{PLACEHOLDER_TEXT_COLOR}?text={encoded_text}"
-                local_image_path = temp_dir_path / f"{generation_id}_placeholder.{IMAGE_FORMAT}"
+                local_image_path = temp_dir_path / f"{generation_id}.{IMAGE_FORMAT}"
                 logger.info(f"Создание плейсхолдера: {placeholder_url}")
-                if not download_image(placeholder_url, str(local_image_path)): raise Exception("Не скачать плейсхолдер")
-                logger.info(f"Плейсхолдер сохранен: {local_image_path}")
-                video_path_str = create_mock_video(str(local_image_path))
-                if not video_path_str: raise Exception("Не создать mock видео.")
-                video_path = Path(video_path_str)
-                logger.info("Сброс состояния MJ..."); config_mj['midjourney_task'] = None; config_mj['midjourney_results'] = {}; config_mj['generation'] = False; config_mj['status'] = None
+                if not download_image(placeholder_url, str(local_image_path)):
+                    logger.error("Не удалось скачать плейсхолдер.")
+                    local_image_path = None # Устанавливаем в None, если скачивание не удалось
+                else:
+                     logger.info(f"Плейсхолдер сохранен как финальный PNG: {local_image_path}")
+
+                video_path_str = None
+                # Проверяем наличие ImageClip и функции create_mock_video
+                if ImageClip and callable(create_mock_video) and local_image_path and local_image_path.is_file():
+                     video_path_str = create_mock_video(str(local_image_path)) # Вызываем локальную функцию
+                     if not video_path_str: logger.warning("Не удалось создать mock видео.")
+                     else: video_path = Path(video_path_str)
+                elif not ImageClip:
+                     logger.warning("MoviePy не найден, mock видео не создано.")
+                elif not local_image_path or not local_image_path.is_file():
+                     logger.warning("Базовое изображение для mock не найдено, mock видео не создано.")
+                else: # Если create_mock_video не найдена
+                     # --- ИСПРАВЛЕНИЕ: Используем callable() для проверки ---
+                     if not callable(create_mock_video):
+                         logger.error("Функция create_mock_video не найдена!")
+                     else: # Другая причина, почему не создалось видео
+                         logger.error("Неизвестная ошибка при вызове create_mock_video.")
+
+
+                logger.info("Сброс состояния MJ...");
+                config_mj['midjourney_task'] = None; config_mj['midjourney_results'] = {}
+                config_mj['generation'] = False; config_mj['status'] = None
+                # --- Конец сценария Mock ---
 
             elif is_upscale_result and final_upscaled_image_url:
-                # --- ШАГ 3: Есть результат апскейла -> Генерируем Runway ---
-                logger.info(f"Обработка результата /upscale. Генерация видео Runway...")
-                local_image_path = temp_dir_path / f"{generation_id}_upscaled.{IMAGE_FORMAT}" # Имя файла для апскейла
-                if not download_image(final_upscaled_image_url, str(local_image_path)):
+                # --- Сценарий 3: Есть результат апскейла -> Генерируем Runway ---
+                logger.info(f"Обработка результата /upscale для ID {generation_id}. Генерация видео Runway...")
+                runway_base_image_path = temp_dir_path / f"{generation_id}_upscaled_for_runway.{IMAGE_FORMAT}"
+                if not download_image(final_upscaled_image_url, str(runway_base_image_path)):
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
-                logger.info(f"Апскейл сохранен: {local_image_path}")
-                # Ресайз апскейла может быть не нужен, но оставим на всякий случай
-                if not resize_existing_image(str(local_image_path)):
-                     logger.warning(f"Не удалось выполнить ресайз для {local_image_path}, но продолжаем.")
+                logger.info(f"Апскейл для Runway сохранен: {runway_base_image_path}")
+
+                # Проверяем наличие Image и функции resize_existing_image
+                if Image and callable(resize_existing_image): # Вызываем локальную функцию
+                    if not resize_existing_image(str(runway_base_image_path)):
+                        logger.warning(f"Не удалось выполнить ресайз для {runway_base_image_path}, но продолжаем.")
+                elif not Image:
+                     logger.warning("Pillow не найден, ресайз не выполнен.")
+                else:
+                     # --- ИСПРАВЛЕНИЕ: Используем callable() для проверки ---
+                     if not callable(resize_existing_image):
+                         logger.error("Функция resize_existing_image не найдена!")
+                     else:
+                         logger.error("Неизвестная ошибка при вызове resize_existing_image.")
 
                 video_path_str = None
                 if not final_runway_prompt:
                     logger.error("❌ Промпт Runway отсутствует! Создание mock видео.")
-                    video_path_str = create_mock_video(str(local_image_path))
+                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                    if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                    else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                 else:
-                     video_url_or_path = generate_runway_video(
-                         image_path=str(local_image_path),
-                         script=final_runway_prompt,
-                         config=config,
-                         api_key=RUNWAY_API_KEY
-                     )
-                     if video_url_or_path:
-                         if video_url_or_path.startswith("http"):
-                             video_path_temp = temp_dir_path / f"{generation_id}_runway_final.{VIDEO_FORMAT}" # Новое имя для скачанного видео
-                             if download_video(video_url_or_path, str(video_path_temp)):
-                                 video_path = video_path_temp # Используем скачанное видео
-                                 logger.info(f"Видео Runway скачано: {video_path}")
-                             else:
-                                 logger.error(f"Не удалось скачать видео Runway {video_url_or_path}. Создание mock.")
-                                 video_path_str = create_mock_video(str(local_image_path))
-                         else:
-                             # Если generate_runway_video вернуло локальный путь (маловероятно с SDK)
-                             video_path = Path(video_url_or_path)
-                             logger.info(f"Получен локальный путь к видео Runway: {video_path}")
+                     if not RUNWAY_SDK_AVAILABLE:
+                         logger.error("SDK RunwayML недоступен. Создание mock видео.")
+                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                         if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                         else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                     elif not RUNWAY_API_KEY:
+                          logger.error("RUNWAY_API_KEY не найден. Создание mock видео.")
+                          # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                          if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                          else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                      else:
-                         logger.error("Генерация видео Runway не удалась. Создание mock.")
-                         video_path_str = create_mock_video(str(local_image_path))
+                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                         if callable(generate_runway_video):
+                             video_url_or_path = generate_runway_video(
+                                 image_path=str(runway_base_image_path),
+                                 script=final_runway_prompt,
+                                 config=config, # Передаем глобальный config
+                                 api_key=RUNWAY_API_KEY
+                             )
+                             if video_url_or_path:
+                                 if video_url_or_path.startswith("http"):
+                                     video_path_temp = temp_dir_path / f"{generation_id}_runway_final.{VIDEO_FORMAT}"
+                                     if download_video(video_url_or_path, str(video_path_temp)):
+                                         video_path = video_path_temp
+                                         logger.info(f"Видео Runway скачано: {video_path}")
+                                     else:
+                                         logger.error(f"Не удалось скачать видео Runway {video_url_or_path}. Создание mock.")
+                                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                                         if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                                         else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                                 else:
+                                     video_path = Path(video_url_or_path)
+                                     logger.info(f"Получен локальный путь к видео Runway: {video_path}")
+                             else:
+                                 logger.error("Генерация видео Runway не удалась. Создание mock.")
+                                 # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                                 if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                                 else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                         else:
+                              logger.error("Функция generate_runway_video не найдена! Создание mock видео.")
+                              # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                              if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
+                              else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
 
-                     # Если video_path не установлен, но есть video_path_str (mock)
+                     # Если mock был создан, присваиваем путь
                      if not video_path and video_path_str:
                          video_path = Path(video_path_str)
 
                 if not video_path or not video_path.is_file():
-                    raise Exception("Не удалось получить финальное видео (Runway или mock).")
+                    logger.warning("Не удалось получить финальное видео (Runway или mock).")
+
+                # Финальное изображение для этого сценария - это апскейл, который не сохраняется как отдельный артефакт
+                # Поэтому local_image_path остается None
+                local_image_path = None
 
                 logger.info("Очистка состояния MJ (после Runway)...");
-                config_mj['midjourney_results'] = {} # Очищаем результаты апскейла
+                config_mj['midjourney_results'] = {}
                 config_mj['generation'] = False
                 config_mj['midjourney_task'] = None
-                config_mj['status'] = None # Сбрасываем статус
+                config_mj['status'] = None
+                # --- Конец Сценария 3 ---
 
             elif is_imagine_result:
-                # --- ШАГ 2: Есть результат imagine -> Выбираем и запускаем upscale ---
-                logger.info(f"Обработка результата /imagine. Выбор лучшего и запуск /upscale...")
-                imagine_task_id = mj_results.get("task_id") # ID исходной задачи /imagine
-                # Используем imagine_urls, сохраненные при определении типа
-                if not imagine_urls: # Дополнительная проверка
-                    logger.error("Не найдены URL сетки /imagine для выбора.")
-                    raise ValueError("Некорректные результаты /imagine")
+                # --- Сценарий 2: Есть результат imagine -> Выбираем картинки, создаем заголовок, запускаем upscale ---
+                logger.info(f"Обработка результата /imagine для ID {generation_id}.")
+                # Получаем ID исходной задачи /imagine из сохраненных результатов
+                imagine_task_id = mj_results.get("task_id") # Ищем ID в корне результатов
+                if not imagine_task_id and isinstance(task_meta_data, dict): # Ищем в meta
+                     imagine_task_id = task_meta_data.get("task_id")
 
+                if not imagine_urls or len(imagine_urls) != 4:
+                    logger.error("Не найдены URL сетки /imagine (4 шт.)."); raise ValueError("Некорректные результаты /imagine")
                 if not imagine_task_id:
-                     logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}")
-                     raise ValueError("Отсутствует ID исходной задачи /imagine")
+                     logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}."); raise ValueError("Отсутствует ID исходной задачи /imagine")
 
-                # Получаем настройки для промпта анализа индекса
+                # --- Выбор картинки для Runway ---
+                logger.info("Выбор лучшего изображения для Runway...")
+                prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
+                prompts_config_data = {}
+                if prompts_config_path_str:
+                    # BASE_DIR уже должен быть определен глобально
+                    prompts_config_path = BASE_DIR / prompts_config_path_str
+                    prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+                else: logger.error("Путь к prompts_config не найден!")
+
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
-                best_index = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
+                best_index_runway = 0 # Индекс по умолчанию
+                # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                if callable(select_best_image):
+                    if _initialize_openai_client(): # Инициализируем/проверяем клиента
+                        best_index_runway = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
+                    elif openai is None:
+                        logger.warning("Модуль OpenAI недоступен. Используется индекс 0 для Runway.")
+                    else:
+                         logger.warning("Клиент OpenAI не инициализирован. Используется индекс 0 для Runway.")
+                else:
+                     logger.error("Функция select_best_image не найдена! Используется индекс 0 для Runway.")
 
-                if best_index is None or not (0 <= best_index <= 3):
-                    logger.warning(f"Не удалось выбрать индекс (результат: {best_index}). Используем индекс 0.")
-                    best_index = 0 # Fallback на первый
+                if best_index_runway is None or not (0 <= best_index_runway <= 3):
+                    logger.warning(f"Не удалось выбрать индекс для Runway (результат: {best_index_runway}). Используем индекс 0.")
+                    best_index_runway = 0
+                image_for_runway_url = imagine_urls[best_index_runway]
+                logger.info(f"Индекс для Runway: {best_index_runway}, URL: {image_for_runway_url[:60]}...")
 
-                action_to_trigger = f"upscale{best_index + 1}"
+                # --- Выбор картинки для заголовка ---
+                title_index = (best_index_runway + 1) % 4
+                image_for_title_url = imagine_urls[title_index]
+                logger.info(f"Индекс для заголовка: {title_index}, URL: {image_for_title_url[:60]}...")
+
+                # --- Определение шрифта ---
+                final_font_path = None
+                if selected_focus:
+                    logger.info(f"Определение шрифта для фокуса: '{selected_focus}'")
+                    creative_config_path_str = config.get('FILE_PATHS.creative_config')
+                    creative_config_data = {}
+                    if creative_config_path_str:
+                        # BASE_DIR уже должен быть определен
+                        creative_config_path = BASE_DIR / creative_config_path_str
+                        creative_config_data = load_json_config(str(creative_config_path)) or {}
+                    else: logger.error("Путь к creative_config не найден!")
+
+                    fonts_mapping = creative_config_data.get("FOCUS_FONT_MAPPING", {})
+                    fonts_folder_rel = config.get("FILE_PATHS.fonts_folder", "fonts/")
+
+                    default_font_rel_path = fonts_mapping.get("__default__")
+                    if not default_font_rel_path:
+                         logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан!")
+                         default_font_rel_path = "fonts/Roboto-Regular.ttf" # Жестко заданный fallback
+                         logger.warning(f"Используется жестко заданный шрифт по умолчанию: {default_font_rel_path}")
+
+                    font_rel_path = fonts_mapping.get(selected_focus)
+                    final_rel_path = font_rel_path if font_rel_path else default_font_rel_path
+
+                    font_path_abs = BASE_DIR / final_rel_path
+
+                    if font_path_abs.is_file():
+                        final_font_path = str(font_path_abs)
+                        logger.info(f"Выбран шрифт: {final_font_path}")
+                    else:
+                        logger.error(f"Файл шрифта не найден: {font_path_abs}")
+                        # Попытка использовать шрифт по умолчанию, если кастомный не найден
+                        if font_rel_path and font_rel_path != default_font_rel_path:
+                             logger.warning(f"Попытка использовать шрифт по умолчанию: {default_font_rel_path}")
+                             font_path_abs_default = BASE_DIR / default_font_rel_path
+                             if font_path_abs_default.is_file():
+                                 final_font_path = str(font_path_abs_default)
+                                 logger.info(f"Используется шрифт по умолчанию: {final_font_path}")
+                             else: logger.error(f"Файл шрифта по умолчанию также не найден: {font_path_abs_default}")
+                        # Если и по умолчанию нет - ошибка
+                        if not final_font_path: raise FileNotFoundError("Не удалось найти файл шрифта.")
+                else:
+                    logger.error("Не удалось получить 'selected_focus'. Невозможно выбрать шрифт.")
+                    raise ValueError("selected_focus не найден")
+
+                # --- Создание картинки-заголовка ---
+                logger.info("Создание изображения-заголовка...")
+                title_base_path = temp_dir_path / f"{generation_id}_title_base.{IMAGE_FORMAT}"
+                final_title_image_path = temp_dir_path / f"{generation_id}.{IMAGE_FORMAT}" # Финальное имя PNG
+
+                if download_image(image_for_title_url, str(title_base_path)):
+                    logger.info(f"Базовое изображение для заголовка скачано: {title_base_path.name}")
+
+                    title_font_size = 70
+                    title_text_color = (255, 255, 255, 240)
+                    title_position = ('center', 'center')
+                    title_padding = 60
+                    title_bg_blur_radius = 5.0
+                    title_bg_opacity = 150
+
+                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                    if callable(add_text_to_image):
+                        if add_text_to_image(
+                            image_path_str=str(title_base_path), text=topic,
+                            font_path_str=final_font_path, output_path_str=str(final_title_image_path),
+                            font_size=title_font_size, text_color=title_text_color,
+                            position=title_position, padding=title_padding,
+                            bg_blur_radius=title_bg_blur_radius, bg_opacity=title_bg_opacity,
+                            logger_instance=logger # Передаем инициализированный logger
+                        ):
+                            logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
+                            local_image_path = final_title_image_path # Это финальный PNG для загрузки
+                        else:
+                            logger.error("Не удалось создать изображение-заголовок.")
+                            local_image_path = title_base_path # Используем базовое изображение
+                            logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
+                    else:
+                         logger.error("Функция add_text_to_image не найдена/импортирована!")
+                         local_image_path = title_base_path # Используем базовое изображение
+                         logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
+                else:
+                    logger.error(f"Не удалось скачать базовое изображение для заголовка: {image_for_title_url}")
+                    local_image_path = None # Финальное изображение не создано
+
+                # --- Запуск Upscale для картинки Runway ---
+                action_to_trigger = f"upscale{best_index_runway + 1}"
                 available_actions = task_result_data.get("actions", [])
-                logger.info(f"Выбран индекс {best_index}. Требуемое действие: {action_to_trigger}. Доступные: {available_actions}")
+                logger.info(f"Запуск Upscale для картинки Runway (индекс {best_index_runway}). Действие: {action_to_trigger}.")
 
                 if action_to_trigger not in available_actions:
-                    logger.warning(f"Действие {action_to_trigger} недоступно! Попытка найти другое upscale действие...")
-                    # Ищем первое доступное upscale действие
-                    found_upscale = False
-                    for action in available_actions:
-                        if action.startswith("upscale"):
-                            action_to_trigger = action
-                            logger.info(f"Используем первое доступное upscale действие: {action_to_trigger}")
-                            found_upscale = True
-                            break
-                    if not found_upscale:
-                        logger.error("Не найдено доступных upscale действий!")
-                        raise ValueError("Нет доступных upscale действий")
+                    logger.warning(f"Действие {action_to_trigger} недоступно! Поиск другого upscale...")
+                    action_to_trigger = next((a for a in available_actions if a.startswith("upscale")), None)
+                    if action_to_trigger: logger.info(f"Используем первое доступное upscale: {action_to_trigger}")
+                    else: logger.error("Не найдено доступных upscale действий!")
 
-                # Запускаем upscale
-                upscale_task_info = trigger_piapi_action(
-                    original_task_id=imagine_task_id,
-                    action=action_to_trigger,
-                    api_key=MIDJOURNEY_API_KEY,
-                    endpoint=MIDJOURNEY_ENDPOINT # Используем тот же эндпоинт для действий
-                )
+                upscale_task_info = None
+                # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                if action_to_trigger and callable(trigger_piapi_action):
+                    if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для trigger_piapi_action.")
+                    elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для trigger_piapi_action.")
+                    else:
+                         upscale_task_info = trigger_piapi_action(
+                             original_task_id=imagine_task_id, action=action_to_trigger,
+                             api_key=MIDJOURNEY_API_KEY, endpoint=MJ_IMAGINE_ENDPOINT
+                         )
+                elif not action_to_trigger:
+                     logger.warning("Нет действия upscale для запуска.")
+                else:
+                     logger.error("Функция trigger_piapi_action не найдена!")
 
                 if upscale_task_info and upscale_task_info.get("task_id"):
-                    logger.info(f"Задача /upscale запущена. Новый ID: {upscale_task_info['task_id']}")
-                    # Обновляем конфиг для ожидания апскейла
+                    logger.info(f"Задача Upscale ({action_to_trigger}) запущена. ID: {upscale_task_info['task_id']}")
                     config_mj['midjourney_task'] = upscale_task_info
-                    config_mj['midjourney_results'] = {} # Очищаем старые результаты imagine
+                    config_mj['midjourney_results'] = {} # Очищаем старые результаты /imagine
                     config_mj['generation'] = False
-                    config_mj['status'] = "waiting_for_upscale" # Указываем, чего ждем
+                    config_mj['status'] = "waiting_for_upscale"
                     logger.info("Состояние обновлено для ожидания /upscale.")
                 else:
-                    logger.error(f"Не удалось запустить задачу /upscale для действия {action_to_trigger}.")
-                    # Возможно, стоит установить статус ошибки или mock
+                    logger.error(f"Не удалось запустить задачу Upscale ({action_to_trigger}).")
                     config_mj['status'] = "upscale_trigger_failed"
-                    config_mj['midjourney_task'] = None # Сбрасываем задачу
-                    config_mj['midjourney_results'] = {} # Очищаем результаты
+                    config_mj['midjourney_task'] = None
+                    config_mj['midjourney_results'] = {} # Очищаем старые результаты /imagine
+
+                video_path = None # Видео еще не создано
+                # --- Конец Сценария 2 ---
 
             elif config_mj.get("generation") is True:
-                # --- ШАГ 1: Нет результатов, но есть флаг -> Запускаем imagine ---
-                logger.info(f"Нет результатов MJ, но установлен флаг generation. Запуск /imagine...")
+                # --- Сценарий 1: Запускаем imagine ---
+                logger.info(f"Нет результатов MJ, флаг generation=true. Запуск /imagine для ID {generation_id}...")
                 if not final_mj_prompt:
-                    logger.error("❌ Промпт MJ отсутствует! Невозможно запустить /imagine.")
-                    config_mj['generation'] = False # Сбрасываем флаг
+                    logger.error("❌ Промпт MJ отсутствует!"); config_mj['generation'] = False
                 else:
-                    imagine_task_info = initiate_midjourney_task(
-                        prompt=final_mj_prompt,
-                        config=config,
-                        api_key=MIDJOURNEY_API_KEY,
-                        endpoint=MIDJOURNEY_ENDPOINT,
-                        ref_id=generation_id
-                    )
-                    if imagine_task_info and imagine_task_info.get("task_id"):
-                        logger.info(f"Задача /imagine запущена. ID: {imagine_task_info['task_id']}")
-                        config_mj['midjourney_task'] = imagine_task_info
-                        config_mj['generation'] = False # Сбрасываем флаг после запуска
-                        config_mj['midjourney_results'] = {}
-                        config_mj['status'] = "waiting_for_imagine"
+                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                    if callable(initiate_midjourney_task):
+                        if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для initiate_midjourney_task.")
+                        elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для initiate_midjourney_task.")
+                        else:
+                            imagine_task_info = initiate_midjourney_task(
+                                prompt=final_mj_prompt, config=config, api_key=MIDJOURNEY_API_KEY,
+                                endpoint=MJ_IMAGINE_ENDPOINT, ref_id=generation_id
+                            )
+                            if imagine_task_info and imagine_task_info.get("task_id"):
+                                logger.info(f"Задача /imagine запущена. ID: {imagine_task_info['task_id']}")
+                                config_mj['midjourney_task'] = imagine_task_info
+                                config_mj['generation'] = False
+                                config_mj['midjourney_results'] = {}
+                                config_mj['status'] = "waiting_for_imagine"
+                            else:
+                                logger.warning("Не удалось получить task_id для /imagine.")
+                                config_mj['midjourney_task'] = None; config_mj['generation'] = False
                     else:
-                        logger.warning("Не удалось получить task_id для /imagine.")
-                        config_mj['midjourney_task'] = None
-                        config_mj['generation'] = False # Сбрасываем флаг при ошибке
+                         logger.error("Функция initiate_midjourney_task не найдена!")
+                         config_mj['midjourney_task'] = None; config_mj['generation'] = False
+                local_image_path = None; video_path = None # Артефакты еще не созданы
+                # --- Конец Сценария 1 ---
 
             else:
-                # Неожиданное состояние (нет задачи, нет результатов, нет флага generation)
-                logger.warning("Не найдено активной задачи MJ, результатов или флага 'generation'. Пропуск шагов MJ/Runway.")
+                # Неожиданное состояние
+                logger.warning("Нет активной задачи MJ, результатов или флага 'generation'. Пропуск.")
+                local_image_path = None; video_path = None
 
-            # --- Загрузка файлов в B2 (происходит только если был создан mock или видео Runway) ---
+            # --- Загрузка файлов в B2 ---
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
-            # Загружаем изображение, если оно было скачано (плейсхолдер или апскейл)
+
+            # Загружаем ИЗОБРАЖЕНИЕ, если оно было создано (Сценарий 2 или 0)
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
-                 # Определяем имя файла в B2
-                 b2_image_filename = f"{generation_id}{local_image_path.suffix}"
+                 b2_image_filename = f"{generation_id}.png" # Всегда PNG
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
                  if not upload_success_img: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ИЗОБРАЖЕНИЯ {b2_image_filename} !!!")
-            elif local_image_path: # Если путь был, но файл не найден
-                 logger.warning(f"Изображение {local_image_path} не найдено или не Path для загрузки.")
+            elif local_image_path: # Если путь есть, но это не файл
+                 logger.warning(f"Финальное изображение {local_image_path} не найдено для загрузки.")
+            # Не логируем отсутствие изображения в сценариях 1 и 3, т.к. оно там и не создается
 
-            # Загружаем видео, если оно было создано (Runway или mock)
+            # Загружаем ВИДЕО, если оно было создано (Сценарий 3 или 0)
             if video_path and isinstance(video_path, Path) and video_path.is_file():
-                 b2_video_filename = f"{generation_id}{video_path.suffix}"
+                 b2_video_filename = f"{generation_id}.mp4" # Всегда MP4
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
                  if not upload_success_vid: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ВИДЕО {b2_video_filename} !!!")
-            elif video_path: logger.error(f"Видео {video_path} не найдено или не Path для загрузки!")
-            elif is_upscale_result or use_mock_flag: # Логируем только если ожидали видео
-                 logger.warning("Видео не сгенерировано/не найдено для загрузки.")
+            elif video_path: # Если путь есть, но это не файл
+                 logger.error(f"Видео {video_path} не найдено для загрузки!")
+            # Не логируем отсутствие видео в сценариях 1 и 2, т.к. оно там и не создается
 
-            # Финальное сообщение о загрузке
-            if (local_image_path and video_path):
-                if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены и ПРОВЕРЕНЫ.")
-                else: logger.warning("⚠️ Не все медиа файлы были успешно загружены/проверены.")
-            elif local_image_path and upload_success_img: logger.info("✅ Изображение успешно загружено и ПРОВЕРЕНО.")
-            elif video_path and upload_success_vid: logger.info("✅ Видео успешно загружено и ПРОВЕРЕНО.")
+            # Финальное логирование загрузок
+            if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены.")
+            elif upload_success_img: logger.info("✅ Изображение успешно загружено.")
+            elif upload_success_vid: logger.info("✅ Видео успешно загружено.")
+            elif local_image_path or video_path: # Если что-то должно было загрузиться, но не загрузилось
+                 logger.warning("⚠️ Не все созданные медиа файлы были успешно загружены.")
 
+        # --- ИСПРАВЛЕНИЕ: finally для очистки temp_dir_path ---
         finally:
              # Очистка временной папки
-             if temp_dir_path.exists():
-                 try: shutil.rmtree(temp_dir_path); logger.debug(f"Удалена папка: {temp_dir_path}")
-                 except OSError as e: logger.warning(f"Не удалить {temp_dir_path}: {e}")
+             if temp_dir_path and temp_dir_path.exists(): # Проверяем, что temp_dir_path не None
+                 try:
+                     shutil.rmtree(temp_dir_path)
+                     logger.debug(f"Удалена временная папка: {temp_dir_path}")
+                 except Exception as e:
+                     logger.warning(f"Не удалить {temp_dir_path}: {e}")
+        # --- Конец вложенного finally ---
 
-        # Сохранение финального состояния config_mj
+
+        # --- Сохранение финального состояния config_mj ---
         logger.info(f"Сохранение config_midjourney.json в B2...")
-        if not isinstance(config_mj, dict): logger.error("config_mj не словарь!")
-        elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj): logger.error("Не сохранить config_midjourney.json.")
-        else: logger.info("✅ config_midjourney.json сохранен.")
+        # Удаляем временный файл перед сохранением нового
+        # config_mj_local_path уже определен выше
+        if config_mj_local_path and Path(config_mj_local_path).exists():
+            try: os.remove(config_mj_local_path); logger.debug(f"Удален старый temp конфиг MJ: {config_mj_local_path}")
+            except OSError as e: logger.warning(f"Не удалить старый temp конфиг MJ {config_mj_local_path}: {e}")
 
-        logger.info("✅ Работа generate_media.py успешно завершена.")
+        if not isinstance(config_mj, dict):
+            logger.error("config_mj не словарь! Невозможно сохранить.")
+        elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj):
+            logger.error("!!! Не удалось сохранить config_midjourney.json в B2!")
+        else:
+            logger.info("✅ config_midjourney.json сохранен в B2.")
+            # Удаляем временный файл и после успешного сохранения
+            if config_mj_local_path and Path(config_mj_local_path).exists():
+                try: os.remove(config_mj_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_local_path}")
+                except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_local_path} после сохранения: {e}")
 
-    except ConnectionError as conn_err: logger.error(f"❌ Ошибка соединения B2: {conn_err}"); sys.exit(1)
-    except Exception as e: logger.error(f"❌ Критическая ошибка в generate_media.py: {e}", exc_info=True); sys.exit(1)
+        logger.info(f"✅ Работа generate_media.py успешно завершена для ID {generation_id}.")
+
+    # --- Обработка исключений верхнего уровня ---
+    except ConnectionError as conn_err:
+        # Используем logger, если он доступен
+        if 'logger' in globals() and logger: logger.error(f"❌ Ошибка соединения B2: {conn_err}")
+        else: print(f"ERROR: Ошибка соединения B2: {conn_err}")
+        sys.exit(1)
+    except FileNotFoundError as fnf_err:
+         if 'logger' in globals() and logger: logger.error(f"❌ Ошибка: Файл не найден: {fnf_err}", exc_info=True)
+         else: print(f"ERROR: Файл не найден: {fnf_err}")
+         sys.exit(1)
+    except ValueError as val_err:
+         if 'logger' in globals() and logger: logger.error(f"❌ Ошибка значения (например, не найден фокус или ID): {val_err}", exc_info=True)
+         else: print(f"ERROR: Ошибка значения: {val_err}")
+         sys.exit(1)
+    except Exception as e:
+        if 'logger' in globals() and logger: logger.error(f"❌ Критическая ошибка в generate_media.py: {e}", exc_info=True)
+        else: print(f"ERROR: Критическая ошибка в generate_media.py: {e}")
+        sys.exit(1)
+    # --- ИСПРАВЛЕНИЕ: Внешний finally для очистки временных файлов конфигов ---
     finally:
         # Очистка временных файлов конфигов
-        content_temp_path = Path(content_local_path)
-        if content_temp_path.exists():
-            try: os.remove(content_temp_path); logger.debug(f"Удален temp контент: {content_temp_path}")
-            except OSError as e: logger.warning(f"Не удалить {content_temp_path}: {e}")
-        config_mj_temp_path = Path(config_mj_local_path)
-        if config_mj_temp_path.exists():
-            try: os.remove(config_mj_temp_path); logger.debug(f"Удален temp конфиг MJ: {config_mj_temp_path}")
-            except OSError as e: logger.warning(f"Не удалить {config_mj_temp_path}: {e}")
+        # Используем try-except для каждой операции удаления
+        if 'generation_id' in locals() and generation_id and 'timestamp_suffix' in locals() and timestamp_suffix:
+            content_temp_path_str = f"{generation_id}_content_temp_{timestamp_suffix}.json"
+            content_temp_path = Path(content_temp_path_str)
+            if content_temp_path.exists():
+                try:
+                    os.remove(content_temp_path)
+                    if 'logger' in globals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path}")
+                except OSError as e:
+                     if 'logger' in globals() and logger: logger.warning(f"Не удалить {content_temp_path} (в finally): {e}")
+
+        # config_mj_local_path уже определен и инициализирован
+        if config_mj_local_path:
+            config_mj_temp_path = Path(config_mj_local_path)
+            if config_mj_temp_path.exists():
+                try:
+                    os.remove(config_mj_temp_path)
+                    if 'logger' in globals() and logger: logger.debug(f"Удален temp конфиг MJ (в finally): {config_mj_temp_path}")
+                except OSError as e:
+                     if 'logger' in globals() and logger: logger.warning(f"Не удалить {config_mj_temp_path} (в finally): {e}")
+
+        # Очистка временной папки (temp_dir_path) уже обрабатывается во вложенном finally
 
 # === Точка входа ===
 if __name__ == "__main__":
@@ -909,19 +1200,28 @@ if __name__ == "__main__":
         main()
         exit_code_main = 0 # Успех, если main() завершился без исключений
     except KeyboardInterrupt:
-        logger.info("🛑 Остановлено пользователем.")
+        # Используем logger, если он доступен
+        if 'logger' in globals() and logger: logger.info("🛑 Остановлено пользователем.")
+        else: print("🛑 Остановлено пользователем.")
         exit_code_main = 130 # Стандартный код для Ctrl+C
     except SystemExit as e:
         # Логируем код выхода, если он не 0
-        if e.code != 0: logger.error(f"Завершение с кодом ошибки: {e.code}")
-        else: logger.info(f"Завершение с кодом {e.code}")
-        exit_code_main = e.code # Пробрасываем код выхода
+        exit_code_main = e.code if isinstance(e.code, int) else 1
+        if exit_code_main != 0:
+            # --- ИСПРАВЛЕНИЕ: Проверка logger ---
+            if 'logger' in globals() and logger: logger.error(f"Завершение с кодом ошибки: {exit_code_main}")
+            else: print(f"ERROR: Завершение с кодом ошибки: {exit_code_main}")
+        else:
+            # --- ИСПРАВЛЕНИЕ: Проверка logger ---
+            if 'logger' in globals() and logger: logger.info(f"Завершение с кодом {exit_code_main}")
+            else: print(f"INFO: Завершение с кодом {exit_code_main}")
     except Exception as e:
         # Логируем неперехваченные ошибки
         print(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}")
-        try: logger.error(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}", exc_info=True)
-        except NameError: pass # Логгер может быть недоступен
+        # --- ИСПРАВЛЕНИЕ: Проверка logger ---
+        if 'logger' in globals() and logger: logger.error(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}", exc_info=True)
         exit_code_main = 1 # Общий код ошибки
     finally:
         # Выходим с финальным кодом
         sys.exit(exit_code_main)
+

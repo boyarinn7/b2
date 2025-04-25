@@ -32,6 +32,31 @@ except ImportError:
     ClientError = Exception # Fallback
     NoCredentialsError = Exception # Fallback
 
+# Убедитесь, что эти импорты есть в начале файла modules/utils.py
+
+from pathlib import Path
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    # Логируем ошибку, если Pillow не найден
+    try:
+        # Попытка получить существующий логгер utils
+        logger_utils = logging.getLogger("utils") # Предполагаем, что логгер utils уже есть
+        if not logger_utils.hasHandlers(): # Настроить, если нет
+             logging.basicConfig(level=logging.INFO)
+             logger_utils = logging.getLogger("utils_fallback")
+        logger_utils.error("!!! Библиотека Pillow (PIL) не найдена. Функция add_text_to_image не будет работать. Установите: pip install Pillow !!!")
+    except Exception:
+        print("!!! ОШИБКА: Библиотека Pillow (PIL) не найдена И не удалось получить логгер. Установите: pip install Pillow !!!")
+    # Определяем заглушки, чтобы код ниже не падал при импорте
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    ImageFilter = None
+
+
 # --- Функции ---
 
 def ensure_directory_exists(file_path_str):
@@ -312,4 +337,219 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
 def generate_file_id():
     """Генерирует уникальный ID на основе текущей даты и времени UTC."""
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+
+
+# --- Вставьте эту функцию в modules/utils.py ---
+
+def add_text_to_image(
+    image_path_str: str,
+    text: str,
+    font_path_str: str,
+    output_path_str: str,
+    font_size: int = 60,
+    text_color: tuple = (255, 255, 255, 230), # Белый с небольшой прозрачностью
+    position: tuple = ('center', 'bottom'),
+    padding: int = 50,
+    bg_blur_radius: float = 3.0,
+    bg_opacity: int = 100,
+    logger_instance=None # Возможность передать логгер
+    ):
+    """
+    Наносит текст на изображение с использованием Pillow.
+
+    Args:
+        image_path_str: Путь к исходному изображению.
+        text: Текст для нанесения.
+        font_path_str: Путь к файлу шрифта (.ttf или .otf).
+        output_path_str: Путь для сохранения итогового изображения PNG.
+        font_size: Размер шрифта.
+        text_color: Цвет текста (R, G, B, A).
+        position: Позиция текста ('center', 'left', 'right', 'top', 'bottom').
+        padding: Отступы от краев для позиций 'left'/'right'/'top'/'bottom'.
+        bg_blur_radius: Радиус размытия фона под текстом (0 - отключить).
+        bg_opacity: Прозрачность прямоугольной подложки под текстом (0-255, 0 - полностью прозрачный).
+        logger_instance: Экземпляр логгера для использования.
+
+    Returns:
+        bool: True в случае успеха, False в случае ошибки.
+    """
+    # Получаем логгер
+    if logger_instance:
+        log = logger_instance
+    else:
+        # Пытаемся получить стандартный логгер utils или создаем временный
+        try:
+            log = logging.getLogger("utils.add_text_to_image")
+            if not log.hasHandlers(): raise LookupError("No handler")
+        except Exception:
+            log = logging.getLogger("add_text_to_image_fallback")
+            if not log.hasHandlers():
+                 logging.basicConfig(level=logging.INFO)
+                 log.warning("Используется fallback логгер для add_text_to_image.")
+
+    # Проверка доступности Pillow
+    if not PIL_AVAILABLE or Image is None:
+        log.error("Библиотека Pillow недоступна. Невозможно добавить текст.")
+        return False
+
+    try:
+        base_image_path = Path(image_path_str)
+        font_path = Path(font_path_str)
+        output_path = Path(output_path_str)
+
+        # Проверка существования файлов
+        if not base_image_path.is_file():
+            log.error(f"Исходное изображение не найдено: {base_image_path}")
+            return False
+        if not font_path.is_file():
+            log.error(f"Файл шрифта не найден: {font_path}")
+            return False
+
+        log.info(f"Открытие изображения: {base_image_path.name}")
+        # Открываем с конвертацией в RGBA для поддержки прозрачности
+        img = Image.open(base_image_path).convert("RGBA")
+        draw = ImageDraw.Draw(img)
+        img_width, img_height = img.size
+
+        log.info(f"Загрузка шрифта: {font_path.name} (размер: {font_size})")
+        font = ImageFont.truetype(str(font_path), font_size)
+
+        # --- Расчет размеров и позиции текста ---
+        try:
+            # Используем getbbox для Pillow >= 9.2.0
+            bbox = draw.textbbox((0, 0), text, font=font, anchor="lt") # anchor='lt' для согласованности
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except AttributeError:
+            # Fallback для старых версий Pillow
+            log.warning("Метод textbbox не найден, используем textsize (менее точный).")
+            text_width, text_height = draw.textsize(text, font=font)
+
+        log.debug(f"Рассчитанные размеры текста: {text_width}x{text_height}")
+
+        # Расчет координат X
+        if position[0] == 'center':
+            x = (img_width - text_width) / 2
+        elif position[0] == 'left':
+            x = padding
+        elif position[0] == 'right':
+            x = img_width - text_width - padding
+        else: # По умолчанию центр
+            x = (img_width - text_width) / 2
+
+        # Расчет координат Y
+        if position[1] == 'center':
+            y = (img_height - text_height) / 2
+        elif position[1] == 'top':
+            y = padding
+        elif position[1] == 'bottom':
+            y = img_height - text_height - padding
+        else: # По умолчанию низ
+            y = img_height - text_height - padding
+
+        # Итоговая позиция для textdraw (левый верхний угол текста)
+        text_position = (int(x), int(y))
+        log.info(f"Позиция текста (левый верхний угол): {text_position}")
+
+        # --- Добавление подложки/размытия (опционально) ---
+        # Создаем отдельный слой для эффектов фона, чтобы не портить исходное изображение
+        background_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        draw_bg = ImageDraw.Draw(background_layer)
+
+        # Определяем область под текстом с отступами
+        bg_padding = 20 # Дополнительный отступ для подложки
+        bg_left = max(0, text_position[0] - bg_padding)
+        bg_top = max(0, text_position[1] - bg_padding)
+        bg_right = min(img_width, text_position[0] + text_width + bg_padding)
+        bg_bottom = min(img_height, text_position[1] + text_height + bg_padding)
+        # Координаты для рисования прямоугольника
+        bg_rect_coords = [(int(bg_left), int(bg_top)), (int(bg_right), int(bg_bottom))]
+        # Координаты для обрезки области размытия
+        bg_crop_box = (int(bg_left), int(bg_top), int(bg_right), int(bg_bottom))
+
+        # Применяем размытие, если нужно
+        if bg_blur_radius > 0:
+            log.info(f"Применение размытия фона (радиус: {bg_blur_radius}) в области {bg_crop_box}")
+            try:
+                crop = img.crop(bg_crop_box)
+                # Используем GaussianBlur, он обычно дает лучший результат
+                blurred_crop = crop.filter(ImageFilter.GaussianBlur(bg_blur_radius))
+                # Вставляем размытую область на слой эффектов
+                background_layer.paste(blurred_crop, bg_crop_box)
+            except Exception as blur_err:
+                log.warning(f"Не удалось применить размытие: {blur_err}")
+
+        # Рисуем полупрозрачный прямоугольник поверх размытия (или просто на пустой слой)
+        if bg_opacity > 0: # Рисуем только если есть непрозрачность
+             log.info(f"Создание полупрозрачной подложки (opacity: {bg_opacity}) в области {bg_rect_coords}")
+             overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
+             draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
+
+        # Накладываем слой с эффектами фона на исходное изображение
+        img = Image.alpha_composite(img, background_layer)
+        # Обновляем объект Draw для финального изображения
+        draw = ImageDraw.Draw(img)
+
+        # --- Нанесение текста ---
+        log.info(f"Нанесение текста '{text[:50]}...' цветом {text_color}")
+        # Используем anchor='lt' для Pillow >= 9.3.0 для более предсказуемого позиционирования
+        try:
+             draw.text(text_position, text, font=font, fill=text_color, anchor="lt")
+        except TypeError: # Fallback для старых версий, где anchor нет
+             log.warning("Параметр 'anchor' не поддерживается, используем старый метод позиционирования.")
+             draw.text(text_position, text, font=font, fill=text_color)
+
+
+        # --- Сохранение результата ---
+        # Убедимся, что директория для сохранения существует
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(output_path, format='PNG') # Сохраняем в PNG
+        log.info(f"✅ Изображение с текстом сохранено: {output_path.name}")
+        return True
+
+    except FileNotFoundError as fnf_err:
+         log.error(f"Ошибка FileNotFoundError при обработке изображения: {fnf_err}")
+         return False
+    except Exception as e:
+        log.error(f"Ошибка при добавлении текста на изображение: {e}", exc_info=True)
+        return False
+
+# --- Конец функции ---
+
+# Пример использования (можно закомментировать или удалить в финальной версии)
+# if __name__ == '__main__':
+#     # Нужен Pillow: pip install Pillow
+#     if PIL_AVAILABLE:
+#         # Создаем тестовое изображение
+#         test_img_path = "test_image.png"
+#         img = Image.new('RGB', (800, 200), color = (73, 109, 137))
+#         img.save(test_img_path)
+#
+#         # Нужен файл шрифта, например, скачанный Roboto-Regular.ttf
+#         # Поместите его рядом со скриптом или укажите полный путь
+#         test_font_path = "fonts/Roboto-Regular.ttf" # Пример пути
+#         output_file = "test_output.png"
+#         test_text = "Пример текста для проверки функции"
+#
+#         if Path(test_font_path).is_file():
+#             success = add_text_to_image(
+#                 test_img_path,
+#                 test_text,
+#                 test_font_path,
+#                 output_file,
+#                 font_size=40,
+#                 position=('center', 'center'),
+#                 bg_blur_radius=5,
+#                 bg_opacity=120
+#             )
+#             if success:
+#                 print(f"Тестовое изображение сохранено как {output_file}")
+#             else:
+#                 print("Не удалось создать тестовое изображение.")
+#         else:
+#             print(f"Тестовый шрифт не найден по пути: {test_font_path}")
+#     else:
+#         print("Pillow не установлен. Тест не может быть выполнен.")
+
+
 

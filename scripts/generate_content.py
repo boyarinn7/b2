@@ -368,7 +368,13 @@ class ContentGenerator:
             self.update_tracker(selected_focus, short_topic, tracker)
             self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
             content_metadata = {"theme": "tragic" if "(т)" in selected_focus else "normal"}
-            return full_topic, content_metadata
+            # В конце метода generate_topic
+            return full_topic, content_metadata, selected_focus  # <--- ДОБАВЛЕНО selected_focus
+        except Exception as e:
+            self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True)
+            # Нужно вернуть что-то или пробросить исключение, чтобы run() знал об ошибке
+            # Вернем None для всех значений при ошибке
+            return None, None, None  # <--- ИЗМЕНЕНО: Возвращаем None при ошибке
         except Exception as e: self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True); raise
 
     def update_tracker(self, focus, short_topic, tracker):
@@ -538,8 +544,20 @@ class ContentGenerator:
             # Шаг 1: Подготовка
             self.adapt_prompts(); self.clear_generated_content()
             # Шаг 2: Генерация Темы
-            tracker = self.load_tracker(); topic, content_data = self.generate_topic(tracker)
+            # В начале метода run, после загрузки tracker
+            tracker = self.load_tracker()
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Принимаем 3 значения ---
+            topic, content_data, selected_focus = self.generate_topic(tracker)
+            # --- Проверка на ошибку генерации темы ---
+            if topic is None or selected_focus is None:
+                self.logger.error("Не удалось сгенерировать тему или получить фокус. Прерывание.")
+                # Здесь можно либо пробросить исключение, либо вернуть ошибку
+                raise RuntimeError("Ошибка генерации темы")
+                # -----------------------------------------
+            # Теперь selected_focus доступен в методе run
+
             # Шаг 3: Генерация Текста (RU)
+
             text_initial = ""; generate_text_enabled = self.config.get('CONTENT.text.enabled', True); generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
             if (content_data.get("theme") == "tragic" and generate_tragic_text_enabled) or (content_data.get("theme") != "tragic" and generate_text_enabled):
                 prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"; prompt_config_key = f"content.{prompt_key_suffix}"
@@ -678,13 +696,14 @@ class ContentGenerator:
             self.logger.info("Формирование итогового словаря для B2...")
             complete_content_dict = {
                 "topic": topic, "content": text_initial.strip() if text_initial else "",
+                "selected_focus": selected_focus,
                 "sarcasm": {"comment": sarcastic_comment, "poll": sarcastic_poll},
                 "script": script_en, "first_frame_description": frame_description_en,
                 "creative_brief": creative_brief, "final_mj_prompt": final_mj_prompt_en,
                 "final_runway_prompt": final_runway_prompt_en,
                 "script_ru": script_ru, "first_frame_description_ru": frame_description_ru,
                 "final_mj_prompt_ru": final_mj_prompt_ru, "final_runway_prompt_ru": final_runway_prompt_ru,
-            }
+                 }
             complete_content_dict = {k: v for k, v in complete_content_dict.items() if v is not None}
             self.logger.debug(f"Итоговый словарь: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
             self.logger.info(f"Сохранение в B2 для ID {generation_id}...")
