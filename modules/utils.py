@@ -359,27 +359,30 @@ def hex_to_rgba(hex_color, alpha=255):
 
 def add_text_to_image(
     image_path_str: str,
-    text: str,
+    text: str, # Текст с переносами \n от ИИ
     font_path_str: str,
     output_path_str: str,
-    font_size: int = 70,
+    # font_size: int = 70, # <<< Удален аргумент font_size
     text_color_hex: str = "#000000", # Цвет по умолчанию черный
-    position: tuple = ('center', 'center'),
-    padding: int = 50,
-    haze_opacity: int = 100,
+    position: tuple = ('center', 'center'), # Позиция текста (ожидаем ('center','center'))
+    padding: int = 50, # Отступы (меньше используются при center)
+    haze_opacity: int = 100, # Прозрачность белой дымки (0-255)
     bg_blur_radius: float = 0,
     bg_opacity: int = 0,
     logger_instance=None,
-    stroke_width: int = 2, # *** НОВОЕ: Толщина обводки ***
-    stroke_color_hex: str = "#404040" # *** НОВОЕ: Цвет обводки (темно-серый) ***
+    stroke_width: int = 2,
+    stroke_color_hex: str = "#404040",
+    target_width_fraction: float = 0.8, # <<< НОВЫЙ: Какую долю ширины должен занимать текст
+    initial_font_size: int = 100, # <<< НОВЫЙ: С какого размера начинать подбор
+    min_font_size: int = 30 # <<< НОВЫЙ: Минимальный размер шрифта
     ):
     """
-    Наносит текст на изображение с использованием Pillow, добавляя белую "дымку" и обводку текста.
-    (Версия с textbbox, загрузкой шрифта в память, обводкой)
+    Наносит текст на изображение с автоподбором размера шрифта,
+    добавляя белую "дымку" и обводку текста.
     """
     # Получаем логгер
     log = logger_instance if logger_instance else logger
-    log.debug(">>> Вход в add_text_to_image (с обводкой)")
+    log.debug(">>> Вход в add_text_to_image (автоподбор размера)")
 
     # Проверка доступности Pillow
     if not PIL_AVAILABLE or Image is None:
@@ -421,52 +424,74 @@ def add_text_to_image(
         draw = ImageDraw.Draw(img)
         log.debug("Объект ImageDraw создан/обновлен.")
 
-        # *** Загрузка шрифта в память ***
+        # *** Автоподбор размера шрифта ***
+        log.info("Начало автоподбора размера шрифта...")
         font = None
+        current_font_size = initial_font_size
+        text_width = img_width * 2 # Инициализируем ширину больше максимальной
+        max_text_width = img_width * target_width_fraction
+        log.debug(f"Целевая ширина текста: {max_text_width:.0f} (фракция: {target_width_fraction})")
+
+        font_bytes = None
         try:
-            log.info(f"Чтение файла шрифта в память: {font_path.name}")
+            log.debug(f"Чтение файла шрифта в память: {font_path.name}")
             with open(font_path, 'rb') as f_font:
                 font_bytes = f_font.read()
             log.debug(f"Файл шрифта прочитан, размер: {len(font_bytes)} байт.")
-            log.info(f"Загрузка шрифта из памяти (размер: {font_size})")
-            font = ImageFont.truetype(io.BytesIO(font_bytes), font_size) # Используем io.BytesIO
-            log.debug("Шрифт УСПЕШНО загружен из памяти.")
-        except Exception as font_err:
-            log.error(f"КРИТИЧЕСКАЯ ОШИБКА при загрузке шрифта '{font_path}' в/из памяти: {font_err}", exc_info=True)
-            return False
-        # *** КОНЕЦ Загрузки шрифта в память ***
+        except Exception as read_font_err:
+             log.error(f"Ошибка чтения файла шрифта '{font_path}': {read_font_err}", exc_info=True)
+             return False
 
-        # --- Расчет размеров и позиции текста с использованием textbbox ---
-        log.debug("Начало расчета размеров текста (используя textbbox)...")
-        text_width = 0
-        text_height = 0
-        bbox_multiline = (0, 0, 0, 0) # Инициализация
-        try:
-            # Считаем bbox для многострочного текста ОДИН РАЗ БЕЗ anchor
-            log.debug("Вызов textbbox для многострочного текста (БЕЗ anchor)...")
-            bbox_multiline = draw.textbbox((0, 0), text, font=font)
-            log.debug(f"textbbox для многострочного текста вернул: {bbox_multiline}")
-            text_width = bbox_multiline[2] - bbox_multiline[0]
-            text_height = bbox_multiline[3] - bbox_multiline[1]
+        while current_font_size >= min_font_size:
+            try:
+                log.debug(f"Пробуем размер шрифта: {current_font_size}")
+                font = ImageFont.truetype(io.BytesIO(font_bytes), current_font_size)
+                log.debug("Шрифт загружен для текущего размера.")
 
-        except Exception as size_err:
-            log.error(f"Ошибка при расчете размера текста с textbbox: {size_err}", exc_info=True)
-            return False
+                # Считаем bbox для многострочного текста БЕЗ anchor
+                bbox_multiline = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox_multiline[2] - bbox_multiline[0]
+                text_height = bbox_multiline[3] - bbox_multiline[1]
+                log.debug(f"Размер {current_font_size}: Ширина={text_width:.0f}, Высота={text_height:.0f}")
 
-        # Проверка, что размеры рассчитаны
-        if text_width <= 0 or text_height <= 0:
-            log.error(f"Рассчитаны некорректные размеры текста: {text_width}x{text_height}")
-            return False
+                if text_width <= max_text_width:
+                    log.info(f"Найден подходящий размер шрифта: {current_font_size}")
+                    break # Выходим из цикла, размер найден
 
-        log.debug(f"Рассчитанные размеры текста: Ширина={text_width}, Высота={text_height}")
+                current_font_size -= 2 # Уменьшаем размер на 2 пикселя
 
-        # Расчет координат X
-        log.debug("Расчет X координаты...")
+            except Exception as size_calc_err:
+                log.error(f"Ошибка при расчете размера для шрифта {current_font_size}: {size_calc_err}", exc_info=True)
+                # Уменьшаем размер и пробуем снова, если не достигли минимума
+                current_font_size -= 2
+                if current_font_size < min_font_size:
+                    log.error("Не удалось подобрать размер шрифта.")
+                    return False # Выходим, если не удалось посчитать даже для минимального
+
+        else: # Срабатывает, если цикл завершился без break
+            log.warning(f"Не удалось вместить текст в {target_width_fraction*100:.0f}% ширины даже с минимальным размером {min_font_size}. Используется минимальный размер.")
+            # Загружаем шрифт с минимальным размером еще раз
+            try:
+                font = ImageFont.truetype(io.BytesIO(font_bytes), min_font_size)
+                bbox_multiline = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox_multiline[2] - bbox_multiline[0]
+                text_height = bbox_multiline[3] - bbox_multiline[1]
+                current_font_size = min_font_size # Устанавливаем финальный размер
+            except Exception as min_font_err:
+                log.error(f"Ошибка при загрузке/расчете минимального шрифта {min_font_size}: {min_font_err}", exc_info=True)
+                return False
+
+        final_font_size = current_font_size # Запоминаем финальный размер
+        log.debug(f"Финальный размер шрифта: {final_font_size}")
+        # *** Конец автоподбора размера шрифта ***
+
+
+        # --- Расчет позиции текста (с использованием финальных размеров) ---
+        log.debug("Расчет координат X...")
         x = (img_width - text_width) / 2
         log.debug(f"X = {x}")
 
-        # Расчет координат Y
-        log.debug("Расчет Y координаты...")
+        log.debug("Расчет координат Y...")
         y = (img_height - text_height) / 2
         log.debug(f"Y = {y}")
 
@@ -528,12 +553,12 @@ def add_text_to_image(
         final_text_color = hex_to_rgba(text_color_hex, alpha=240) # Получаем RGBA из HEX
         log.debug(f"Финальный цвет текста (RGBA): {final_text_color}")
 
-        # *** НОВОЕ: Получаем цвет обводки ***
+        # Получаем цвет обводки
         final_stroke_color = hex_to_rgba(stroke_color_hex, alpha=240)
         log.debug(f"Цвет обводки (RGBA): {final_stroke_color}, Ширина: {stroke_width}")
 
         log_text_preview = text[:50].replace('\n', '\\n')
-        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (HEX: {text_color_hex}) с обводкой")
+        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (HEX: {text_color_hex}) с обводкой (размер: {final_font_size})")
 
         # Используем align='center' для выравнивания строк
         align_option = 'center' if position[0] == 'center' else 'left'
@@ -545,11 +570,11 @@ def add_text_to_image(
              draw.text(
                  text_position,
                  text,
-                 font=font,
+                 font=font, # Используем шрифт с подобранным размером
                  fill=final_text_color,
                  align=align_option,
-                 stroke_width=stroke_width, # <<< Добавлено
-                 stroke_fill=final_stroke_color # <<< Добавлено
+                 stroke_width=stroke_width,
+                 stroke_fill=final_stroke_color
              )
              log.debug("draw.text выполнен (с обводкой).")
         except Exception as draw_err:
