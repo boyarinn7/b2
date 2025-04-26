@@ -513,7 +513,14 @@ def add_text_to_image(
         # --- Нанесение текста ---
         # *** НОВОЕ: Используем text_color_hex ***
         final_text_color = hex_to_rgba(text_color_hex, alpha=240) # Получаем RGBA из HEX
-        log.info(f"Нанесение текста '{text[:50].replace('\n', '\\n')}...' цветом {final_text_color} (HEX: {text_color_hex})")
+
+        # *** ИСПРАВЛЕНИЕ ОШИБКИ f-string ***
+        # Создаем переменную для лога
+        log_text_preview = text[:50].replace('\n', '\\n') # Заменяем переносы для лога
+        # Используем переменную в f-строке
+        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (HEX: {text_color_hex})")
+        # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
+
         # Используем align='center' для многострочного текста, если позиция по горизонтали 'center'
         align_option = 'center' if position[0] == 'center' else 'left'
         # Используем anchor='lt' для Pillow >= 9.3.0 для более предсказуемого позиционирования
@@ -540,7 +547,7 @@ def add_text_to_image(
         log.error(f"Ошибка при добавлении текста на изображение: {e}", exc_info=True)
         return False
 
-# --- Конец функции ---
+# +++ КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ +++
 
 # Пример использования (можно закомментировать или удалить в финальной версии)
 # if __name__ == '__main__':
