@@ -1151,7 +1151,7 @@ def main():
                     logger.info(f"Запрос рекомендаций по размещению для текста: '{text_for_placement_analysis[:100]}...'")
                     placement_suggestions = get_text_placement_suggestions(
                         image_url=image_for_title_url,
-                        text=text_for_placement_analysis, # Передаем текст с контекстом
+                        text=topic,
                         image_width=PLACEHOLDER_WIDTH,
                         image_height=PLACEHOLDER_HEIGHT
                     )

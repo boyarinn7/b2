@@ -1,321 +1,340 @@
 import os
-import sys
 import json
-from pathlib import Path
+import base64
 import re
+import logging
+from pathlib import Path
+import sys
+import openai
+import httpx
 
-# --- Конфигурация ---
-
-# Путь к корневой папке со шрифтами (ВАЖНО: проверьте правильность)
-ROOT_FONT_DIR = r"C:\Users\boyar\b2\fonts"
-
-# Расширения файлов шрифтов (в нижнем регистре)
-FONT_EXTENSIONS = ('.ttf', '.otf')
-
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Определяем путь к трекеру относительно скрипта ---
-# Получаем директорию, где находится сам скрипт
-script_dir = Path(__file__).resolve().parent
-# Формируем полный путь к файлу трекера в той же директории
-TRACKER_FILE_PATH = script_dir / "topics_tracker.json"
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-# Словарь: Фокус -> Базовое имя файла шрифта (из предложений Google Fonts)
-# ВАЖНО: Проверьте и при необходимости скорректируйте базовые имена,
-# чтобы они соответствовали началу имен ваших файлов!
-focus_to_font_base = {
-    "Исторические факты": "PTSerif",
-    "Исторические личности": "CormorantGaramond",
-    "Знаковые битвы (т)": "Oswald",
-    "Трагедии человечества (т)": "Merriweather",
-    "Доисторические события": "Arvo",
-    "Древние цивилизации": "Forum",
-    "Необычные открытия": "Montserrat",
-    "Артефакты и реликвии": "OldStandardTT",
-    "Конспирологические теории": "PTSansNarrow",
-    "Загадки истории": "EBGaramond",
-    "Исторические курьезы": "Comfortaa",
-    "Великие изобретения": "Roboto",
-    "Культурные феномены": "PlayfairDisplay",
-    "Исторические карты": "PTSans",
-    "История через цитаты": "Merriweather",
-    "Династии и монархи": "CormorantGaramond",
-    "Важные документы истории": "PTSerif",
-    "Мифы и легенды": "YesevaOne",
-    "Исторические праздники": "YesevaOne",
-    "Великие путешественники": "PTSans",
-    "История медицины": "PTSerif",
-    "Религии и верования": "OldStandardTT",
-    "Архитектурные чудеса": "Forum",
-    "История в искусстве": "PlayfairDisplay",
-    "Экономические кризисы и взлеты (т)": "RobotoSlab",
-    "История технологий": "Roboto",
-    "Исторические конфликты и их разрешение (т)": "Oswald",
-    "Женщины в истории": "CormorantGaramond",
-    "История науки": "Montserrat",
-    "Исторические кулинарные традиции": "Alice",
-    "История моды": "PlayfairDisplay",
-    "Исторические спортивные события": "Oswald",
-    "История образования": "PTSerif",
-    "Исторические эпидемии и пандемии (т)": "Merriweather",
-    "История окружающей среды (т)": "PTSans",
-    "__default__": "Roboto" # Шрифт по умолчанию
-}
-
-# --- Функции ---
-
-def load_tracker_focuses(tracker_path):
-    """Загружает список фокусов из файла topics_tracker.json."""
-    # Используем tracker_path как объект Path
-    tracker_path_obj = Path(tracker_path)
-    print(f"Попытка загрузки трекера из: {tracker_path_obj.resolve()}") # Логируем полный путь
-    try:
-        # Проверяем существование файла перед открытием
-        if not tracker_path_obj.is_file():
-            print(f"Ошибка: Файл трекера не найден по абсолютному пути: {tracker_path_obj.resolve()}")
-            return None
-
-        with open(tracker_path_obj, 'r', encoding='utf-8') as f:
-            tracker_data = json.load(f)
-        focuses = tracker_data.get("all_focuses")
-        if not focuses or not isinstance(focuses, list):
-            print(f"Ошибка: Ключ 'all_focuses' не найден или не является списком в {tracker_path_obj.name}")
-            return None
-        print(f"Успешно загружено {len(focuses)} фокусов из {tracker_path_obj.name}.")
-        return focuses
-    # FileNotFoundError теперь обрабатывается проверкой is_file() выше
-    except json.JSONDecodeError:
-        print(f"Ошибка: Некорректный JSON в файле трекера: {tracker_path_obj.name}")
-        return None
-    except PermissionError:
-        print(f"Ошибка: Нет прав доступа к файлу трекера: {tracker_path_obj.resolve()}")
-        return None
-    except Exception as e:
-        print(f"Ошибка при чтении файла трекера {tracker_path_obj.name}: {e}")
-        return None
-
-# --- Остальные функции (find_font_files, get_font_base_name) без изменений ---
-def find_font_files(root_dir, extensions):
-    """Рекурсивно находит все файлы шрифтов и возвращает словарь {имя_файла: полный_путь}."""
-    found_files = {}
-    print(f"\nПоиск файлов ({', '.join(extensions)}) в '{root_dir}' и подпапках...")
-    try:
-        if not os.path.isdir(root_dir):
-            print(f"Ошибка: Папка не найдена: {root_dir}")
-            return None
-
-        for subdir, dirs, files in os.walk(root_dir):
-            for filename in files:
-                if filename.lower().endswith(extensions):
-                    full_path = os.path.join(subdir, filename)
-                    # Используем Path для нормализации пути
-                    normalized_path = str(Path(full_path).resolve())
-                    if filename in found_files:
-                         print(f"Предупреждение: Найден дубликат имени файла '{filename}'. Используется путь: {normalized_path}")
-                    found_files[filename] = normalized_path
-        print(f"Найдено всего файлов шрифтов: {len(found_files)}")
-        return found_files
-    except PermissionError:
-        print(f"Ошибка: Нет прав доступа для чтения '{root_dir}' или подпапок.")
-        return None
-    except Exception as e:
-        print(f"Ошибка при поиске файлов: {e}")
-        return None
-
-def get_font_base_name(filename):
-    """Извлекает базовое имя шрифта до первого тире или цифры (упрощенно)."""
-    base = Path(filename).stem # Имя файла без расширения
-    # Удаляем общие суффиксы Regular, Bold и т.д. для лучшего совпадения
-    base = re.sub(r'-(Regular|Italic|Bold|Medium|Light|Thin|Black|ExtraLight|ExtraBold|SemiBold|VariableFont_wght|Condensed|SemiCondensed)$', '', base, flags=re.IGNORECASE)
-    # Можно добавить более сложные правила, если нужно
-    return base
-
-# --- Основной скрипт ---
-if __name__ == "__main__":
-    print("--- Запуск скрипта очистки шрифтов ---")
-
-    # 1. Загрузка фокусов
-    # Теперь TRACKER_FILE_PATH - это объект Path с абсолютным путем
-    all_focuses = load_tracker_focuses(TRACKER_FILE_PATH)
-    if all_focuses is None:
-        sys.exit(1)
-
-    # 2. Поиск всех файлов шрифтов
-    all_found_fonts = find_font_files(ROOT_FONT_DIR, FONT_EXTENSIONS)
-    if all_found_fonts is None:
-        sys.exit(1)
-    if not all_found_fonts:
-        print("В указанной папке и подпапках шрифты не найдены.")
-        sys.exit(0)
-
-    # 3. Определение необходимых шрифтов
-    required_font_files = {} # {базовое_имя_шрифта: имя_файла_для_использования}
-    focus_to_final_path = {} # {фокус: полный_путь_к_файлу}
-    needed_base_names = set(focus_to_font_base.values()) # Набор нужных базовых имен
-
-    print("\nОпределение необходимых шрифтов для фокусов...")
-    # Сначала ищем файлы для конкретных фокусов
-    for focus in all_focuses:
-        target_base_name = focus_to_font_base.get(focus)
-        if not target_base_name:
-            print(f"Предупреждение: Для фокуса '{focus}' не найдено сопоставление шрифта. Будет использован шрифт по умолчанию.")
-            target_base_name = focus_to_font_base.get("__default__")
-            if not target_base_name:
-                 print("Ошибка: Шрифт по умолчанию '__default__' не задан в focus_to_font_base!")
-                 continue # Пропускаем этот фокус
-
-        # Если для этого базового имени шрифт уже найден, используем его
-        if target_base_name in required_font_files:
-             filename_to_use = required_font_files[target_base_name]
-             # Убедимся, что файл все еще существует в словаре найденных
-             if filename_to_use in all_found_fonts:
-                 focus_to_final_path[focus] = all_found_fonts[filename_to_use]
-             else:
-                 print(f"Ошибка: Ранее найденный файл '{filename_to_use}' для '{target_base_name}' больше не доступен.")
-                 # Попробуем найти заново или использовать дефолт
-                 target_base_name = focus_to_font_base.get("__default__") # Переключаемся на дефолт
-                 if target_base_name in required_font_files: # Если дефолт уже найден
-                      filename_to_use = required_font_files[target_base_name]
-                      if filename_to_use in all_found_fonts:
-                          focus_to_final_path[focus] = all_found_fonts[filename_to_use]
-                      else:
-                          print(f"Ошибка: Дефолтный файл '{filename_to_use}' тоже недоступен.")
-                          continue # Пропускаем фокус
-                 else: # Ищем дефолт заново (код поиска ниже)
-                     pass # Поиск произойдет ниже
-             continue # Переходим к следующему фокусу
-
-        # Ищем подходящий файл (логика поиска остается)
-        found_match = None
-        preferred_file = None # Для хранения Regular версии, если найдется
-
-        for filename, full_path in all_found_fonts.items():
-             # Сравниваем начало имени файла (без расширения, регистронезависимо)
-             file_stem_lower = Path(filename).stem.lower()
-             target_base_lower = target_base_name.lower()
-             # Ищем точное совпадение или совпадение с тире/пробелом/подчеркиванием
-             # Добавим ^ для поиска с начала строки
-             if re.match(rf"^{re.escape(target_base_lower)}(?:[-_\s]|$)", file_stem_lower):
-                # Отдаем предпочтение файлу 'Regular', если он еще не найден
-                if preferred_file is None and 'regular' in file_stem_lower and 'italic' not in file_stem_lower:
-                     preferred_file = filename
-                     # Не прерываем сразу, вдруг есть более точное совпадение позже
-                # Запоминаем первое найденное совпадение на случай, если Regular нет
-                if found_match is None:
-                    found_match = filename
-
-        # Выбираем файл для использования: сначала предпочтительный, потом любой найденный
-        filename_to_use = preferred_file if preferred_file else found_match
-
-        if filename_to_use:
-            required_font_files[target_base_name] = filename_to_use
-            focus_to_final_path[focus] = all_found_fonts[filename_to_use]
-            print(f"- Для фокуса '{focus}' выбран файл: {filename_to_use}")
-        else:
-            print(f"Предупреждение: Не найден файл для базового имени '{target_base_name}' (фокус: '{focus}'). Попытка использовать шрифт по умолчанию.")
-            # Пытаемся использовать шрифт по умолчанию
-            default_base_name = focus_to_font_base.get("__default__")
-            if default_base_name:
-                 # Повторяем поиск для шрифта по умолчанию
-                 if default_base_name in required_font_files:
-                     filename_to_use = required_font_files[default_base_name]
-                     if filename_to_use in all_found_fonts:
-                         focus_to_final_path[focus] = all_found_fonts[filename_to_use]
-                         print(f"- Для фокуса '{focus}' используется шрифт по умолчанию: {filename_to_use}")
-                     else:
-                          print(f"Ошибка: Дефолтный файл '{filename_to_use}' недоступен для фокуса '{focus}'.")
-                 else:
-                     # Ищем файл для шрифта по умолчанию (аналогично основному поиску)
-                     found_default_match = None
-                     preferred_default_file = None
-                     for fname, fpath in all_found_fonts.items():
-                         file_stem_lower = Path(fname).stem.lower()
-                         target_base_lower = default_base_name.lower()
-                         if re.match(rf"^{re.escape(target_base_lower)}(?:[-_\s]|$)", file_stem_lower):
-                             if preferred_default_file is None and 'regular' in file_stem_lower and 'italic' not in file_stem_lower:
-                                 preferred_default_file = fname
-                             if found_default_match is None: found_default_match = fname
-                             # Можно добавить break, если нашли Regular
-                             if preferred_default_file: break
-
-                     filename_to_use = preferred_default_file if preferred_default_file else found_default_match
-                     if filename_to_use:
-                         required_font_files[default_base_name] = filename_to_use
-                         focus_to_final_path[focus] = all_found_fonts[filename_to_use]
-                         print(f"- Для фокуса '{focus}' используется шрифт по умолчанию: {filename_to_use}")
-                     else:
-                          print(f"Ошибка: Не найден файл и для шрифта по умолчанию '{default_base_name}'!")
-            else:
-                 print("Ошибка: Шрифт по умолчанию '__default__' не задан!")
+# --- Добавляем путь к модулям, если скрипт не в корне проекта ---
+# Предполагаем, что скрипт находится в папке tests внутри вашего проекта b2
+try:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    MODULES_DIR = BASE_DIR / 'modules'
+    if str(MODULES_DIR) not in sys.path:
+        sys.path.insert(0, str(MODULES_DIR))
+    # Импортируем нужную функцию ИЗ УЖЕ ИСПРАВЛЕННОГО utils.py
+    from utils import add_text_to_image
+except ImportError as e:
+    print(f"Ошибка импорта 'add_text_to_image' из utils: {e}")
+    print("Убедитесь, что скрипт находится в папке tests вашего проекта,")
+    print("и файл modules/utils.py существует и доступен.")
+    sys.exit(1)
+except NameError:
+    print("Ошибка: Не удалось определить путь к модулям. Запустите скрипт из папки tests.")
+    sys.exit(1)
 
 
-    # 4. Определение лишних файлов
-    print("\nОпределение лишних файлов...")
-    required_filenames_set = set(required_font_files.values())
-    extra_files_to_delete = {} # {имя_файла: полный_путь}
+# --- Настройка Логирования ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("test_title_generator")
 
-    for filename, full_path in all_found_fonts.items():
-        if filename not in required_filenames_set:
-            extra_files_to_delete[filename] = full_path
+# +++ ИНИЦИАЛИЗАЦИЯ ГЛОБАЛЬНОЙ ПЕРЕМЕННОЙ +++
+openai_client_instance = None
+# +++ КОНЕЦ ИНИЦИАЛИЗАЦИИ +++
 
-    # 5. Вывод списка на удаление и запрос подтверждения
-    if extra_files_to_delete:
-        print(f"\nНайдены следующие ЛИШНИЕ файлы шрифтов ({len(extra_files_to_delete)} шт.), которые НЕ НУЖНЫ для фокусов:")
-        sorted_extra_files = sorted(extra_files_to_delete.keys())
-        for i, filename in enumerate(sorted_extra_files):
-            print(f"  {i+1}. {filename} (Путь: {extra_files_to_delete[filename]})")
+# --- Константы и Пути ---
+# Используйте необработанные строки (r"...") для путей Windows
+IMAGE_PATH_STR = r"C:\Users\boyar\777\555\20250303-0855.png"
+JSON_PATH_STR = r"C:\Users\boyar\777\555\20250303-0855.json"
+# *** ИЗМЕНЕНИЕ: Используем Arial ***
+FONT_PATH_STR = r"C:\Windows\Fonts\arial.ttf" # Проверьте этот путь!
+# **********************************
+OUTPUT_PATH_STR = r"C:\Users\boyar\777\555\1_arial_test.png" # Изменил имя для теста
 
-        print("\n!!! ВНИМАНИЕ !!!")
-        print("Эти файлы будут УДАЛЕНЫ с вашего диска.")
-        confirm = ""
-        try:
-            confirm = input("Вы уверены, что хотите удалить эти файлы? (введите 'yes' для подтверждения): ").strip().lower()
-        except EOFError:
-             print("\nВвод не обнаружен (EOF). Удаление отменено.")
+# --- Встроенный Промпт для OpenAI Vision ---
+# (Взят из prompts_config.json, который вы показывали)
+VISION_PROMPT_TEMPLATE = """
+Analyze the text provided below. Assume it will be placed centrally on an image ({image_width}x{image_height}) that has a semi-transparent white overlay (haze) for readability.
 
+Text to place:
+"{text}"
 
-        # 6. Удаление (если подтверждено)
-        if confirm == 'yes':
-            print("\nУдаление лишних файлов...")
-            deleted_count = 0
-            failed_count = 0
-            for filename, full_path in extra_files_to_delete.items():
-                try:
-                    os.remove(full_path)
-                    print(f" - Удален: {filename}")
-                    deleted_count += 1
-                except PermissionError:
-                    print(f" ! Ошибка прав доступа при удалении: {filename}")
-                    failed_count += 1
-                except Exception as e:
-                    print(f" ! Ошибка при удалении {filename}: {e}")
-                    failed_count += 1
-            print(f"\nУдалено файлов: {deleted_count}")
-            if failed_count > 0:
-                print(f"Не удалось удалить файлов: {failed_count}")
-        else:
-            print("\nУдаление отменено пользователем.")
-            # Очищаем список, чтобы не показывать его в финальном выводе
-            extra_files_to_delete.clear()
+Your tasks:
+1.  **Line Breaks:** If the text is long, insert newline characters ('\\n') to break it into 2-3 concise lines for better fit in a central position. Keep the original meaning.
+2.  **Text Color:** Analyze the mood and theme of the text. Suggest an appropriate text color as a hex code string (e.g., "#FFFFFF", "#000000", "#FFD700") that would contrast well with a white haze and fit the text's content.
 
+Respond ONLY with a valid JSON object containing the keys:
+* `position`: MUST be `["center", "center"]`.
+* `font_size`: MUST be `70`.
+* `formatted_text`: The text with potential '\\n' line breaks.
+* `text_color`: The suggested hex color code string.
+
+Example JSON response:
+{{
+  "position": ["center", "center"],
+  "font_size": 70,
+  "formatted_text": "Тайные общества,\\\\nправящие миром:\\\\nиллюзия или реальность?",
+  "text_color": "#333333"
+}}
+"""
+
+# --- Параметры для add_text_to_image ---
+HAZE_OPACITY = 128 # Прозрачность дымки (0-255), можно настроить
+DEFAULT_FONT_SIZE = 70
+DEFAULT_TEXT_COLOR = "#FFFFFF" # Белый по умолчанию
+
+# === Вспомогательные Функции ===
+
+def get_image_mime_type(image_path: Path) -> str:
+    """Определяет MIME-тип изображения по расширению."""
+    ext = image_path.suffix.lower()
+    if ext == ".png":
+        return "image/png"
+    elif ext in [".jpg", ".jpeg"]:
+        return "image/jpeg"
+    elif ext == ".gif":
+        return "image/gif"
+    elif ext == ".webp":
+        return "image/webp"
     else:
-        print("\nЛишних файлов шрифтов не найдено.")
+        logger.warning(f"Неизвестный тип изображения: {ext}. Используется 'image/png'.")
+        return "image/png" # По умолчанию
 
-    # 7. Вывод финального словаря путей
-    print("\n--- Финальное сопоставление 'Фокус -> Путь к шрифту' ---")
-    # Создаем JSON-совместимый вывод
-    # Используем Path(p).as_posix() для путей в формате Linux/веб
-    output_dict_posix = {f: Path(p).as_posix() for f, p in focus_to_final_path.items()}
-    output_json = json.dumps(output_dict_posix, indent=4, ensure_ascii=False)
-    print(output_json)
-
-    # Сохраняем JSON в файл для удобства
-    output_filename = "focus_font_paths.json"
+def encode_image_to_data_uri(image_path: Path) -> str | None:
+    """Кодирует локальное изображение в Base64 Data URI."""
     try:
-        with open(output_filename, 'w', encoding='utf-8') as f:
-            f.write(output_json)
-        print(f"\nСопоставление также сохранено в файл: {output_filename}")
+        mime_type = get_image_mime_type(image_path)
+        with open(image_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+        return f"data:{mime_type};base64,{encoded_string}"
+    except FileNotFoundError:
+        logger.error(f"Ошибка кодирования: Файл не найден - {image_path}")
+        return None
     except Exception as e:
-        print(f"\nНе удалось сохранить сопоставление в файл: {e}")
+        logger.error(f"Ошибка кодирования изображения {image_path}: {e}", exc_info=True)
+        return None
+
+def get_local_text_placement_suggestions(
+    image_path: Path,
+    text: str,
+    image_width: int,
+    image_height: int
+) -> dict:
+    """
+    Получает рекомендации по размещению текста для локального файла,
+    используя встроенный промпт и кодирование в Base64.
+    """
+    global openai_client_instance # Используем глобальный клиент
+    logger.info(f"Получение рекомендаций для локального файла: {image_path.name}")
+
+    # Параметры по умолчанию
+    default_suggestions = {
+        "position": ('center', 'center'),
+        "font_size": DEFAULT_FONT_SIZE,
+        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует",
+        "text_color": DEFAULT_TEXT_COLOR
+    }
+    actual_text_for_default = text.split('\n')[0] if text else "Текст отсутствует"
+    default_suggestions["formatted_text"] = actual_text_for_default
+
+    if not image_path.is_file() or not text:
+        logger.warning("Путь к изображению невалиден или текст отсутствует. Возврат стандартных параметров.")
+        return default_suggestions
+
+    # Инициализация клиента OpenAI, если нужно
+    if not openai_client_instance:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.error("Переменная окружения OPENAI_API_KEY не задана!")
+            return default_suggestions
+        try:
+            # Проверяем наличие прокси
+            http_proxy = os.getenv("HTTP_PROXY")
+            https_proxy = os.getenv("HTTPS_PROXY")
+            proxies_dict = {}
+            if http_proxy: proxies_dict["http://"] = http_proxy
+            if https_proxy: proxies_dict["https://"] = https_proxy
+            http_client = httpx.Client(proxies=proxies_dict) if proxies_dict else httpx.Client()
+
+            openai_client_instance = openai.OpenAI(api_key=api_key, http_client=http_client)
+            logger.info("Клиент OpenAI инициализирован для теста.")
+        except Exception as init_err:
+            logger.error(f"Ошибка инициализации клиента OpenAI: {init_err}", exc_info=True)
+            return default_suggestions
+
+    # Кодируем изображение
+    data_uri = encode_image_to_data_uri(image_path)
+    if not data_uri:
+        logger.error("Не удалось закодировать изображение. Возврат стандартных параметров.")
+        return default_suggestions
+
+    # Формируем промпт
+    prompt = VISION_PROMPT_TEMPLATE.format(
+        image_width=image_width,
+        image_height=image_height,
+        text=text # Передаем текст с контекстом
+    )
+
+    messages_content = [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": data_uri}}
+    ]
+
+    try:
+        logger.info("Запрос к OpenAI Vision для рекомендаций по тексту...")
+        response = openai_client_instance.chat.completions.create(
+            model="gpt-4o", # Используем gpt-4o или gpt-4-vision-preview
+            messages=[{"role": "user", "content": messages_content}],
+            max_tokens=300,
+            temperature=0.4,
+            response_format={"type": "json_object"}
+        )
+
+        if response.choices and response.choices[0].message and response.choices[0].message.content:
+            response_text = response.choices[0].message.content.strip()
+            logger.debug(f"Сырой ответ от Vision (JSON): {response_text}")
+
+            try:
+                suggestions = json.loads(response_text)
+                # Валидация
+                pos_list = suggestions.get("position")
+                size = suggestions.get("font_size")
+                fmt_text = suggestions.get("formatted_text")
+                color_hex = suggestions.get("text_color")
+
+                valid_pos = default_suggestions["position"]
+                if isinstance(pos_list, list) and pos_list == ['center', 'center']:
+                    valid_pos = tuple(pos_list)
+                else:
+                    logger.warning(f"Некорректная позиция: {pos_list}. Используется {valid_pos}.")
+
+                valid_size = default_suggestions["font_size"]
+                if isinstance(size, int) and 10 < size < 200:
+                    valid_size = size
+                else:
+                    logger.warning(f"Некорректный размер шрифта: {size}. Используется {valid_size}.")
+
+                valid_text = default_suggestions["formatted_text"]
+                if isinstance(fmt_text, str) and fmt_text.strip():
+                    valid_text = fmt_text.replace('\\n', '\n')
+                else:
+                    logger.warning(f"Некорректный форматированный текст: {fmt_text}. Используется исходный.")
+
+                valid_color = default_suggestions["text_color"]
+                if isinstance(color_hex, str) and re.match(r'^#[0-9a-fA-F]{6}$', color_hex):
+                    valid_color = color_hex
+                else:
+                    logger.warning(f"Некорректный HEX цвет: {color_hex}. Используется {valid_color}.")
+
+                log_text_preview = valid_text[:50].replace('\n', '\\n')
+                logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{log_text_preview}...'")
+                return {
+                    "position": valid_pos,
+                    "font_size": valid_size,
+                    "formatted_text": valid_text,
+                    "text_color": valid_color
+                }
+
+            except json.JSONDecodeError as json_e:
+                logger.error(f"Ошибка декодирования JSON: {json_e}. Ответ: {response_text}")
+                return default_suggestions
+            except Exception as parse_err:
+                logger.error(f"Ошибка парсинга рекомендаций: {parse_err}", exc_info=True)
+                return default_suggestions
+        else:
+            logger.error("OpenAI Vision вернул пустой ответ.")
+            return default_suggestions
+
+    except Exception as e:
+        logger.error(f"Ошибка при вызове OpenAI Vision: {e}", exc_info=True)
+        return default_suggestions
 
 
-    print("\n--- Скрипт завершен ---")
+# === Основная Логика Теста ===
+if __name__ == "__main__":
+    logger.info("--- Запуск тестового скрипта генерации титульника ---")
+
+    image_path = Path(IMAGE_PATH_STR)
+    json_path = Path(JSON_PATH_STR)
+    font_path = Path(FONT_PATH_STR)
+    output_path = Path(OUTPUT_PATH_STR)
+
+    # 1. Проверка наличия файлов
+    if not image_path.is_file():
+        logger.error(f"Ошибка: Исходное изображение не найдено - {image_path}")
+        sys.exit(1)
+    if not json_path.is_file():
+        logger.error(f"Ошибка: JSON файл не найден - {json_path}")
+        sys.exit(1)
+    if not font_path.is_file():
+        logger.error(f"Ошибка: Файл шрифта не найден - {font_path}")
+        sys.exit(1)
+
+    # 2. Загрузка текста из JSON
+    topic_text = None
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            topic_text = data.get("topic") # Предполагаем, что ключ называется "topic"
+            if not topic_text:
+                logger.error(f"Ошибка: Ключ 'topic' не найден в {json_path}")
+                sys.exit(1)
+            logger.info(f"Загружен текст: '{topic_text}'")
+            # Добавим немного контекста для анализа цвета, если есть поле content
+            content_text = data.get("content", "")
+            if content_text:
+                text_for_analysis = f"{topic_text}\n\n{content_text[:200]}"
+            else:
+                text_for_analysis = topic_text
+
+    except json.JSONDecodeError:
+        logger.error(f"Ошибка: Некорректный JSON в файле {json_path}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Ошибка чтения JSON файла {json_path}: {e}", exc_info=True)
+        sys.exit(1)
+
+    # 3. Получение размеров изображения
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            img_width, img_height = img.size
+        logger.info(f"Размеры изображения: {img_width}x{img_height}")
+    except ImportError:
+        logger.error("Ошибка: Библиотека Pillow не найдена. Невозможно получить размеры.")
+        # Устанавливаем размеры по умолчанию, чтобы тест мог продолжить работу
+        # но без реального вызова Vision API
+        img_width, img_height = 1280, 720 # Примерные размеры
+        logger.warning("Используются размеры по умолчанию. Вызов Vision API будет пропущен.")
+        placement_suggestions = {
+            "position": ('center', 'center'),
+            "font_size": DEFAULT_FONT_SIZE,
+            "formatted_text": topic_text, # Используем исходный topic
+            "text_color": DEFAULT_TEXT_COLOR
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения размеров изображения: {e}", exc_info=True)
+        sys.exit(1)
+
+    # 4. Получение рекомендаций от ИИ (если Pillow доступен)
+    if 'placement_suggestions' not in locals(): # Если не были установлены из-за ошибки Pillow
+        placement_suggestions = get_local_text_placement_suggestions(
+            image_path=image_path,
+            text=text_for_analysis, # Передаем текст с контекстом
+            image_width=img_width,
+            image_height=img_height
+        )
+
+    # 5. Вызов функции add_text_to_image
+    logger.info(f"Вызов add_text_to_image для сохранения в {output_path}...")
+    success = add_text_to_image(
+        image_path_str=str(image_path),
+        text=placement_suggestions["formatted_text"],
+        font_path_str=str(font_path),
+        output_path_str=str(output_path),
+        font_size=placement_suggestions["font_size"],
+        text_color_hex=placement_suggestions["text_color"],
+        position=placement_suggestions["position"], # Должно быть ('center', 'center')
+        haze_opacity=HAZE_OPACITY,
+        # Остальные параметры по умолчанию (без доп. фона/размытия)
+        logger_instance=logger
+    )
+
+    if success:
+        logger.info(f"✅ Тест завершен успешно! Результат сохранен в: {output_path}")
+    else:
+        logger.error("❌ Тест завершился с ошибкой при создании изображения.")
+
