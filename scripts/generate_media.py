@@ -353,8 +353,13 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
                 else:
                     logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color}.")
 
+                # *** ИСПРАВЛЕНИЕ ОШИБКИ f-string ***
+                # Создаем переменную для лога ПЕРЕД f-строкой
+                log_text_preview = valid_text[:50].replace('\n', '\\n')
+                # Используем переменную в f-строке
+                logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{log_text_preview}...'")
+                # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
 
-                logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{valid_text[:50].replace('\n', '\\n')}...'")
                 return {
                     "position": valid_pos,
                     "font_size": valid_size,
@@ -389,7 +394,6 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
         logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True)
         return default_suggestions
 # +++ КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ +++
-
 
 def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | None:
     """
