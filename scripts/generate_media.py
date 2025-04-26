@@ -875,10 +875,9 @@ def main():
 
         # --- Извлечение полей из content_data ---
         topic = content_data.get("topic", "Нет темы")
-        # *** ИЗМЕНЕНИЕ: Получаем основной текст для контекста ***
-        main_content_text = content_data.get("content", "")
-        text_for_placement_analysis = f"{topic}\n\n{main_content_text[:200]}" # Комбинируем тему и начало текста
-        # ******************************************************
+        # *** Используем только topic для анализа и печати ***
+        text_for_title = topic
+        # ***********************************************************
         selected_focus = content_data.get("selected_focus")
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
@@ -1147,39 +1146,37 @@ def main():
                 if download_image(image_for_title_url, str(title_base_path)):
                     logger.info(f"Базовое изображение для заголовка скачано: {title_base_path.name}")
 
-                    # *** ИЗМЕНЕНИЕ: Получаем рекомендации от Vision ***
-                    logger.info(f"Запрос рекомендаций по размещению для текста: '{text_for_placement_analysis[:100]}...'")
+                    # Получаем рекомендации от Vision, передаем ТОЛЬКО тему
+                    logger.info(f"Запрос рекомендаций по размещению для текста (тема): '{text_for_title[:100]}...'") # Используем text_for_title
                     placement_suggestions = get_text_placement_suggestions(
                         image_url=image_for_title_url,
-                        text=topic,
+                        text=text_for_title, # <<< Передаем только тему
                         image_width=PLACEHOLDER_WIDTH,
                         image_height=PLACEHOLDER_HEIGHT
                     )
-                    # *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
-                    # Параметры по умолчанию для фона (можно тоже сделать частью рекомендаций)
-                    # title_text_color = (255, 255, 255, 240) # Старый вариант
+                    # Параметры по умолчанию для фона
                     title_padding = 60
-                    # title_bg_blur_radius = 5.0 # Отключим размытие под текстом
-                    # title_bg_opacity = 150 # Отключим подложку под текстом
                     title_bg_blur_radius = 0
                     title_bg_opacity = 0
 
                     if callable(add_text_to_image):
-                        # *** ИЗМЕНЕНИЕ: Используем рекомендации ***
+                        # *** ИЗМЕНЕНИЕ: Убран font_size из вызова ***
+                        logger.info(f"Параметры для add_text_to_image: text='{placement_suggestions['formatted_text'].replace('\n', '\\n')}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
                         if add_text_to_image(
                             image_path_str=str(title_base_path),
                             text=placement_suggestions["formatted_text"], # Текст с переносами
                             font_path_str=final_font_path,
                             output_path_str=str(final_title_image_path),
-                            font_size=placement_suggestions["font_size"], # Рекомендуемый размер
-                            text_color_hex=placement_suggestions["text_color"], # *** НОВОЕ: Передаем HEX цвет ***
+                            # font_size=placement_suggestions["font_size"], # <<< УДАЛЕНО
+                            text_color_hex=placement_suggestions["text_color"], # Передаем HEX цвет
                             position=placement_suggestions["position"], # Рекомендуемая позиция (должна быть center, center)
                             padding=title_padding,
-                            haze_opacity=HAZE_OPACITY_DEFAULT, # *** НОВОЕ: Добавляем дымку ***
+                            haze_opacity=HAZE_OPACITY_DEFAULT, # Добавляем дымку
                             bg_blur_radius=title_bg_blur_radius, # Передаем 0
                             bg_opacity=title_bg_opacity, # Передаем 0
                             logger_instance=logger
+                            # Параметры обводки и автоподбора размера передаются по умолчанию в саму функцию
                         ):
                         # *** КОНЕЦ ИЗМЕНЕНИЯ ***
                             logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
@@ -1299,7 +1296,7 @@ def main():
 
         # --- finally для очистки temp_dir_path ---
         finally:
-             if temp_dir_path and temp_dir_path.exists():
+             if temp_dir_path and temp_dir_path.exists(): # Проверяем, что temp_dir_path не None
                  try:
                      shutil.rmtree(temp_dir_path)
                      logger.debug(f"Удалена временная папка: {temp_dir_path}")

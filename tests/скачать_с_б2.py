@@ -19,10 +19,9 @@ s3 = boto3.client(
     aws_secret_access_key=B2_SECRET_KEY
 )
 
-# Константы: конкретный PNG-файл и локальная папка назначения
-SPECIFIC_PNG_KEY = "666/20250426-1533.png"
+# Константы: конкретный JSON-файл и локальная папка назначения
+SPECIFIC_JSON_KEY = "666/20250426-1533.json"
 LOCAL_DESTINATION_DIR = r"C:\Users\boyar\777\555"
-
 
 def ensure_local_dir(directory: str):
     """Создаёт папку назначения, если её нет."""
@@ -31,18 +30,18 @@ def ensure_local_dir(directory: str):
         print(f"Создана директория: {directory}")
 
 
-def download_png():
-    """Скачивает один PNG-файл из B2 в локальную папку."""
+def download_json():
+    """Скачивает один JSON-файл из B2 в локальную папку."""
     ensure_local_dir(LOCAL_DESTINATION_DIR)
-    local_path = os.path.join(LOCAL_DESTINATION_DIR, os.path.basename(SPECIFIC_PNG_KEY))
+    local_path = os.path.join(LOCAL_DESTINATION_DIR, os.path.basename(SPECIFIC_JSON_KEY))
     try:
-        print(f"⬇️ Скачиваем {SPECIFIC_PNG_KEY} -> {local_path}")
-        s3.download_file(B2_BUCKET_NAME, SPECIFIC_PNG_KEY, local_path)
+        print(f"⬇️ Скачиваем {SPECIFIC_JSON_KEY} -> {local_path}")
+        s3.download_file(B2_BUCKET_NAME, SPECIFIC_JSON_KEY, local_path)
         print(f"✅ Файл сохранён локально: {local_path}")
     except Exception as e:
-        print(f"💥 Ошибка при скачивании {SPECIFIC_PNG_KEY}: {e}")
+        print(f"💥 Ошибка при скачивании {SPECIFIC_JSON_KEY}: {e}")
 
 
 if __name__ == "__main__":
-    download_png()
+    download_json()
     print("--- Скрипт завершил работу ---")
