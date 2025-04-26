@@ -1161,8 +1161,13 @@ def main():
                     title_bg_opacity = 0
 
                     if callable(add_text_to_image):
-                        # *** ИЗМЕНЕНИЕ: Убран font_size из вызова ***
-                        logger.info(f"Параметры для add_text_to_image: text='{placement_suggestions['formatted_text'].replace('\n', '\\n')}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
+                        # *** ИСПРАВЛЕНИЕ ОШИБКИ f-string ***
+                        # Создаем переменную для лога ПЕРЕД f-строкой
+                        log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
+                        # Используем переменную в f-строке
+                        logger.info(f"Параметры для add_text_to_image: text='{log_text_preview}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
+                        # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
+
                         if add_text_to_image(
                             image_path_str=str(title_base_path),
                             text=placement_suggestions["formatted_text"], # Текст с переносами
@@ -1178,7 +1183,6 @@ def main():
                             logger_instance=logger
                             # Параметры обводки и автоподбора размера передаются по умолчанию в саму функцию
                         ):
-                        # *** КОНЕЦ ИЗМЕНЕНИЯ ***
                             logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
                             local_image_path = final_title_image_path # Это финальный PNG для загрузки
                         else:
