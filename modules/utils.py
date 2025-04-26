@@ -341,51 +341,57 @@ def generate_file_id():
 
 # --- Вставьте эту функцию в modules/utils.py ---
 
+# +++ НАЧАЛО ОБНОВЛЕННОЙ ФУНКЦИИ add_text_to_image +++
+def hex_to_rgba(hex_color, alpha=255):
+    """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) != 6:
+        # Возвращаем белый цвет по умолчанию при ошибке
+        logger.warning(f"Некорректный HEX цвет '{hex_color}'. Используется белый.")
+        return (255, 255, 255, alpha)
+    try:
+        rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return rgb + (alpha,)
+    except ValueError:
+        logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется белый.")
+        return (255, 255, 255, alpha)
+
 def add_text_to_image(
     image_path_str: str,
     text: str,
     font_path_str: str,
     output_path_str: str,
-    font_size: int = 60,
-    text_color: tuple = (255, 255, 255, 230), # Белый с небольшой прозрачностью
-    position: tuple = ('center', 'bottom'),
-    padding: int = 50,
-    bg_blur_radius: float = 3.0,
-    bg_opacity: int = 100,
-    logger_instance=None # Возможность передать логгер
+    font_size: int = 70, # Обновлено значение по умолчанию
+    text_color_hex: str = "#FFFFFF", # *** НОВОЕ: Цвет текста в HEX ***
+    position: tuple = ('center', 'center'), # Позиция текста
+    padding: int = 50, # Отступы для позиций left/right/top/bottom (меньше используется при center)
+    haze_opacity: int = 100, # *** НОВОЕ: Прозрачность белой дымки (0-255) ***
+    bg_blur_radius: float = 0, # Размытие под текстом (отключено по умолчанию)
+    bg_opacity: int = 0, # Прозрачность подложки под текстом (отключено по умолчанию)
+    logger_instance=None
     ):
     """
-    Наносит текст на изображение с использованием Pillow.
+    Наносит текст на изображение с использованием Pillow, добавляя белую "дымку".
 
     Args:
         image_path_str: Путь к исходному изображению.
-        text: Текст для нанесения.
+        text: Текст для нанесения (может содержать '\n').
         font_path_str: Путь к файлу шрифта (.ttf или .otf).
         output_path_str: Путь для сохранения итогового изображения PNG.
         font_size: Размер шрифта.
-        text_color: Цвет текста (R, G, B, A).
+        text_color_hex: Цвет текста в формате HEX (e.g., "#333333").
         position: Позиция текста ('center', 'left', 'right', 'top', 'bottom').
         padding: Отступы от краев для позиций 'left'/'right'/'top'/'bottom'.
-        bg_blur_radius: Радиус размытия фона под текстом (0 - отключить).
-        bg_opacity: Прозрачность прямоугольной подложки под текстом (0-255, 0 - полностью прозрачный).
+        haze_opacity: Прозрачность белой дымки на все изображение (0-255).
+        bg_blur_radius: Радиус размытия фона ПОД текстом (0 - отключить).
+        bg_opacity: Прозрачность прямоугольной подложки ПОД текстом (0-255).
         logger_instance: Экземпляр логгера для использования.
 
     Returns:
         bool: True в случае успеха, False в случае ошибки.
     """
     # Получаем логгер
-    if logger_instance:
-        log = logger_instance
-    else:
-        # Пытаемся получить стандартный логгер utils или создаем временный
-        try:
-            log = logging.getLogger("utils.add_text_to_image")
-            if not log.hasHandlers(): raise LookupError("No handler")
-        except Exception:
-            log = logging.getLogger("add_text_to_image_fallback")
-            if not log.hasHandlers():
-                 logging.basicConfig(level=logging.INFO)
-                 log.warning("Используется fallback логгер для add_text_to_image.")
+    log = logger_instance if logger_instance else logger # Используем глобальный логгер utils по умолчанию
 
     # Проверка доступности Pillow
     if not PIL_AVAILABLE or Image is None:
@@ -408,24 +414,42 @@ def add_text_to_image(
         log.info(f"Открытие изображения: {base_image_path.name}")
         # Открываем с конвертацией в RGBA для поддержки прозрачности
         img = Image.open(base_image_path).convert("RGBA")
-        draw = ImageDraw.Draw(img)
         img_width, img_height = img.size
+
+        # *** НОВОЕ: Добавление белой "дымки" (haze) ***
+        if haze_opacity > 0:
+            log.info(f"Добавление белой дымки (прозрачность: {haze_opacity})...")
+            # Создаем слой для дымки
+            haze_layer = Image.new('RGBA', img.size, (255, 255, 255, haze_opacity))
+            # Накладываем дымку на изображение
+            img = Image.alpha_composite(img, haze_layer)
+            log.debug("Белая дымка добавлена.")
+        # *** КОНЕЦ НОВОГО БЛОКА ***
+
+        # Обновляем объект Draw после возможного добавления дымки
+        draw = ImageDraw.Draw(img)
 
         log.info(f"Загрузка шрифта: {font_path.name} (размер: {font_size})")
         font = ImageFont.truetype(str(font_path), font_size)
 
         # --- Расчет размеров и позиции текста ---
         try:
-            # Используем getbbox для Pillow >= 9.2.0
-            bbox = draw.textbbox((0, 0), text, font=font, anchor="lt") # anchor='lt' для согласованности
+            # Используем getbbox для Pillow >= 9.2.0 для многострочного текста
+            # Важно: textbbox ожидает текст без переносов для расчета общей рамки
+            # Поэтому считаем рамку для текста без переносов, а рисуем с переносами
+            bbox = draw.textbbox((0, 0), text.replace('\n', ' '), font=font, anchor="lt")
             text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-        except AttributeError:
-            # Fallback для старых версий Pillow
-            log.warning("Метод textbbox не найден, используем textsize (менее точный).")
-            text_width, text_height = draw.textsize(text, font=font)
+            # Для высоты считаем bbox для текста С переносами
+            bbox_multiline = draw.textbbox((0, 0), text, font=font, anchor="lt")
+            text_height = bbox_multiline[3] - bbox_multiline[1]
 
-        log.debug(f"Рассчитанные размеры текста: {text_width}x{text_height}")
+        except AttributeError:
+            # Fallback для старых версий Pillow (менее точен для многострочного)
+            log.warning("Метод textbbox не найден, используем textsize (менее точный).")
+            text_width, _ = draw.textsize(text.replace('\n', ' '), font=font) # Ширина по тексту без переносов
+            _, text_height = draw.textsize(text, font=font) # Высота по тексту с переносами
+
+        log.debug(f"Рассчитанные размеры текста: Ширина (max)={text_width}, Высота={text_height}")
 
         # Расчет координат X
         if position[0] == 'center':
@@ -444,60 +468,62 @@ def add_text_to_image(
             y = padding
         elif position[1] == 'bottom':
             y = img_height - text_height - padding
-        else: # По умолчанию низ
-            y = img_height - text_height - padding
+        else: # По умолчанию центр по вертикали
+            y = (img_height - text_height) / 2
 
         # Итоговая позиция для textdraw (левый верхний угол текста)
         text_position = (int(x), int(y))
         log.info(f"Позиция текста (левый верхний угол): {text_position}")
 
-        # --- Добавление подложки/размытия (опционально) ---
-        # Создаем отдельный слой для эффектов фона, чтобы не портить исходное изображение
-        background_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        draw_bg = ImageDraw.Draw(background_layer)
+        # --- Добавление подложки/размытия под текстом (опционально) ---
+        # Эта логика остается, но теперь она будет поверх "дымки"
+        if bg_blur_radius > 0 or bg_opacity > 0:
+            log.info("Добавление эффектов фона под текстом...")
+            background_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            draw_bg = ImageDraw.Draw(background_layer)
 
-        # Определяем область под текстом с отступами
-        bg_padding = 20 # Дополнительный отступ для подложки
-        bg_left = max(0, text_position[0] - bg_padding)
-        bg_top = max(0, text_position[1] - bg_padding)
-        bg_right = min(img_width, text_position[0] + text_width + bg_padding)
-        bg_bottom = min(img_height, text_position[1] + text_height + bg_padding)
-        # Координаты для рисования прямоугольника
-        bg_rect_coords = [(int(bg_left), int(bg_top)), (int(bg_right), int(bg_bottom))]
-        # Координаты для обрезки области размытия
-        bg_crop_box = (int(bg_left), int(bg_top), int(bg_right), int(bg_bottom))
+            bg_padding = 20
+            bg_left = max(0, text_position[0] - bg_padding)
+            bg_top = max(0, text_position[1] - bg_padding)
+            # Используем размеры текста С ПЕРЕНОСАМИ для правильного охвата подложки
+            bbox_multiline_at_pos = draw.textbbox(text_position, text, font=font, anchor="lt")
+            bg_right = min(img_width, bbox_multiline_at_pos[2] + bg_padding)
+            bg_bottom = min(img_height, bbox_multiline_at_pos[3] + bg_padding)
 
-        # Применяем размытие, если нужно
-        if bg_blur_radius > 0:
-            log.info(f"Применение размытия фона (радиус: {bg_blur_radius}) в области {bg_crop_box}")
-            try:
-                crop = img.crop(bg_crop_box)
-                # Используем GaussianBlur, он обычно дает лучший результат
-                blurred_crop = crop.filter(ImageFilter.GaussianBlur(bg_blur_radius))
-                # Вставляем размытую область на слой эффектов
-                background_layer.paste(blurred_crop, bg_crop_box)
-            except Exception as blur_err:
-                log.warning(f"Не удалось применить размытие: {blur_err}")
+            bg_rect_coords = [(int(bg_left), int(bg_top)), (int(bg_right), int(bg_bottom))]
+            bg_crop_box = (int(bg_left), int(bg_top), int(bg_right), int(bg_bottom))
 
-        # Рисуем полупрозрачный прямоугольник поверх размытия (или просто на пустой слой)
-        if bg_opacity > 0: # Рисуем только если есть непрозрачность
-             log.info(f"Создание полупрозрачной подложки (opacity: {bg_opacity}) в области {bg_rect_coords}")
-             overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
-             draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
+            if bg_blur_radius > 0:
+                log.info(f"Применение размытия фона под текстом (радиус: {bg_blur_radius}) в области {bg_crop_box}")
+                try:
+                    crop = img.crop(bg_crop_box)
+                    blurred_crop = crop.filter(ImageFilter.GaussianBlur(bg_blur_radius))
+                    background_layer.paste(blurred_crop, bg_crop_box)
+                except Exception as blur_err:
+                    log.warning(f"Не удалось применить размытие под текстом: {blur_err}")
 
-        # Накладываем слой с эффектами фона на исходное изображение
-        img = Image.alpha_composite(img, background_layer)
-        # Обновляем объект Draw для финального изображения
-        draw = ImageDraw.Draw(img)
+            if bg_opacity > 0:
+                 log.info(f"Создание полупрозрачной подложки под текстом (opacity: {bg_opacity}) в области {bg_rect_coords}")
+                 overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
+                 draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
+
+            img = Image.alpha_composite(img, background_layer)
+            draw = ImageDraw.Draw(img) # Обновляем draw для финального изображения
 
         # --- Нанесение текста ---
-        log.info(f"Нанесение текста '{text[:50]}...' цветом {text_color}")
+        # *** НОВОЕ: Используем text_color_hex ***
+        final_text_color = hex_to_rgba(text_color_hex, alpha=240) # Получаем RGBA из HEX
+        log.info(f"Нанесение текста '{text[:50].replace('\n', '\\n')}...' цветом {final_text_color} (HEX: {text_color_hex})")
+        # Используем align='center' для многострочного текста, если позиция по горизонтали 'center'
+        align_option = 'center' if position[0] == 'center' else 'left'
         # Используем anchor='lt' для Pillow >= 9.3.0 для более предсказуемого позиционирования
         try:
-             draw.text(text_position, text, font=font, fill=text_color, anchor="lt")
-        except TypeError: # Fallback для старых версий, где anchor нет
-             log.warning("Параметр 'anchor' не поддерживается, используем старый метод позиционирования.")
-             draw.text(text_position, text, font=font, fill=text_color)
+             # Рисуем текст с возможными переносами \n
+             draw.text(text_position, text, font=font, fill=final_text_color, anchor="lt", align=align_option)
+        except TypeError: # Fallback для старых версий, где anchor/align нет
+             log.warning("Параметры 'anchor'/'align' не поддерживаются, используем старый метод позиционирования.")
+             # Старый метод может не очень хорошо центрировать многострочный текст
+             draw.text(text_position, text, font=font, fill=final_text_color)
 
 
         # --- Сохранение результата ---

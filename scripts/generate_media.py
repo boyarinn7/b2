@@ -144,8 +144,12 @@ try:
 
     # Добавляем константы, которые были в удаленном блоке, если они нужны
     MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
-    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
+    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o") # Используем gpt-4o по умолчанию
+    OPENAI_VISION_MODEL = config.get("OPENAI_SETTINGS.vision_model", "gpt-4o") # Отдельная настройка для Vision
     TASK_REQUEST_TIMEOUT = int(config.get("WORKFLOW.task_request_timeout", 60))
+
+    # *** НОВОЕ: Параметр для дымки ***
+    HAZE_OPACITY_DEFAULT = int(config.get("VIDEO.title_haze_opacity", 128)) # Прозрачность дымки (0-255)
 
     # Проверка наличия ключей API
     if not B2_BUCKET_NAME: logger.warning("B2_BUCKET_NAME не определен.")
@@ -219,6 +223,173 @@ def _initialize_openai_client():
              logger.error("!!! Повторная ошибка 'unexpected keyword argument proxies' в generate_media.")
         return False
 
+# +++ ОБНОВЛЕННАЯ ФУНКЦИЯ (из предыдущего шага) +++
+def get_text_placement_suggestions(image_url: str, text: str, image_width: int, image_height: int) -> dict:
+    """
+    Использует GPT-4o Vision для получения рекомендаций по размещению текста на изображении,
+    загружая промпт и параметры из prompts_config.json.
+
+    Args:
+        image_url: URL изображения для анализа.
+        text: Текст, который нужно разместить (может включать доп. контекст).
+        image_width: Ширина изображения.
+        image_height: Высота изображения.
+
+    Returns:
+        Словарь с предложенными параметрами:
+        {
+            "position": tuple, # ('center', 'center') - теперь фиксировано
+            "font_size": int,
+            "formatted_text": str, # Текст с переносами строк '\n'
+            "text_color": str # Цвет текста в HEX
+        }
+        Или словарь со значениями по умолчанию при ошибке.
+    """
+    global openai_client_instance, config # Добавляем config в global для доступа к нему
+    logger.info(f"Получение рекомендаций по размещению текста для URL: {image_url[:60]}...")
+
+    # Параметры по умолчанию
+    default_suggestions = {
+        "position": ('center', 'center'), # Фиксировано
+        "font_size": 70,
+        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", # Берем первую строку или дефолт
+        "text_color": "#FFFFFF" # Белый по умолчанию
+    }
+    # Извлекаем только сам текст заголовка для дефолта
+    actual_text_for_default = text.split('\n')[0] if text else "Текст отсутствует"
+    default_suggestions["formatted_text"] = actual_text_for_default
+
+
+    if not image_url or not text:
+        logger.warning("URL изображения или текст отсутствуют. Возврат стандартных параметров.")
+        return default_suggestions
+
+    # Инициализация клиента OpenAI, если нужно
+    if not openai_client_instance:
+        if not _initialize_openai_client():
+            logger.error("Клиент OpenAI недоступен для получения рекомендаций. Возврат стандартных параметров.")
+            return default_suggestions
+
+    # --- Загрузка промпта и параметров из prompts_config.json ---
+    prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
+    prompts_config_data = {}
+    if prompts_config_path_str:
+        prompts_config_path = BASE_DIR / prompts_config_path_str
+        prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+    else:
+        logger.error("Путь к prompts_config не найден! Невозможно загрузить промпт.")
+        return default_suggestions
+
+    prompt_settings = prompts_config_data.get("text_placement", {}).get("suggestions", {})
+    prompt_template = prompt_settings.get("template")
+    max_tokens = int(prompt_settings.get("max_tokens", 300))
+    temperature = float(prompt_settings.get("temperature", 0.4)) # Используем значение из конфига
+
+    if not prompt_template:
+        logger.error("Промпт 'text_placement.suggestions.template' не найден в prompts_config.json. Возврат стандартных параметров.")
+        return default_suggestions
+    # --- Конец загрузки промпта ---
+
+    # Формируем промпт с актуальными данными
+    prompt = prompt_template.format(image_width=image_width, image_height=image_height, text=text) # Передаем весь текст с контекстом
+
+    messages_content = [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": image_url}}
+    ]
+
+    try:
+        logger.info(f"Запрос к OpenAI Vision ({OPENAI_VISION_MODEL}) для рекомендаций по тексту (t={temperature}, max_tokens={max_tokens})...")
+        response = openai_client_instance.chat.completions.create(
+            model=OPENAI_VISION_MODEL, # Используем модель Vision
+            messages=[{"role": "user", "content": messages_content}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"} # Просим JSON ответ
+        )
+
+        if response.choices and response.choices[0].message and response.choices[0].message.content:
+            response_text = response.choices[0].message.content.strip()
+            logger.debug(f"Сырой ответ от Vision (ожидается JSON): {response_text}")
+
+            # Поскольку мы запросили JSON, парсим напрямую
+            try:
+                suggestions = json.loads(response_text)
+                # Валидация полученных данных
+                pos_list = suggestions.get("position") # Ожидаем ['center', 'center']
+                size = suggestions.get("font_size")
+                fmt_text = suggestions.get("formatted_text")
+                color_hex = suggestions.get("text_color")
+
+                # Проверка и корректировка позиции (должна быть ['center', 'center'])
+                valid_pos = default_suggestions["position"] # По умолчанию
+                if isinstance(pos_list, list) and pos_list == ['center', 'center']:
+                    valid_pos = tuple(pos_list)
+                else:
+                    logger.warning(f"Получена некорректная позиция: {pos_list}. Используется {valid_pos}.")
+
+                # Проверка и корректировка размера шрифта
+                valid_size = default_suggestions["font_size"] # По умолчанию
+                if isinstance(size, int) and 10 < size < 200:
+                    valid_size = size
+                else:
+                    # Если ИИ вернул некорректный размер, используем дефолтный
+                    logger.warning(f"Получен некорректный размер шрифта: {size}. Используется {valid_size}.")
+
+
+                # Проверка текста
+                valid_text = default_suggestions["formatted_text"] # По умолчанию
+                if isinstance(fmt_text, str) and fmt_text.strip():
+                    valid_text = fmt_text
+                    # Заменяем литерал \n на реальный символ переноса строки
+                    valid_text = valid_text.replace('\\n', '\n')
+                else:
+                    logger.warning(f"Получен некорректный форматированный текст: {fmt_text}. Используется исходный.")
+
+                # Проверка цвета
+                valid_color = default_suggestions["text_color"] # По умолчанию
+                if isinstance(color_hex, str) and re.match(r'^#[0-9a-fA-F]{6}$', color_hex):
+                    valid_color = color_hex
+                else:
+                    logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color}.")
+
+
+                logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{valid_text[:50].replace('\n', '\\n')}...'")
+                return {
+                    "position": valid_pos,
+                    "font_size": valid_size,
+                    "formatted_text": valid_text,
+                    "text_color": valid_color
+                }
+
+            except json.JSONDecodeError as json_e:
+                logger.error(f"Ошибка декодирования JSON из ответа Vision: {json_e}. Ответ: {response_text}")
+                return default_suggestions
+            except Exception as parse_err:
+                logger.error(f"Ошибка парсинга или валидации рекомендаций: {parse_err}", exc_info=True)
+                return default_suggestions
+
+        else:
+            logger.error("OpenAI Vision вернул пустой или некорректный ответ.")
+            return default_suggestions
+
+    except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI Vision: {e}"); return default_suggestions
+    except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI Vision: {e}"); return default_suggestions
+    except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI Vision: {e}"); return default_suggestions
+    except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI Vision: {e.status_code} - {e.response}"); return default_suggestions
+    except openai.BadRequestError as e:
+        # Особо логируем ошибку, если она связана с форматом JSON
+        if "response_format" in str(e):
+             logger.error(f"Ошибка OpenAI Vision: Модель {OPENAI_VISION_MODEL}, возможно, не поддерживает response_format=json_object. {e}")
+        else:
+             logger.exception(f"Ошибка неверного запроса OpenAI Vision: {e}");
+        return default_suggestions
+    except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI Vision: {e}"); return default_suggestions
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True)
+        return default_suggestions
+# +++ КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ +++
+
 
 def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | None:
     """
@@ -252,9 +423,10 @@ def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | N
     criteria = creative_config_data.get("visual_analysis_criteria", [])
 
     # Получаем шаблон промпта и max_tokens из настроек
-    selection_prompt_template = prompt_settings.get("template_index") # Ищем ключ template_index
+    # Ищем ключ template_index, если нет, то template
+    selection_prompt_template = prompt_settings.get("template_index", prompt_settings.get("template"))
     if not selection_prompt_template:
-        logger.warning("Шаблон 'template_index' не найден в prompts_config.json -> visual_analysis -> image_selection. Используем fallback.")
+        logger.warning("Шаблон 'template_index' или 'template' не найден в prompts_config.json -> visual_analysis -> image_selection. Используем fallback.")
         selection_prompt_template = """
 Analyze the following 4 images based on the original prompt and the criteria provided.
 Respond ONLY with the number (1, 2, 3, or 4) of the image that best fits the criteria and prompt. Do not add any other text.
@@ -263,7 +435,7 @@ Original Prompt Context: {prompt}
 Evaluation Criteria: {criteria}
 """
     # Используем max_tokens из конфига, если есть, иначе дефолт
-    max_tokens = int(prompt_settings.get("max_tokens", 500)) # Увеличил дефолт для анализа
+    max_tokens = int(prompt_settings.get("max_tokens", 50)) # Уменьшил дефолт, т.к. нужен только индекс
 
     if not criteria:
          logger.warning("Критерии для выбора изображения не найдены. Выбор невозможен.")
@@ -288,7 +460,7 @@ Evaluation Criteria: {criteria}
         try:
             logger.info(f"Попытка {attempt + 1}/{MAX_ATTEMPTS} выбора индекса лучшего изображения (max_tokens={max_tokens})...")
             gpt_response = openai_client_instance.chat.completions.create( # Используем глобальный клиент
-                model=OPENAI_MODEL,
+                model=OPENAI_VISION_MODEL, # Используем Vision модель
                 messages=[{"role": "user", "content": messages_content}],
                 max_tokens=max_tokens,
                 temperature=0.2 # Низкая температура для более детерминированного ответа
@@ -348,11 +520,20 @@ def resize_existing_image(image_path_str: str) -> bool:
         logger.info(f"Ресайз {image_path} до {target_width}x{target_height}...")
         with Image.open(image_path) as img:
             img_format = img.format or IMAGE_FORMAT.upper()
-            if img.mode != 'RGB': img = img.convert('RGB')
+            # --- ИСПРАВЛЕНИЕ: Конвертируем в RGBA для сохранения прозрачности, если она есть ---
+            # if img.mode != 'RGB': img = img.convert('RGB')
+            if img.mode == 'P': # Если палитра, конвертируем в RGBA
+                 img = img.convert('RGBA')
+            elif img.mode != 'RGBA' and img.mode != 'RGB': # Если не RGB и не RGBA, конвертируем в RGBA
+                 img = img.convert('RGBA')
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
             resample_filter = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
             img = img.resize((target_width, target_height), resample_filter)
-            img.save(image_path, format=img_format)
-        logger.info(f"✅ Ресайз до {target_width}x{target_height} завершен.")
+            # --- ИСПРАВЛЕНИЕ: Сохраняем в PNG для поддержки прозрачности ---
+            # img.save(image_path, format=img_format)
+            img.save(image_path, format="PNG")
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        logger.info(f"✅ Ресайз до {target_width}x{target_height} завершен (сохранено как PNG).")
         return True
     except Exception as e: logger.error(f"Ошибка ресайза {image_path}: {e}", exc_info=True); return False
 
@@ -381,7 +562,7 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
 
     try:
         model_name = config.get('API_KEYS.runwayml.model_name', 'gen-2')
-        duration = int(config.get('VIDEO.runway_duration', 5))
+        duration = int(config.get('VIDEO.runway_duration', 10)) # Увеличено до 10 по умолчанию
         # Используем размеры из констант для ratio
         ratio_str = f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"
         logger.info(f"Используется ratio: {ratio_str}")
@@ -390,16 +571,17 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         logger.info(f"Параметры Runway: model='{model_name}', duration={duration}, ratio='{ratio_str}'")
     except Exception as cfg_err:
         logger.error(f"Ошибка чтения параметров Runway из конфига: {cfg_err}. Используются значения по умолчанию.")
-        model_name="gen-2"; duration=5; ratio_str=f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"; poll_timeout=300; poll_interval=15
+        model_name="gen-2"; duration=10; ratio_str=f"{PLACEHOLDER_WIDTH}:{PLACEHOLDER_HEIGHT}"; poll_timeout=300; poll_interval=15
 
     # Кодирование изображения в Base64
     try:
         with open(image_path, "rb") as f:
             base64_image = base64.b64encode(f.read()).decode("utf-8")
         ext = Path(image_path).suffix.lower()
-        mime_type = f"image/{'jpeg' if ext == '.jpg' else ext[1:]}"
+        # mime_type = f"image/{'jpeg' if ext == '.jpg' else ext[1:]}" # Старый вариант
+        mime_type = f"image/{'png' if ext == '.png' else ('jpeg' if ext in ['.jpg', '.jpeg'] else 'octet-stream')}" # Улучшенный вариант
         image_data_uri = f"data:{mime_type};base64,{base64_image}"
-        logger.info(f"Изображение {image_path} успешно кодировано в Base64.")
+        logger.info(f"Изображение {image_path} успешно кодировано в Base64 (MIME: {mime_type}).")
     except Exception as e:
         logger.error(f"❌ Ошибка кодирования изображения в Base64: {e}", exc_info=True)
         return None
@@ -618,6 +800,7 @@ def main():
     timestamp_suffix = None
     config_mj_local_path = None
     temp_dir_path = None
+    content_local_temp_path = None # Добавлено для очистки
     # -------------------------------------------------------------------
 
     # --- Инициализация B2 клиента и проверка глобальных config/logger ---
@@ -633,7 +816,7 @@ def main():
 
         # --- Инициализация клиента OpenAI (вынесена в функцию _initialize_openai_client) ---
         # Вызов _initialize_openai_client() будет происходить по мере необходимости,
-        # например, перед вызовом select_best_image.
+        # например, перед вызовом select_best_image или get_text_placement_suggestions.
         # -------------------------------------------------
     except (RuntimeError, ConnectionError) as init_err:
         # Используем стандартный logging, так как кастомный мог не создаться
@@ -664,6 +847,7 @@ def main():
     timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     temp_dir_path = Path(f"temp_{generation_id}_{timestamp_suffix}")
     config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
+    content_local_temp_path = f"{generation_id}_content_temp_{timestamp_suffix}.json" # Путь к временному файлу контента
     ensure_directory_exists(config_mj_local_path) # Убедимся, что папка для temp файла есть
     # ----------------------------------------------------------------------------------------
 
@@ -671,7 +855,7 @@ def main():
         # --- Загрузка content_data ---
         logger.info("Загрузка данных контента...")
         content_remote_path = f"666/{generation_id}.json"
-        content_local_temp_path = f"{generation_id}_content_temp_{timestamp_suffix}.json"
+        # content_local_temp_path определен выше
         ensure_directory_exists(content_local_temp_path)
         content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_temp_path, default_value=None)
         if content_data is None:
@@ -687,6 +871,10 @@ def main():
 
         # --- Извлечение полей из content_data ---
         topic = content_data.get("topic", "Нет темы")
+        # *** ИЗМЕНЕНИЕ: Получаем основной текст для контекста ***
+        main_content_text = content_data.get("content", "")
+        text_for_placement_analysis = f"{topic}\n\n{main_content_text[:200]}" # Комбинируем тему и начало текста
+        # ******************************************************
         selected_focus = content_data.get("selected_focus")
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
@@ -755,6 +943,7 @@ def main():
 
             if use_mock_flag:
                 # --- Сценарий 0: Принудительный Mock ---
+                # (Логика остается без изменений)
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
                 placeholder_text = f"MJ Timeout\n{topic[:60]}"
                 encoded_text = urllib.parse.quote(placeholder_text)
@@ -777,11 +966,10 @@ def main():
                      logger.warning("MoviePy не найден, mock видео не создано.")
                 elif not local_image_path or not local_image_path.is_file():
                      logger.warning("Базовое изображение для mock не найдено, mock видео не создано.")
-                else: # Если create_mock_video не найдена
-                     # --- ИСПРАВЛЕНИЕ: Используем callable() для проверки ---
+                else:
                      if not callable(create_mock_video):
                          logger.error("Функция create_mock_video не найдена!")
-                     else: # Другая причина, почему не создалось видео
+                     else:
                          logger.error("Неизвестная ошибка при вызове create_mock_video.")
 
 
@@ -792,20 +980,19 @@ def main():
 
             elif is_upscale_result and final_upscaled_image_url:
                 # --- Сценарий 3: Есть результат апскейла -> Генерируем Runway ---
+                # (Логика генерации видео остается без изменений)
                 logger.info(f"Обработка результата /upscale для ID {generation_id}. Генерация видео Runway...")
                 runway_base_image_path = temp_dir_path / f"{generation_id}_upscaled_for_runway.{IMAGE_FORMAT}"
                 if not download_image(final_upscaled_image_url, str(runway_base_image_path)):
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
                 logger.info(f"Апскейл для Runway сохранен: {runway_base_image_path}")
 
-                # Проверяем наличие Image и функции resize_existing_image
-                if Image and callable(resize_existing_image): # Вызываем локальную функцию
+                if Image and callable(resize_existing_image):
                     if not resize_existing_image(str(runway_base_image_path)):
                         logger.warning(f"Не удалось выполнить ресайз для {runway_base_image_path}, но продолжаем.")
                 elif not Image:
                      logger.warning("Pillow не найден, ресайз не выполнен.")
                 else:
-                     # --- ИСПРАВЛЕНИЕ: Используем callable() для проверки ---
                      if not callable(resize_existing_image):
                          logger.error("Функция resize_existing_image не найдена!")
                      else:
@@ -814,27 +1001,23 @@ def main():
                 video_path_str = None
                 if not final_runway_prompt:
                     logger.error("❌ Промпт Runway отсутствует! Создание mock видео.")
-                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                     if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                     else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                 else:
                      if not RUNWAY_SDK_AVAILABLE:
                          logger.error("SDK RunwayML недоступен. Создание mock видео.")
-                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                          if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                          else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                      elif not RUNWAY_API_KEY:
                           logger.error("RUNWAY_API_KEY не найден. Создание mock видео.")
-                          # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                           if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                           else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                      else:
-                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                          if callable(generate_runway_video):
                              video_url_or_path = generate_runway_video(
                                  image_path=str(runway_base_image_path),
                                  script=final_runway_prompt,
-                                 config=config, # Передаем глобальный config
+                                 config=config,
                                  api_key=RUNWAY_API_KEY
                              )
                              if video_url_or_path:
@@ -845,7 +1028,6 @@ def main():
                                          logger.info(f"Видео Runway скачано: {video_path}")
                                      else:
                                          logger.error(f"Не удалось скачать видео Runway {video_url_or_path}. Создание mock.")
-                                         # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                                          if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                                          else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                                  else:
@@ -853,24 +1035,19 @@ def main():
                                      logger.info(f"Получен локальный путь к видео Runway: {video_path}")
                              else:
                                  logger.error("Генерация видео Runway не удалась. Создание mock.")
-                                 # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                                  if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                                  else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
                          else:
                               logger.error("Функция generate_runway_video не найдена! Создание mock видео.")
-                              # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                               if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
                               else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
 
-                     # Если mock был создан, присваиваем путь
                      if not video_path and video_path_str:
                          video_path = Path(video_path_str)
 
                 if not video_path or not video_path.is_file():
                     logger.warning("Не удалось получить финальное видео (Runway или mock).")
 
-                # Финальное изображение для этого сценария - это апскейл, который не сохраняется как отдельный артефакт
-                # Поэтому local_image_path остается None
                 local_image_path = None
 
                 logger.info("Очистка состояния MJ (после Runway)...");
@@ -883,9 +1060,8 @@ def main():
             elif is_imagine_result:
                 # --- Сценарий 2: Есть результат imagine -> Выбираем картинки, создаем заголовок, запускаем upscale ---
                 logger.info(f"Обработка результата /imagine для ID {generation_id}.")
-                # Получаем ID исходной задачи /imagine из сохраненных результатов
-                imagine_task_id = mj_results.get("task_id") # Ищем ID в корне результатов
-                if not imagine_task_id and isinstance(task_meta_data, dict): # Ищем в meta
+                imagine_task_id = mj_results.get("task_id")
+                if not imagine_task_id and isinstance(task_meta_data, dict):
                      imagine_task_id = task_meta_data.get("task_id")
 
                 if not imagine_urls or len(imagine_urls) != 4:
@@ -894,28 +1070,22 @@ def main():
                      logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}."); raise ValueError("Отсутствует ID исходной задачи /imagine")
 
                 # --- Выбор картинки для Runway ---
+                # (Логика выбора остается без изменений)
                 logger.info("Выбор лучшего изображения для Runway...")
                 prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
                 prompts_config_data = {}
                 if prompts_config_path_str:
-                    # BASE_DIR уже должен быть определен глобально
                     prompts_config_path = BASE_DIR / prompts_config_path_str
                     prompts_config_data = load_json_config(str(prompts_config_path)) or {}
                 else: logger.error("Путь к prompts_config не найден!")
-
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
-                best_index_runway = 0 # Индекс по умолчанию
-                # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                best_index_runway = 0
                 if callable(select_best_image):
-                    if _initialize_openai_client(): # Инициализируем/проверяем клиента
+                    if _initialize_openai_client():
                         best_index_runway = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
-                    elif openai is None:
-                        logger.warning("Модуль OpenAI недоступен. Используется индекс 0 для Runway.")
-                    else:
-                         logger.warning("Клиент OpenAI не инициализирован. Используется индекс 0 для Runway.")
-                else:
-                     logger.error("Функция select_best_image не найдена! Используется индекс 0 для Runway.")
-
+                    elif openai is None: logger.warning("Модуль OpenAI недоступен. Используется индекс 0 для Runway.")
+                    else: logger.warning("Клиент OpenAI не инициализирован. Используется индекс 0 для Runway.")
+                else: logger.error("Функция select_best_image не найдена! Используется индекс 0 для Runway.")
                 if best_index_runway is None or not (0 <= best_index_runway <= 3):
                     logger.warning(f"Не удалось выбрать индекс для Runway (результат: {best_index_runway}). Используем индекс 0.")
                     best_index_runway = 0
@@ -928,37 +1098,31 @@ def main():
                 logger.info(f"Индекс для заголовка: {title_index}, URL: {image_for_title_url[:60]}...")
 
                 # --- Определение шрифта ---
+                # (Логика определения шрифта остается без изменений)
                 final_font_path = None
                 if selected_focus:
                     logger.info(f"Определение шрифта для фокуса: '{selected_focus}'")
                     creative_config_path_str = config.get('FILE_PATHS.creative_config')
                     creative_config_data = {}
                     if creative_config_path_str:
-                        # BASE_DIR уже должен быть определен
                         creative_config_path = BASE_DIR / creative_config_path_str
                         creative_config_data = load_json_config(str(creative_config_path)) or {}
                     else: logger.error("Путь к creative_config не найден!")
-
                     fonts_mapping = creative_config_data.get("FOCUS_FONT_MAPPING", {})
                     fonts_folder_rel = config.get("FILE_PATHS.fonts_folder", "fonts/")
-
                     default_font_rel_path = fonts_mapping.get("__default__")
                     if not default_font_rel_path:
                          logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан!")
-                         default_font_rel_path = "fonts/Roboto-Regular.ttf" # Жестко заданный fallback
+                         default_font_rel_path = "fonts/Roboto-Regular.ttf"
                          logger.warning(f"Используется жестко заданный шрифт по умолчанию: {default_font_rel_path}")
-
                     font_rel_path = fonts_mapping.get(selected_focus)
                     final_rel_path = font_rel_path if font_rel_path else default_font_rel_path
-
                     font_path_abs = BASE_DIR / final_rel_path
-
                     if font_path_abs.is_file():
                         final_font_path = str(font_path_abs)
                         logger.info(f"Выбран шрифт: {final_font_path}")
                     else:
                         logger.error(f"Файл шрифта не найден: {font_path_abs}")
-                        # Попытка использовать шрифт по умолчанию, если кастомный не найден
                         if font_rel_path and font_rel_path != default_font_rel_path:
                              logger.warning(f"Попытка использовать шрифт по умолчанию: {default_font_rel_path}")
                              font_path_abs_default = BASE_DIR / default_font_rel_path
@@ -966,7 +1130,6 @@ def main():
                                  final_font_path = str(font_path_abs_default)
                                  logger.info(f"Используется шрифт по умолчанию: {final_font_path}")
                              else: logger.error(f"Файл шрифта по умолчанию также не найден: {font_path_abs_default}")
-                        # Если и по умолчанию нет - ошибка
                         if not final_font_path: raise FileNotFoundError("Не удалось найти файл шрифта.")
                 else:
                     logger.error("Не удалось получить 'selected_focus'. Невозможно выбрать шрифт.")
@@ -980,23 +1143,41 @@ def main():
                 if download_image(image_for_title_url, str(title_base_path)):
                     logger.info(f"Базовое изображение для заголовка скачано: {title_base_path.name}")
 
-                    title_font_size = 70
-                    title_text_color = (255, 255, 255, 240)
-                    title_position = ('center', 'center')
-                    title_padding = 60
-                    title_bg_blur_radius = 5.0
-                    title_bg_opacity = 150
+                    # *** ИЗМЕНЕНИЕ: Получаем рекомендации от Vision ***
+                    logger.info(f"Запрос рекомендаций по размещению для текста: '{text_for_placement_analysis[:100]}...'")
+                    placement_suggestions = get_text_placement_suggestions(
+                        image_url=image_for_title_url,
+                        text=text_for_placement_analysis, # Передаем текст с контекстом
+                        image_width=PLACEHOLDER_WIDTH,
+                        image_height=PLACEHOLDER_HEIGHT
+                    )
+                    # *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
-                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
+                    # Параметры по умолчанию для фона (можно тоже сделать частью рекомендаций)
+                    # title_text_color = (255, 255, 255, 240) # Старый вариант
+                    title_padding = 60
+                    # title_bg_blur_radius = 5.0 # Отключим размытие под текстом
+                    # title_bg_opacity = 150 # Отключим подложку под текстом
+                    title_bg_blur_radius = 0
+                    title_bg_opacity = 0
+
                     if callable(add_text_to_image):
+                        # *** ИЗМЕНЕНИЕ: Используем рекомендации ***
                         if add_text_to_image(
-                            image_path_str=str(title_base_path), text=topic,
-                            font_path_str=final_font_path, output_path_str=str(final_title_image_path),
-                            font_size=title_font_size, text_color=title_text_color,
-                            position=title_position, padding=title_padding,
-                            bg_blur_radius=title_bg_blur_radius, bg_opacity=title_bg_opacity,
-                            logger_instance=logger # Передаем инициализированный logger
+                            image_path_str=str(title_base_path),
+                            text=placement_suggestions["formatted_text"], # Текст с переносами
+                            font_path_str=final_font_path,
+                            output_path_str=str(final_title_image_path),
+                            font_size=placement_suggestions["font_size"], # Рекомендуемый размер
+                            text_color_hex=placement_suggestions["text_color"], # *** НОВОЕ: Передаем HEX цвет ***
+                            position=placement_suggestions["position"], # Рекомендуемая позиция (должна быть center, center)
+                            padding=title_padding,
+                            haze_opacity=HAZE_OPACITY_DEFAULT, # *** НОВОЕ: Добавляем дымку ***
+                            bg_blur_radius=title_bg_blur_radius, # Передаем 0
+                            bg_opacity=title_bg_opacity, # Передаем 0
+                            logger_instance=logger
                         ):
+                        # *** КОНЕЦ ИЗМЕНЕНИЯ ***
                             logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
                             local_image_path = final_title_image_path # Это финальный PNG для загрузки
                         else:
@@ -1012,6 +1193,7 @@ def main():
                     local_image_path = None # Финальное изображение не создано
 
                 # --- Запуск Upscale для картинки Runway ---
+                # (Логика запуска апскейла остается без изменений)
                 action_to_trigger = f"upscale{best_index_runway + 1}"
                 available_actions = task_result_data.get("actions", [])
                 logger.info(f"Запуск Upscale для картинки Runway (индекс {best_index_runway}). Действие: {action_to_trigger}.")
@@ -1023,7 +1205,6 @@ def main():
                     else: logger.error("Не найдено доступных upscale действий!")
 
                 upscale_task_info = None
-                # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                 if action_to_trigger and callable(trigger_piapi_action):
                     if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для trigger_piapi_action.")
                     elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для trigger_piapi_action.")
@@ -1055,11 +1236,11 @@ def main():
 
             elif config_mj.get("generation") is True:
                 # --- Сценарий 1: Запускаем imagine ---
+                # (Логика остается без изменений)
                 logger.info(f"Нет результатов MJ, флаг generation=true. Запуск /imagine для ID {generation_id}...")
                 if not final_mj_prompt:
                     logger.error("❌ Промпт MJ отсутствует!"); config_mj['generation'] = False
                 else:
-                    # --- ИСПРАВЛЕНИЕ: Проверка callable() ---
                     if callable(initiate_midjourney_task):
                         if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для initiate_midjourney_task.")
                         elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для initiate_midjourney_task.")
@@ -1089,37 +1270,32 @@ def main():
                 local_image_path = None; video_path = None
 
             # --- Загрузка файлов в B2 ---
+            # (Логика загрузки остается без изменений)
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
 
-            # Загружаем ИЗОБРАЖЕНИЕ, если оно было создано (Сценарий 2 или 0)
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
                  b2_image_filename = f"{generation_id}.png" # Всегда PNG
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
                  if not upload_success_img: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ИЗОБРАЖЕНИЯ {b2_image_filename} !!!")
-            elif local_image_path: # Если путь есть, но это не файл
+            elif local_image_path:
                  logger.warning(f"Финальное изображение {local_image_path} не найдено для загрузки.")
-            # Не логируем отсутствие изображения в сценариях 1 и 3, т.к. оно там и не создается
 
-            # Загружаем ВИДЕО, если оно было создано (Сценарий 3 или 0)
             if video_path and isinstance(video_path, Path) and video_path.is_file():
                  b2_video_filename = f"{generation_id}.mp4" # Всегда MP4
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
                  if not upload_success_vid: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ВИДЕО {b2_video_filename} !!!")
-            elif video_path: # Если путь есть, но это не файл
+            elif video_path:
                  logger.error(f"Видео {video_path} не найдено для загрузки!")
-            # Не логируем отсутствие видео в сценариях 1 и 2, т.к. оно там и не создается
 
-            # Финальное логирование загрузок
             if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены.")
             elif upload_success_img: logger.info("✅ Изображение успешно загружено.")
             elif upload_success_vid: logger.info("✅ Видео успешно загружено.")
-            elif local_image_path or video_path: # Если что-то должно было загрузиться, но не загрузилось
+            elif local_image_path or video_path:
                  logger.warning("⚠️ Не все созданные медиа файлы были успешно загружены.")
 
-        # --- ИСПРАВЛЕНИЕ: finally для очистки temp_dir_path ---
+        # --- finally для очистки temp_dir_path ---
         finally:
-             # Очистка временной папки
-             if temp_dir_path and temp_dir_path.exists(): # Проверяем, что temp_dir_path не None
+             if temp_dir_path and temp_dir_path.exists():
                  try:
                      shutil.rmtree(temp_dir_path)
                      logger.debug(f"Удалена временная папка: {temp_dir_path}")
@@ -1129,9 +1305,8 @@ def main():
 
 
         # --- Сохранение финального состояния config_mj ---
+        # (Логика сохранения остается без изменений)
         logger.info(f"Сохранение config_midjourney.json в B2...")
-        # Удаляем временный файл перед сохранением нового
-        # config_mj_local_path уже определен выше
         if config_mj_local_path and Path(config_mj_local_path).exists():
             try: os.remove(config_mj_local_path); logger.debug(f"Удален старый temp конфиг MJ: {config_mj_local_path}")
             except OSError as e: logger.warning(f"Не удалить старый temp конфиг MJ {config_mj_local_path}: {e}")
@@ -1142,7 +1317,6 @@ def main():
             logger.error("!!! Не удалось сохранить config_midjourney.json в B2!")
         else:
             logger.info("✅ config_midjourney.json сохранен в B2.")
-            # Удаляем временный файл и после успешного сохранения
             if config_mj_local_path and Path(config_mj_local_path).exists():
                 try: os.remove(config_mj_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_local_path}")
                 except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_local_path} после сохранения: {e}")
@@ -1150,8 +1324,8 @@ def main():
         logger.info(f"✅ Работа generate_media.py успешно завершена для ID {generation_id}.")
 
     # --- Обработка исключений верхнего уровня ---
+    # (Остается без изменений)
     except ConnectionError as conn_err:
-        # Используем logger, если он доступен
         if 'logger' in globals() and logger: logger.error(f"❌ Ошибка соединения B2: {conn_err}")
         else: print(f"ERROR: Ошибка соединения B2: {conn_err}")
         sys.exit(1)
@@ -1167,22 +1341,21 @@ def main():
         if 'logger' in globals() and logger: logger.error(f"❌ Критическая ошибка в generate_media.py: {e}", exc_info=True)
         else: print(f"ERROR: Критическая ошибка в generate_media.py: {e}")
         sys.exit(1)
-    # --- ИСПРАВЛЕНИЕ: Внешний finally для очистки временных файлов конфигов ---
+    # --- Внешний finally для очистки временных файлов конфигов ---
     finally:
-        # Очистка временных файлов конфигов
-        # Используем try-except для каждой операции удаления
-        if 'generation_id' in locals() and generation_id and 'timestamp_suffix' in locals() and timestamp_suffix:
-            content_temp_path_str = f"{generation_id}_content_temp_{timestamp_suffix}.json"
-            content_temp_path = Path(content_temp_path_str)
-            if content_temp_path.exists():
-                try:
-                    os.remove(content_temp_path)
-                    if 'logger' in globals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path}")
-                except OSError as e:
-                     if 'logger' in globals() and logger: logger.warning(f"Не удалить {content_temp_path} (в finally): {e}")
+        # (Остается без изменений)
+        if 'generation_id' in locals() and generation_id and \
+           'timestamp_suffix' in locals() and timestamp_suffix:
+            if 'content_local_temp_path' in locals() and content_local_temp_path:
+                content_temp_path_obj = Path(content_local_temp_path)
+                if content_temp_path_obj.exists():
+                    try:
+                        os.remove(content_temp_path_obj)
+                        if 'logger' in globals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path_obj}")
+                    except OSError as e:
+                         if 'logger' in globals() and logger: logger.warning(f"Не удалить {content_temp_path_obj} (в finally): {e}")
 
-        # config_mj_local_path уже определен и инициализирован
-        if config_mj_local_path:
+        if 'config_mj_local_path' in locals() and config_mj_local_path:
             config_mj_temp_path = Path(config_mj_local_path)
             if config_mj_temp_path.exists():
                 try:
@@ -1191,37 +1364,29 @@ def main():
                 except OSError as e:
                      if 'logger' in globals() and logger: logger.warning(f"Не удалить {config_mj_temp_path} (в finally): {e}")
 
-        # Очистка временной папки (temp_dir_path) уже обрабатывается во вложенном finally
-
 # === Точка входа ===
 if __name__ == "__main__":
-    exit_code_main = 1 # По умолчанию ошибка
+    # (Остается без изменений)
+    exit_code_main = 1
     try:
         main()
-        exit_code_main = 0 # Успех, если main() завершился без исключений
+        exit_code_main = 0
     except KeyboardInterrupt:
-        # Используем logger, если он доступен
         if 'logger' in globals() and logger: logger.info("🛑 Остановлено пользователем.")
         else: print("🛑 Остановлено пользователем.")
-        exit_code_main = 130 # Стандартный код для Ctrl+C
+        exit_code_main = 130
     except SystemExit as e:
-        # Логируем код выхода, если он не 0
         exit_code_main = e.code if isinstance(e.code, int) else 1
         if exit_code_main != 0:
-            # --- ИСПРАВЛЕНИЕ: Проверка logger ---
             if 'logger' in globals() and logger: logger.error(f"Завершение с кодом ошибки: {exit_code_main}")
             else: print(f"ERROR: Завершение с кодом ошибки: {exit_code_main}")
         else:
-            # --- ИСПРАВЛЕНИЕ: Проверка logger ---
             if 'logger' in globals() and logger: logger.info(f"Завершение с кодом {exit_code_main}")
             else: print(f"INFO: Завершение с кодом {exit_code_main}")
     except Exception as e:
-        # Логируем неперехваченные ошибки
         print(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}")
-        # --- ИСПРАВЛЕНИЕ: Проверка logger ---
         if 'logger' in globals() and logger: logger.error(f"❌ КРИТИЧЕСКАЯ НЕПЕРЕХВАЧЕННАЯ ОШИБКА: {e}", exc_info=True)
-        exit_code_main = 1 # Общий код ошибки
+        exit_code_main = 1
     finally:
-        # Выходим с финальным кодом
         sys.exit(exit_code_main)
 
