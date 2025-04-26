@@ -363,22 +363,23 @@ def add_text_to_image(
     font_path_str: str,
     output_path_str: str,
     font_size: int = 70,
-    text_color_hex: str = "#000000", # *** ИЗМЕНЕНИЕ: Цвет по умолчанию черный ***
+    text_color_hex: str = "#000000", # Цвет по умолчанию черный
     position: tuple = ('center', 'center'),
     padding: int = 50,
     haze_opacity: int = 100,
     bg_blur_radius: float = 0,
     bg_opacity: int = 0,
-    logger_instance=None
+    logger_instance=None,
+    stroke_width: int = 2, # *** НОВОЕ: Толщина обводки ***
+    stroke_color_hex: str = "#404040" # *** НОВОЕ: Цвет обводки (темно-серый) ***
     ):
     """
-    Наносит текст на изображение с использованием Pillow, добавляя белую "дымку".
-    (Версия с textbbox (без anchor для multiline), загрузкой шрифта в память, БЕЗ anchor в draw.text,
-     исправлен расчет ширины для центрирования)
+    Наносит текст на изображение с использованием Pillow, добавляя белую "дымку" и обводку текста.
+    (Версия с textbbox, загрузкой шрифта в память, обводкой)
     """
     # Получаем логгер
     log = logger_instance if logger_instance else logger
-    log.debug(">>> Вход в add_text_to_image (memory/textbbox-correct-width)")
+    log.debug(">>> Вход в add_text_to_image (с обводкой)")
 
     # Проверка доступности Pillow
     if not PIL_AVAILABLE or Image is None:
@@ -441,13 +442,12 @@ def add_text_to_image(
         text_height = 0
         bbox_multiline = (0, 0, 0, 0) # Инициализация
         try:
-            # *** ИЗМЕНЕНИЕ: Считаем bbox для многострочного текста ОДИН РАЗ ***
+            # Считаем bbox для многострочного текста ОДИН РАЗ БЕЗ anchor
             log.debug("Вызов textbbox для многострочного текста (БЕЗ anchor)...")
-            bbox_multiline = draw.textbbox((0, 0), text, font=font) # <<< Считаем один раз
+            bbox_multiline = draw.textbbox((0, 0), text, font=font)
             log.debug(f"textbbox для многострочного текста вернул: {bbox_multiline}")
-            text_width = bbox_multiline[2] - bbox_multiline[0] # <<< Используем ширину из multiline bbox
+            text_width = bbox_multiline[2] - bbox_multiline[0]
             text_height = bbox_multiline[3] - bbox_multiline[1]
-            # *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
         except Exception as size_err:
             log.error(f"Ошибка при расчете размера текста с textbbox: {size_err}", exc_info=True)
@@ -462,13 +462,11 @@ def add_text_to_image(
 
         # Расчет координат X
         log.debug("Расчет X координаты...")
-        # *** ИЗМЕНЕНИЕ: Используем text_width, рассчитанный по МНОГОСТРОЧНОМУ варианту ***
         x = (img_width - text_width) / 2
         log.debug(f"X = {x}")
 
         # Расчет координат Y
         log.debug("Расчет Y координаты...")
-        # Для центрирования по высоте используем рассчитанную высоту многострочного текста
         y = (img_height - text_height) / 2
         log.debug(f"Y = {y}")
 
@@ -478,33 +476,28 @@ def add_text_to_image(
 
         # --- Добавление подложки/размытия под текстом (опционально) ---
         if bg_blur_radius > 0 or bg_opacity > 0:
+            # (Логика подложки остается без изменений)
             log.info("Добавление эффектов фона под текстом...")
             log.debug(f"Параметры фона: blur={bg_blur_radius}, opacity={bg_opacity}")
             background_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
             draw_bg = ImageDraw.Draw(background_layer)
-
             bg_padding = 20
             bg_left = max(0, text_position[0] - bg_padding)
             bg_top = max(0, text_position[1] - bg_padding)
-            # Используем bbox_multiline, рассчитанный ранее
             log.debug("Расчет bbox для фона под текстом...")
             try:
-                # Используем рассчитанную позицию и bbox_multiline
-                # bbox_multiline уже содержит (left, top, right, bottom) относительно (0,0)
-                # Нам нужно сместить его на text_position
-                bg_right = min(img_width, text_position[0] + (bbox_multiline[2] - bbox_multiline[0]) + bg_padding)
-                bg_bottom = min(img_height, text_position[1] + (bbox_multiline[3] - bbox_multiline[1]) + bg_padding)
+                bbox_multiline_at_pos = draw.textbbox(text_position, text, font=font)
+                log.debug(f"bbox_multiline_at_pos: {bbox_multiline_at_pos}")
+                bg_right = min(img_width, text_position[0] + (bbox_multiline_at_pos[2] - bbox_multiline_at_pos[0]) + bg_padding)
+                bg_bottom = min(img_height, text_position[1] + (bbox_multiline_at_pos[3] - bbox_multiline_at_pos[1]) + bg_padding)
             except Exception as bbox_bg_err:
                  log.error(f"Ошибка расчета bbox для фона: {bbox_bg_err}", exc_info=True)
-                 # В случае ошибки можно попробовать использовать text_width/text_height
                  bg_right = min(img_width, text_position[0] + text_width + bg_padding)
                  bg_bottom = min(img_height, text_position[1] + text_height + bg_padding)
                  log.warning("Используются приблизительные размеры для фона.")
-
             bg_rect_coords = [(int(bg_left), int(bg_top)), (int(bg_right), int(bg_bottom))]
             bg_crop_box = (int(bg_left), int(bg_top), int(bg_right), int(bg_bottom))
             log.debug(f"Координаты фона: rect={bg_rect_coords}, crop={bg_crop_box}")
-
             if bg_blur_radius > 0:
                 log.info(f"Применение размытия фона под текстом (радиус: {bg_blur_radius}) в области {bg_crop_box}")
                 try:
@@ -517,14 +510,12 @@ def add_text_to_image(
                     log.debug("Размытие применено.")
                 except Exception as blur_err:
                     log.warning(f"Не удалось применить размытие под текстом: {blur_err}")
-
             if bg_opacity > 0:
                  log.info(f"Создание полупрозрачной подложки под текстом (opacity: {bg_opacity}) в области {bg_rect_coords}")
                  overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
                  log.debug(f"Рисование прямоугольника подложки цветом {overlay_color}...")
                  draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
                  log.debug("Подложка нарисована.")
-
             log.debug("Наложение слоя фона на основное изображение...")
             img = Image.alpha_composite(img, background_layer)
             draw = ImageDraw.Draw(img) # Обновляем draw для финального изображения
@@ -537,8 +528,12 @@ def add_text_to_image(
         final_text_color = hex_to_rgba(text_color_hex, alpha=240) # Получаем RGBA из HEX
         log.debug(f"Финальный цвет текста (RGBA): {final_text_color}")
 
+        # *** НОВОЕ: Получаем цвет обводки ***
+        final_stroke_color = hex_to_rgba(stroke_color_hex, alpha=240)
+        log.debug(f"Цвет обводки (RGBA): {final_stroke_color}, Ширина: {stroke_width}")
+
         log_text_preview = text[:50].replace('\n', '\\n')
-        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (HEX: {text_color_hex})")
+        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (HEX: {text_color_hex}) с обводкой")
 
         # Используем align='center' для выравнивания строк
         align_option = 'center' if position[0] == 'center' else 'left'
@@ -546,9 +541,17 @@ def add_text_to_image(
         try:
              log.debug(f"Вызов draw.text с позицией {text_position}...")
              # Рисуем текст с возможными переносами \n
-             # Убираем anchor, используем align
-             draw.text(text_position, text, font=font, fill=final_text_color, align=align_option)
-             log.debug("draw.text выполнен (без anchor).")
+             # Добавляем параметры обводки
+             draw.text(
+                 text_position,
+                 text,
+                 font=font,
+                 fill=final_text_color,
+                 align=align_option,
+                 stroke_width=stroke_width, # <<< Добавлено
+                 stroke_fill=final_stroke_color # <<< Добавлено
+             )
+             log.debug("draw.text выполнен (с обводкой).")
         except Exception as draw_err:
              log.error(f"Ошибка при вызове draw.text: {draw_err}", exc_info=True)
              return False # Выходим, если текст не нарисовать
