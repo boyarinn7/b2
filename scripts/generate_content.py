@@ -33,7 +33,11 @@ try:
     from modules.config_manager import ConfigManager
     from modules.logger import get_logger
     from modules.error_handler import handle_error
-    from modules.utils import ensure_directory_exists, load_b2_json, save_b2_json, load_json_config
+    # <<< ИЗМЕНЕНИЕ: Импортируем save_error_to_b2 >>>
+    from modules.utils import (
+        ensure_directory_exists, load_b2_json, save_b2_json,
+        load_json_config, save_error_to_b2, generate_file_id
+        )
     from modules.api_clients import get_b2_client
 except ModuleNotFoundError as e:
      print(f"Критическая Ошибка: Не найдены модули проекта в generate_content: {e}", file=sys.stderr)
@@ -42,6 +46,10 @@ except ImportError as e:
      # Проверяем конкретно load_json_config
      if 'load_json_config' in str(e):
         print(f"Критическая Ошибка: Функция 'load_json_config' не найдена в 'modules.utils'.", file=sys.stderr)
+     elif 'save_error_to_b2' in str(e):
+        print(f"Критическая Ошибка: Функция 'save_error_to_b2' не найдена в 'modules.utils'.", file=sys.stderr)
+     elif 'generate_file_id' in str(e):
+        print(f"Критическая Ошибка: Функция 'generate_file_id' не найдена в 'modules.utils'.", file=sys.stderr)
      else:
         print(f"Критическая Ошибка: Не найдена функция/класс в модулях: {e}", file=sys.stderr)
      sys.exit(1)
@@ -49,10 +57,10 @@ except ImportError as e:
 # --- Инициализация логгера ---
 logger = get_logger("generate_content")
 
-# --- Глобальная переменная для клиента OpenAI (будет инициализирована в call_openai) ---
+# --- Глобальная переменная для клиента OpenAI ---
 openai_client_instance = None
 
-# --- Функция вызова OpenAI API (адаптирована из iid_local_tester.py - ИСПРАВЛЕНИЕ v3) ---
+# --- Функция вызова OpenAI API (без изменений) ---
 def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, temperature_override=None, max_tokens_override=None, config_manager_instance=None, prompts_config_data_instance=None):
     """
     Выполняет вызов OpenAI API (версии >=1.0), инициализируя клиент при необходимости,
@@ -151,12 +159,6 @@ def call_openai(prompt_text: str, prompt_config_key: str, use_json_mode=False, t
                 logger.debug(f"Ответ после удаления обертки ```: {response_content[:500]}...")
             # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
-            # Обработка возможной обертки ```json
-         #   if use_json_mode and response_content.startswith("```json"):
-         #        response_content = response_content[7:] # Убираем ```json\n
-         #        response_content = response_content[:-3] if response_content.endswith("```") else response_content # Убираем ``` в конце
-         #        response_content = response_content.strip()
-
             # Если нужен JSON, пытаемся распарсить
             if use_json_mode:
                 try:
@@ -214,7 +216,10 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
 
         ensure_directory_exists(local_temp_path) # Создаем папку перед записью
         with open(local_temp_path, 'w', encoding='utf-8') as f:
-            json.dump(content_dict, f, ensure_ascii=False, indent=4)
+            # <<< ИЗМЕНЕНИЕ: Сохраняем без ensure_ascii=False и indent=4, т.к. поля content и sarcasm.comment уже строки JSON >>>
+            # json.dump(content_dict, f, ensure_ascii=False, indent=4)
+            # Вместо этого используем стандартный json.dump, который сохранит строки как есть
+            json.dump(content_dict, f)
         logger.debug(f"Временный файл {local_temp_path} создан.")
         s3.upload_file(local_temp_path, bucket_name, s3_key)
         logger.info(f"✅ Данные для {clean_base_id} сохранены в B2: {s3_key}")
@@ -226,6 +231,121 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
         if os.path.exists(local_temp_path):
             try: os.remove(local_temp_path); logger.debug(f"Временный файл {local_temp_path} удален.")
             except OSError as remove_err: logger.warning(f"Не удалить {local_temp_path}: {remove_err}")
+
+
+# +++ НОВАЯ ФУНКЦИЯ: Валидация выходного JSON +++
+def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
+    """
+    Проверяет соответствие словаря `data` требованиям ТЗ к формату полей 'content' и 'sarcasm.comment'.
+
+    Args:
+        data: Словарь с данными для сохранения.
+        logger_instance: Экземпляр логгера для записи сообщений.
+
+    Returns:
+        Кортеж (bool, str): (True, "OK") если валидация пройдена, иначе (False, "Сообщение об ошибке").
+    """
+    log = logger_instance if logger_instance else logger
+    log.info("Запуск валидации выходного JSON...")
+
+    # --- Проверка поля 'content' ---
+    content_val = data.get("content")
+    if not isinstance(content_val, str):
+        msg = "Ошибка валидации: Поле 'content' не является строкой."
+        log.error(msg)
+        return False, msg
+
+    try:
+        content_json = json.loads(content_val)
+        if not isinstance(content_json, dict):
+            msg = "Ошибка валидации: Поле 'content' не содержит валидный JSON-объект."
+            log.error(msg)
+            return False, msg
+        if list(content_json.keys()) != ["текст"]:
+            msg = f"Ошибка валидации: JSON в поле 'content' должен содержать ровно один ключ 'текст'. Найдено: {list(content_json.keys())}"
+            log.error(msg)
+            return False, msg
+
+        main_text = content_json.get("текст")
+        if not isinstance(main_text, str):
+            msg = "Ошибка валидации: Значение по ключу 'текст' в поле 'content' не является строкой."
+            log.error(msg)
+            return False, msg
+        if not main_text.strip():
+            msg = "Ошибка валидации: Значение по ключу 'текст' в поле 'content' пустое."
+            log.error(msg)
+            return False, msg
+        # Проверка наличия двойных переносов (абзацев)
+        if "\n\n" not in main_text:
+            # Допускаем одну строку без двойного переноса
+            if main_text.count('\n') > 0:
+                 msg = "Ошибка валидации: Текст в поле 'content'['текст'] не разбит на абзацы с помощью '\\n\\n'."
+                 log.error(msg)
+                 return False, msg
+            else:
+                 log.debug("Текст в 'content'['текст'] состоит из одной строки, проверка '\\n\\n' пропущена.")
+
+    except json.JSONDecodeError:
+        msg = "Ошибка валидации: Не удалось распарсить JSON-строку в поле 'content'."
+        log.error(msg)
+        return False, msg
+    except Exception as e:
+        msg = f"Неожиданная ошибка при валидации 'content': {e}"
+        log.error(msg, exc_info=True)
+        return False, msg
+
+    log.debug("Валидация поля 'content' пройдена.")
+
+    # --- Проверка поля 'sarcasm.comment' ---
+    sarcasm_data = data.get("sarcasm")
+    # Допускаем отсутствие 'sarcasm' или 'sarcasm.comment'
+    if not isinstance(sarcasm_data, dict):
+        log.debug("Поле 'sarcasm' отсутствует или не словарь, проверка 'comment' пропущена.")
+    else:
+        comment_val = sarcasm_data.get("comment")
+        # Допускаем None или пустую строку, если комментарий не генерировался
+        if comment_val is None or comment_val == "":
+            log.debug("Поле 'sarcasm.comment' отсутствует или пустое, валидация пропущена.")
+        elif not isinstance(comment_val, str):
+            msg = "Ошибка валидации: Поле 'sarcasm.comment' не является строкой (и не None/пустое)."
+            log.error(msg)
+            return False, msg
+        else:
+            # Если строка не пустая, она должна быть валидным JSON
+            try:
+                comment_json = json.loads(comment_val)
+                if not isinstance(comment_json, dict):
+                    msg = "Ошибка валидации: Поле 'sarcasm.comment' не содержит валидный JSON-объект."
+                    log.error(msg)
+                    return False, msg
+                if list(comment_json.keys()) != ["комментарий"]:
+                    msg = f"Ошибка валидации: JSON в поле 'sarcasm.comment' должен содержать ровно один ключ 'комментарий'. Найдено: {list(comment_json.keys())}"
+                    log.error(msg)
+                    return False, msg
+
+                comment_text = comment_json.get("комментарий")
+                if not isinstance(comment_text, str):
+                    msg = "Ошибка валидации: Значение по ключу 'комментарий' в поле 'sarcasm.comment' не является строкой."
+                    log.error(msg)
+                    return False, msg
+                # Проверка на пустоту комментария не требуется по ТЗ
+
+            except json.JSONDecodeError:
+                msg = "Ошибка валидации: Не удалось распарсить JSON-строку в поле 'sarcasm.comment'."
+                log.error(msg)
+                return False, msg
+            except Exception as e:
+                msg = f"Неожиданная ошибка при валидации 'sarcasm.comment': {e}"
+                log.error(msg, exc_info=True)
+                return False, msg
+
+            log.debug("Валидация поля 'sarcasm.comment' пройдена.")
+
+    # --- Все проверки пройдены ---
+    log.info("✅ Валидация выходного JSON успешно пройдена.")
+    return True, "OK"
+# +++ КОНЕЦ НОВОЙ ФУНКЦИИ +++
+
 
 # --- КЛАСС ГЕНЕРАТОРА КОНТЕНТА ---
 class ContentGenerator:
@@ -244,13 +364,15 @@ class ContentGenerator:
         self.adaptation_params = self.config.get('GENERATE.adaptation_parameters', {})
         self.content_output_path = self.config.get('FILE_PATHS.content_output_path', 'generated_content.json')
 
-        # --- ИНИЦИАЛИЗАЦИЯ OpenAI УДАЛЕНА ОТСЮДА ---
-
         self.b2_client = get_b2_client()
         if not self.b2_client: self.logger.warning("⚠️ Не удалось инициализировать B2 клиент.")
 
         self.tracker_path_rel = self.config.get("FILE_PATHS.tracker_path", "data/topics_tracker.json")
         self.failsafe_path_rel = self.config.get("FILE_PATHS.failsafe_path", "config/FailSafeVault.json")
+        # <<< ИЗМЕНЕНИЕ: Получаем путь к папке ошибок >>>
+        self.error_folder_b2 = self.config.get("FILE_PATHS.error_folder", "000/")
+        self.max_error_files = int(self.config.get("WORKFLOW.max_error_files", 20))
+
 
         self.tracker_path_abs = BASE_DIR / self.tracker_path_rel
         self.failsafe_path_abs = BASE_DIR / self.failsafe_path_rel
@@ -352,7 +474,6 @@ class ContentGenerator:
         prompt = prompt_template.format(focus_areas=selected_focus, exclusions=exclusions_str)
 
         try:
-            # Используем новую функцию call_openai
             topic_data = call_openai(prompt,
                                      prompt_config_key=prompt_config_key,
                                      use_json_mode=True,
@@ -360,7 +481,6 @@ class ContentGenerator:
                                      prompts_config_data_instance=self.prompts_config_data)
 
             if not topic_data: raise ValueError("call_openai не вернул ответ для темы.")
-            # topic_data уже должен быть словарем, если use_json_mode=True и парсинг успешен
 
             full_topic = topic_data.get("full_topic"); short_topic = topic_data.get("short_topic")
             if not full_topic or not short_topic: raise ValueError(f"Ответ для темы не содержит ключи: {topic_data}")
@@ -368,13 +488,10 @@ class ContentGenerator:
             self.update_tracker(selected_focus, short_topic, tracker)
             self.save_to_generated_content("topic", {"full_topic": full_topic, "short_topic": short_topic})
             content_metadata = {"theme": "tragic" if "(т)" in selected_focus else "normal"}
-            # В конце метода generate_topic
-            return full_topic, content_metadata, selected_focus  # <--- ДОБАВЛЕНО selected_focus
+            return full_topic, content_metadata, selected_focus
         except Exception as e:
             self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True)
-            # Нужно вернуть что-то или пробросить исключение, чтобы run() знал об ошибке
-            # Вернем None для всех значений при ошибке
-            return None, None, None  # <--- ИЗМЕНЕНО: Возвращаем None при ошибке
+            return None, None, None
         except Exception as e: self.logger.error(f"Ошибка генерации темы: {e}", exc_info=True); raise
 
     def update_tracker(self, focus, short_topic, tracker):
@@ -407,8 +524,6 @@ class ContentGenerator:
             self.logger.info(f"✅ {tracker_path_rel} синхронизирован с B2.")
         except Exception as e: self.logger.error(f"⚠️ Не удалось загрузить трекер {tracker_path_rel} в B2: {e}")
 
-    # request_openai УДАЛЕНА, используется call_openai
-
     def _get_prompt_template(self, prompt_config_key: str) -> str | None:
         """Вспомогательный метод для получения шаблона промпта."""
         if not self.prompts_config_data: self.logger.error("❌ Конфигурация промптов не загружена."); return None
@@ -421,27 +536,41 @@ class ContentGenerator:
             return template
         except (KeyError, TypeError): self.logger.error(f"Ошибка доступа к ключу/структуре '{prompt_config_key}'"); return None
 
+    # <<< ИЗМЕНЕНИЕ: generate_sarcasm теперь возвращает JSON-строку или None >>>
     def generate_sarcasm(self, text, content_data={}):
-        """Генерирует саркастический комментарий."""
+        """
+        Генерирует саркастический комментарий и возвращает его как JSON-строку
+        {"комментарий": "..."} или None при ошибке/отключении.
+        """
         if not self.config.get('SARCASM.enabled', True) or not self.config.get('SARCASM.comment_enabled', True):
-            self.logger.info("🔕 Генерация комментария отключена."); return None
+            self.logger.info("🔕 Генерация комментария отключена."); return None # Возвращаем None
+
         prompt_key_suffix = "tragic_comment" if content_data.get("theme") == "tragic" else "comment"
         prompt_config_key = f"sarcasm.{prompt_key_suffix}"
         prompt_template = self._get_prompt_template(prompt_config_key)
-        if not prompt_template: return None
+        if not prompt_template: return None # Возвращаем None
+
         prompt = prompt_template.format(text=text)
         self.logger.info(f"Запрос комментария (ключ: {prompt_config_key})...")
         try:
-            # Используем новую функцию call_openai
-            comment = call_openai(prompt,
-                                  prompt_config_key=prompt_config_key,
-                                  use_json_mode=False, # Комментарий - строка
-                                  config_manager_instance=self.config,
-                                  prompts_config_data_instance=self.prompts_config_data)
-            if comment: self.logger.info(f"✅ Комментарий: {comment}")
-            else: self.logger.error(f"❌ Ошибка генерации комментария ({prompt_config_key}).")
-            return comment
-        except Exception as e: self.logger.error(f"❌ Исключение комментария: {e}"); return None
+            comment_text = call_openai(prompt,
+                                       prompt_config_key=prompt_config_key,
+                                       use_json_mode=False, # Комментарий - строка
+                                       config_manager_instance=self.config,
+                                       prompts_config_data_instance=self.prompts_config_data)
+
+            if comment_text:
+                self.logger.info(f"✅ Сгенерирован текст комментария: {comment_text}")
+                # Формируем JSON-строку
+                comment_json_str = json.dumps({"комментарий": comment_text}, ensure_ascii=False, indent=2)
+                self.logger.debug(f"Сформирована JSON-строка для комментария: {comment_json_str}")
+                return comment_json_str
+            else:
+                self.logger.error(f"❌ Ошибка генерации текста комментария ({prompt_config_key}).")
+                return None # Возвращаем None при ошибке
+        except Exception as e:
+            self.logger.error(f"❌ Исключение при генерации комментария: {e}");
+            return None # Возвращаем None при исключении
 
     def generate_sarcasm_poll(self, text, content_data={}):
         """Генерирует саркастический опрос."""
@@ -454,7 +583,6 @@ class ContentGenerator:
         prompt = prompt_template.format(text=text)
         self.logger.info(f"Запрос опроса (ключ: {prompt_config_key})... JSON.")
         try:
-            # Используем новую функцию call_openai
             poll_data = call_openai(prompt,
                                     prompt_config_key=prompt_config_key,
                                     use_json_mode=True, # Опрос - JSON
@@ -462,7 +590,6 @@ class ContentGenerator:
                                     prompts_config_data_instance=self.prompts_config_data)
 
             if not poll_data: self.logger.error(f"❌ Ошибка генерации опроса ({prompt_config_key})."); return {}
-            # poll_data уже должен быть словарем
 
             if isinstance(poll_data, dict) and "question" in poll_data and "options" in poll_data and isinstance(poll_data["options"], list) and len(poll_data["options"]) == 3:
                 self.logger.info("✅ Опрос сгенерирован."); poll_data["question"] = str(poll_data["question"]).strip(); poll_data["options"] = [str(opt).strip() for opt in poll_data["options"]]
@@ -499,7 +626,6 @@ class ContentGenerator:
             prompt_template = self._get_prompt_template(prompt_config_key)
             if not prompt_template or prompt_template == "...": self.logger.error(f"Промпт {prompt_config_key} не найден."); return "Промпт критики не найден."
             prompt = prompt_template.format(content=content, topic=topic)
-            # Используем новую функцию call_openai
             critique = call_openai(prompt,
                                    prompt_config_key=prompt_config_key,
                                    use_json_mode=False, # Критика - строка
@@ -540,54 +666,70 @@ class ContentGenerator:
         if not generation_id: raise ValueError("generation_id не может быть пустым.")
         if not self.creative_config_data or not self.prompts_config_data: raise RuntimeError("Конфиги не загружены.")
 
+        # <<< ИЗМЕНЕНИЕ: Переменная для хранения текста с абзацами >>>
+        text_initial_with_paragraphs = ""
+
         try:
             # Шаг 1: Подготовка
             self.adapt_prompts(); self.clear_generated_content()
             # Шаг 2: Генерация Темы
-            # В начале метода run, после загрузки tracker
             tracker = self.load_tracker()
-            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Принимаем 3 значения ---
             topic, content_data, selected_focus = self.generate_topic(tracker)
-            # --- Проверка на ошибку генерации темы ---
             if topic is None or selected_focus is None:
                 self.logger.error("Не удалось сгенерировать тему или получить фокус. Прерывание.")
-                # Здесь можно либо пробросить исключение, либо вернуть ошибку
                 raise RuntimeError("Ошибка генерации темы")
-                # -----------------------------------------
-            # Теперь selected_focus доступен в методе run
 
             # Шаг 3: Генерация Текста (RU)
-
-            text_initial = ""; generate_text_enabled = self.config.get('CONTENT.text.enabled', True); generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
+            # <<< ИЗМЕНЕНИЕ: Сохраняем результат в text_initial_with_paragraphs >>>
+            # text_initial = ""; # Старая переменная больше не нужна в этом виде
+            generate_text_enabled = self.config.get('CONTENT.text.enabled', True); generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
             if (content_data.get("theme") == "tragic" and generate_tragic_text_enabled) or (content_data.get("theme") != "tragic" and generate_text_enabled):
                 prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"; prompt_config_key = f"content.{prompt_key_suffix}"
                 prompt_template = self._get_prompt_template(prompt_config_key)
                 if prompt_template:
-                     # Используем новую функцию call_openai
-                     text_initial = call_openai(prompt_template.format(topic=topic),
+                     # <<< ИЗМЕНЕНИЕ: Убедитесь, что промпт требует \n\n для абзацев >>>
+                     # (Необходимо обновить prompts_config.json)
+                     self.logger.info(f"Запрос текста (ключ: {prompt_config_key}). Ожидается текст с абзацами ('\\n\\n').")
+                     text_initial_with_paragraphs = call_openai(prompt_template.format(topic=topic),
                                                 prompt_config_key=prompt_config_key,
                                                 use_json_mode=False, # Текст - строка
                                                 config_manager_instance=self.config,
                                                 prompts_config_data_instance=self.prompts_config_data)
-                     if text_initial: self.logger.info(f"Текст: {text_initial[:100]}..."); self.save_to_generated_content("text", {"text": text_initial})
-                     else: self.logger.warning(f"Генерация текста ({prompt_config_key}) не удалась.")
-                else: self.logger.warning(f"Промпт {prompt_config_key} не найден.")
-            else: self.logger.info(f"Генерация текста (тема: {content_data.get('theme')}) отключена.")
-            # Шаг 4: Критика
-            critique_result = self.critique_content(text_initial, topic); self.save_to_generated_content("critique", {"critique": critique_result})
+                     if text_initial_with_paragraphs:
+                         self.logger.info(f"Текст: {text_initial_with_paragraphs[:100]}...");
+                         # Сохраняем сырой текст в промежуточный файл (если нужно)
+                         self.save_to_generated_content("text", {"text": text_initial_with_paragraphs})
+                     else:
+                         self.logger.warning(f"Генерация текста ({prompt_config_key}) не удалась.")
+                         text_initial_with_paragraphs = "" # Устанавливаем пустую строку при ошибке
+                else:
+                     self.logger.warning(f"Промпт {prompt_config_key} не найден.")
+                     text_initial_with_paragraphs = ""
+            else:
+                self.logger.info(f"Генерация текста (тема: {content_data.get('theme')}) отключена.")
+                text_initial_with_paragraphs = ""
+
+            # Шаг 4: Критика (используем текст с абзацами)
+            critique_result = self.critique_content(text_initial_with_paragraphs, topic); self.save_to_generated_content("critique", {"critique": critique_result})
+
             # Шаг 5: Генерация Сарказма (RU)
-            sarcastic_comment = None; sarcastic_poll = {}
-            if text_initial: sarcastic_comment = self.generate_sarcasm(text_initial, content_data); sarcastic_poll = self.generate_sarcasm_poll(text_initial, content_data)
-            self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment, "poll": sarcastic_poll})
+            # <<< ИЗМЕНЕНИЕ: Получаем JSON-строку или None >>>
+            sarcastic_comment_json_str = None; sarcastic_poll = {}
+            if text_initial_with_paragraphs:
+                 sarcastic_comment_json_str = self.generate_sarcasm(text_initial_with_paragraphs, content_data)
+                 sarcastic_poll = self.generate_sarcasm_poll(text_initial_with_paragraphs, content_data)
+            # Сохраняем JSON-строку или None
+            self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment_json_str, "poll": sarcastic_poll})
 
             # Шаг 6: Многошаговая Генерация Брифа и Промптов (EN) + Перевод (RU)
+            # (Логика этого шага остается без изменений)
             self.logger.info("--- Запуск многошаговой генерации ---")
             creative_brief, script_en, frame_description_en, final_mj_prompt_en, final_runway_prompt_en = None, None, None, None, None
             script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru = None, None, None, None
             enable_russian_translation = self.config.get("WORKFLOW.enable_russian_translation", False)
             self.logger.info(f"Перевод {'ВКЛЮЧЕН' if enable_russian_translation else 'ОТКЛЮЧЕН'}.")
-
             try:
+                # ... (весь код шагов 6.1 - 6.6c остается здесь без изменений) ...
                 # Подготовка списков
                 moods_list_str = self.format_list_for_prompt(self.creative_config_data.get("moods", []), use_weights=True)
                 arcs_list_str = self.format_list_for_prompt(self.creative_config_data.get("emotional_arcs", []))
@@ -620,7 +762,6 @@ class ContentGenerator:
                 prompt3 = tmpl3.format(input_text=topic, chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False, indent=2), chosen_driver_json=json.dumps(driver_brief, ensure_ascii=False, indent=2), directors_list_str=directors_list_str, artists_list_str=artists_list_str)
                 aesthetic_brief = call_openai(prompt3, prompt_config_key=prompt_key3, use_json_mode=True, config_manager_instance=self.config, prompts_config_data_instance=self.prompts_config_data)
                 if not aesthetic_brief: raise ValueError("Шаг 6.3 не удался."); # aesthetic_brief уже словарь
-                # Валидация aesthetic_brief (остается без изменений)
                 valid_step3 = False
                 if isinstance(aesthetic_brief, dict):
                     style_needed = aesthetic_brief.get("style_needed", False); base_keys_exist = all(k in aesthetic_brief for k in ["style_needed", "chosen_style_type", "chosen_style_value", "style_keywords", "justification"])
@@ -634,7 +775,6 @@ class ContentGenerator:
                     else: logger.error(f"Шаг 6.3: Отсутствуют базовые ключи.")
                 else: logger.error(f"Шаг 6.3: Ответ не словарь.")
                 if not valid_step3: raise ValueError("Шаг 6.3: неверный JSON.")
-
 
                 # Сборка Брифа
                 creative_brief = {"core": core_brief, "driver": driver_brief, "aesthetic": aesthetic_brief}; self.logger.info("--- Шаг 6.4: Бриф Собран ---"); self.logger.debug(f"Бриф: {json.dumps(creative_brief, ensure_ascii=False, indent=2)}"); self.save_to_generated_content("creative_brief", creative_brief)
@@ -687,30 +827,74 @@ class ContentGenerator:
 
             except (json.JSONDecodeError, ValueError, RuntimeError) as step6_err: # Добавил RuntimeError
                  self.logger.error(f"❌ Ошибка шага 6: {step6_err}.")
-                 # Если ошибка произошла из-за OpenAI клиента, пробрасываем исключение выше
                  if isinstance(step6_err, RuntimeError) and "OpenAI client" in str(step6_err):
                      raise
             except Exception as script_err: self.logger.error(f"❌ Ошибка шага 6: {script_err}", exc_info=True)
 
-            # Шаг 7: Сохранение в B2
-            self.logger.info("Формирование итогового словаря для B2...")
+            # Шаг 7: Формирование итогового словаря
+            self.logger.info("Формирование итогового словаря для сохранения...")
+            # <<< ИЗМЕНЕНИЕ: Формируем content и sarcasm.comment в нужном формате >>>
+            content_json_str = json.dumps({"текст": text_initial_with_paragraphs.strip()}, ensure_ascii=False, indent=2)
+            # sarcastic_comment_json_str уже содержит нужный формат или None
+
             complete_content_dict = {
-                "topic": topic, "content": text_initial.strip() if text_initial else "",
+                "topic": topic,
+                "content": content_json_str, # <<< Сохраняем JSON-строку
                 "selected_focus": selected_focus,
-                "sarcasm": {"comment": sarcastic_comment, "poll": sarcastic_poll},
+                "sarcasm": {
+                    "comment": sarcastic_comment_json_str, # <<< Сохраняем JSON-строку или None
+                    "poll": sarcastic_poll if sarcastic_poll else None # Сохраняем словарь опроса или None
+                    },
                 "script": script_en, "first_frame_description": frame_description_en,
                 "creative_brief": creative_brief, "final_mj_prompt": final_mj_prompt_en,
                 "final_runway_prompt": final_runway_prompt_en,
                 "script_ru": script_ru, "first_frame_description_ru": frame_description_ru,
                 "final_mj_prompt_ru": final_mj_prompt_ru, "final_runway_prompt_ru": final_runway_prompt_ru,
                  }
+            # Очистка None значений (опционально, но может быть полезно)
             complete_content_dict = {k: v for k, v in complete_content_dict.items() if v is not None}
-            self.logger.debug(f"Итоговый словарь: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
-            self.logger.info(f"Сохранение в B2 для ID {generation_id}...")
+            if isinstance(complete_content_dict.get("sarcasm"), dict):
+                complete_content_dict["sarcasm"] = {k: v for k, v in complete_content_dict["sarcasm"].items() if v is not None}
+                if not complete_content_dict["sarcasm"]: # Если оба ключа стали None
+                    del complete_content_dict["sarcasm"]
+
+            self.logger.debug(f"Итоговый словарь перед валидацией: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
+
+            # <<< НОВЫЙ ШАГ: Валидация >>>
+            is_valid, validation_message = validate_output_json(complete_content_dict, self.logger)
+
+            if not is_valid:
+                self.logger.error(f"❌ ВАЛИДАЦИЯ НЕ ПРОЙДЕНА для ID {generation_id}: {validation_message}")
+                # Сохраняем файл в папку ошибок
+                error_filename = f"error_{generation_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.json"
+                local_error_path = f"temp_error_{error_filename}" # Временный локальный путь
+                error_data_to_save = {
+                    "validation_error": validation_message,
+                    "generation_id": generation_id,
+                    "timestamp_utc": datetime.utcnow().isoformat(),
+                    "invalid_data": complete_content_dict # Сохраняем невалидные данные
+                }
+                if not save_error_to_b2(
+                    s3_client=self.b2_client,
+                    bucket_name=self.b2_bucket_name,
+                    error_folder=self.error_folder_b2,
+                    local_file_path_str=local_error_path,
+                    error_data_dict=error_data_to_save,
+                    max_error_files=self.max_error_files
+                ):
+                     self.logger.error(f"!!! КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить файл ошибки для ID {generation_id} в B2 !!!")
+                # Прерываем выполнение, чтобы не обновлять config_midjourney.json
+                raise ValueError(f"Validation failed for {generation_id}: {validation_message}")
+            else:
+                self.logger.info(f"✅ Валидация успешно пройдена для ID {generation_id}.")
+                # Продолжаем сохранение в 666/
+
+            # Шаг 8: Сохранение в B2 (папка 666/)
+            self.logger.info(f"Сохранение валидного контента в B2 для ID {generation_id}...")
             if not save_content_to_b2("666/", complete_content_dict, generation_id, self.config):
                 raise Exception(f"Не удалось сохранить итоговый контент в B2 для ID {generation_id}")
 
-            # Шаг 8: Обновление config_midjourney.json
+            # Шаг 9: Обновление config_midjourney.json
             self.logger.info(f"Обновление config_midjourney.json для ID: {generation_id}...")
             try:
                 s3_client_mj = self.b2_client
@@ -746,8 +930,13 @@ if __name__ == "__main__":
         generator = ContentGenerator(); generator.run(generation_id_main)
         logger.info(f"--- Скрипт generate_content.py успешно завершен для ID: {generation_id_main} ---")
         exit_code = 0
+    except ValueError as val_err: # Ловим ошибку валидации
+        logger.error(f"!!! ОШИБКА ВАЛИДАЦИИ generate_content.py для ID {generation_id_main}: {val_err}")
+        # Выходим с кодом ошибки, но не считаем это критической ошибкой всего скрипта
+        exit_code = 1
     except Exception as main_err:
         logger.error(f"!!! КРИТИЧЕСКАЯ ОШИБКА generate_content.py для ID {generation_id_main} !!!")
-        # Логируем само исключение для большей информации
         logger.exception(main_err)
+        exit_code = 1 # Устанавливаем код ошибки
     finally: logger.info(f"--- Завершение generate_content.py с кодом выхода: {exit_code} ---"); sys.exit(exit_code)
+
