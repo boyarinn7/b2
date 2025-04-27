@@ -244,7 +244,6 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
         logger.error(f"Неизвестная ошибка при загрузке {local_path} в B2: {e}", exc_info=True)
         return False
 
-# --- ИЗМЕНЕНИЕ: Функция list_b2_folder_contents теперь возвращает LastModified ---
 def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
     """
     Возвращает список объектов (словарей с 'Key', 'Size', 'LastModified') в указанной папке B2.
@@ -277,7 +276,6 @@ def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
 
     logger_list.debug(f"Содержимое папки {folder_prefix}: {len(contents)} объектов.")
     return contents
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def move_b2_object(s3_client, bucket_name, source_key, dest_key):
     """Перемещает объект в B2 (копирование + удаление)."""
@@ -329,12 +327,13 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
         logger.error(f"Ошибка при проверке пустоты папки {folder_prefix}: {e}", exc_info=True)
         return False # В случае ошибки считаем, что не пуста
 
+# --- ИЗМЕНЕНИЕ: Возвращаем формат ID к ГГГГММДД-ЧЧММ ---
 def generate_file_id():
     """Генерирует уникальный ID на основе текущей даты и времени UTC."""
-    # Возвращаем формат YYYYMMDD-HHMMSS для большей уникальности при частых запусках
-    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    # Возвращаем исходный формат без секунд
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-# +++ НОВАЯ ФУНКЦИЯ: save_error_to_b2 +++
 def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, error_data_dict, max_error_files=20):
     """
     Сохраняет данные об ошибке (словарь) в JSON файл в папку ошибок B2 (`error_folder`, например '000/'),
@@ -372,16 +371,12 @@ def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, 
             valid_files_with_date = [f for f in error_files if isinstance(f.get('LastModified'), datetime)]
             if not valid_files_with_date:
                  logger.error("Не удалось получить дату модификации для файлов в папке ошибок. Ротация невозможна.")
-                 # В реальной системе здесь можно было бы добавить fallback логику,
-                 # например, удаление по имени файла, если оно содержит дату/время.
-                 # Пока просто пропускаем удаление.
             else:
                 valid_files_with_date.sort(key=lambda x: x['LastModified'])
                 oldest_file_key = valid_files_with_date[0]['Key']
                 logger.info(f"Самый старый файл для удаления: {oldest_file_key}")
                 if not delete_b2_object(s3_client, bucket_name, oldest_file_key):
                     logger.error(f"Не удалось удалить старый файл {oldest_file_key}.")
-                    # Не прерываем, продолжаем попытку сохранения нового
                 else:
                     logger.info(f"Старый файл {oldest_file_key} успешно удален.")
 
@@ -408,7 +403,6 @@ def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, 
                 logger.debug(f"Удален временный файл ошибки: {local_path}")
             except OSError as remove_err:
                 logger.warning(f"Не удалось удалить временный файл ошибки {local_path}: {remove_err}")
-# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
 
 # --- Функции для обработки изображений (Pillow) ---
 # ВАЖНО: Эта функция оставлена БЕЗ ИЗМЕНЕНИЙ по сравнению с вашим файлом
@@ -730,3 +724,4 @@ def add_text_to_image(
 #             print(f"Тестовый шрифт не найден по пути: {test_font_path}")
 #     else:
 #         print("Pillow не установлен. Тест не может быть выполнен.")
+
