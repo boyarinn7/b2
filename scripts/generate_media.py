@@ -13,6 +13,12 @@ from pathlib import Path
 # --- Импорт кастомных модулей ---
 # Попытка абсолютного импорта
 try:
+    # <<< ИЗМЕНЕНИЕ: Добавляем BASE_DIR для корректного импорта >>>
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    if str(BASE_DIR) not in sys.path:
+        sys.path.append(str(BASE_DIR))
+    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
     from modules.config_manager import ConfigManager
     from modules.logger import get_logger
     from modules.utils import (
@@ -103,10 +109,11 @@ except Exception as init_err:
     sys.exit(1)
 # === Конец блока инициализации ===
 
-# --- Определение BASE_DIR ---
+# --- Определение BASE_DIR (если не определен ранее) ---
 # Этот блок идет ПОСЛЕ инициализации config и logger
 try:
-    BASE_DIR = Path(__file__).resolve().parent.parent
+    if 'BASE_DIR' not in globals():
+        BASE_DIR = Path(__file__).resolve().parent.parent
 except NameError:
      BASE_DIR = Path.cwd()
      # Используем logger, т.к. он уже должен быть инициализирован
@@ -223,7 +230,6 @@ def _initialize_openai_client():
              logger.error("!!! Повторная ошибка 'unexpected keyword argument proxies' в generate_media.")
         return False
 
-# +++ ОБНОВЛЕННАЯ ФУНКЦИЯ (из предыдущего шага) +++
 def get_text_placement_suggestions(image_url: str, text: str, image_width: int, image_height: int) -> dict:
     """
     Использует GPT-4o Vision для получения рекомендаций по размещению текста на изображении,
@@ -274,7 +280,11 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
     prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
     prompts_config_data = {}
     if prompts_config_path_str:
-        prompts_config_path = BASE_DIR / prompts_config_path_str
+        # <<< ИЗМЕНЕНИЕ: Убедимся, что путь абсолютный >>>
+        prompts_config_path = Path(prompts_config_path_str)
+        if not prompts_config_path.is_absolute():
+            prompts_config_path = BASE_DIR / prompts_config_path
+        # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
         prompts_config_data = load_json_config(str(prompts_config_path)) or {}
     else:
         logger.error("Путь к prompts_config не найден! Невозможно загрузить промпт.")
@@ -353,12 +363,10 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
                 else:
                     logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color}.")
 
-                # *** ИСПРАВЛЕНИЕ ОШИБКИ f-string ***
                 # Создаем переменную для лога ПЕРЕД f-строкой
                 log_text_preview = valid_text[:50].replace('\n', '\\n')
                 # Используем переменную в f-строке
                 logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{log_text_preview}...'")
-                # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
 
                 return {
                     "position": valid_pos,
@@ -393,7 +401,6 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
     except Exception as e:
         logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True)
         return default_suggestions
-# +++ КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ +++
 
 def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | None:
     """
@@ -582,7 +589,6 @@ def generate_runway_video(image_path: str, script: str, config: ConfigManager, a
         with open(image_path, "rb") as f:
             base64_image = base64.b64encode(f.read()).decode("utf-8")
         ext = Path(image_path).suffix.lower()
-        # mime_type = f"image/{'jpeg' if ext == '.jpg' else ext[1:]}" # Старый вариант
         mime_type = f"image/{'png' if ext == '.png' else ('jpeg' if ext in ['.jpg', '.jpeg'] else 'octet-stream')}" # Улучшенный вариант
         image_data_uri = f"data:{mime_type};base64,{base64_image}"
         logger.info(f"Изображение {image_path} успешно кодировано в Base64 (MIME: {mime_type}).")
@@ -818,10 +824,6 @@ def main():
         b2_client = get_b2_client()
         if not b2_client: raise ConnectionError("Не удалось создать клиент B2.")
 
-        # --- Инициализация клиента OpenAI (вынесена в функцию _initialize_openai_client) ---
-        # Вызов _initialize_openai_client() будет происходить по мере необходимости,
-        # например, перед вызовом select_best_image или get_text_placement_suggestions.
-        # -------------------------------------------------
     except (RuntimeError, ConnectionError) as init_err:
         # Используем стандартный logging, так как кастомный мог не создаться
         logging.critical(f"Критическая ошибка инициализации в main(): {init_err}", exc_info=True)
@@ -875,15 +877,20 @@ def main():
 
         # --- Извлечение полей из content_data ---
         topic = content_data.get("topic", "Нет темы")
-        # *** Используем только topic для анализа и печати ***
         text_for_title = topic
-        # ***********************************************************
-        selected_focus = content_data.get("selected_focus")
+        # <<< ИЗМЕНЕНИЕ: Получаем selected_focus, но не падаем, если его нет >>>
+        selected_focus = content_data.get("selected_focus") # Может быть None
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
         final_runway_prompt = content_data.get("final_runway_prompt", "")
         logger.info(f"Тема: '{topic[:100]}...'")
-        logger.info(f"Выбранный фокус: {selected_focus}")
+        # <<< ИЗМЕНЕНИЕ: Логируем фокус, если он есть >>>
+        if selected_focus:
+            logger.info(f"Выбранный фокус: {selected_focus}")
+        else:
+            logger.warning("⚠️ Ключ 'selected_focus' отсутствует в данных контента.")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         # ------------------------------------
 
         # --- Загрузка config_mj ---
@@ -936,7 +943,6 @@ def main():
         # ------------------------------------
 
         # --- Основной блок обработки сценариев ---
-        # --- ИСПРАВЛЕНИЕ: Вложенный try...finally для очистки temp_dir_path ---
         try:
             # --- Создание временной директории ---
             # temp_dir_path уже определен выше
@@ -946,7 +952,6 @@ def main():
 
             if use_mock_flag:
                 # --- Сценарий 0: Принудительный Mock ---
-                # (Логика остается без изменений)
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
                 placeholder_text = f"MJ Timeout\n{topic[:60]}"
                 encoded_text = urllib.parse.quote(placeholder_text)
@@ -983,7 +988,6 @@ def main():
 
             elif is_upscale_result and final_upscaled_image_url:
                 # --- Сценарий 3: Есть результат апскейла -> Генерируем Runway ---
-                # (Логика генерации видео остается без изменений)
                 logger.info(f"Обработка результата /upscale для ID {generation_id}. Генерация видео Runway...")
                 runway_base_image_path = temp_dir_path / f"{generation_id}_upscaled_for_runway.{IMAGE_FORMAT}"
                 if not download_image(final_upscaled_image_url, str(runway_base_image_path)):
@@ -1051,7 +1055,7 @@ def main():
                 if not video_path or not video_path.is_file():
                     logger.warning("Не удалось получить финальное видео (Runway или mock).")
 
-                local_image_path = None
+                local_image_path = None # Изображение не нужно сохранять на этом шаге
 
                 logger.info("Очистка состояния MJ (после Runway)...");
                 config_mj['midjourney_results'] = {}
@@ -1073,12 +1077,15 @@ def main():
                      logger.error(f"Не найден task_id исходной задачи /imagine в результатах: {mj_results}."); raise ValueError("Отсутствует ID исходной задачи /imagine")
 
                 # --- Выбор картинки для Runway ---
-                # (Логика выбора остается без изменений)
                 logger.info("Выбор лучшего изображения для Runway...")
                 prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
                 prompts_config_data = {}
                 if prompts_config_path_str:
-                    prompts_config_path = BASE_DIR / prompts_config_path_str
+                    # <<< ИЗМЕНЕНИЕ: Убедимся, что путь абсолютный >>>
+                    prompts_config_path = Path(prompts_config_path_str)
+                    if not prompts_config_path.is_absolute():
+                        prompts_config_path = BASE_DIR / prompts_config_path
+                    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
                     prompts_config_data = load_json_config(str(prompts_config_path)) or {}
                 else: logger.error("Путь к prompts_config не найден!")
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
@@ -1101,42 +1108,74 @@ def main():
                 logger.info(f"Индекс для заголовка: {title_index}, URL: {image_for_title_url[:60]}...")
 
                 # --- Определение шрифта ---
-                # (Логика определения шрифта остается без изменений)
+                # <<< ИЗМЕНЕНИЕ: Логика определения шрифта с fallback на default >>>
                 final_font_path = None
-                if selected_focus:
-                    logger.info(f"Определение шрифта для фокуса: '{selected_focus}'")
-                    creative_config_path_str = config.get('FILE_PATHS.creative_config')
-                    creative_config_data = {}
-                    if creative_config_path_str:
-                        creative_config_path = BASE_DIR / creative_config_path_str
-                        creative_config_data = load_json_config(str(creative_config_path)) or {}
-                    else: logger.error("Путь к creative_config не найден!")
-                    fonts_mapping = creative_config_data.get("FOCUS_FONT_MAPPING", {})
-                    fonts_folder_rel = config.get("FILE_PATHS.fonts_folder", "fonts/")
-                    default_font_rel_path = fonts_mapping.get("__default__")
-                    if not default_font_rel_path:
-                         logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан!")
-                         default_font_rel_path = "fonts/Roboto-Regular.ttf"
-                         logger.warning(f"Используется жестко заданный шрифт по умолчанию: {default_font_rel_path}")
-                    font_rel_path = fonts_mapping.get(selected_focus)
-                    final_rel_path = font_rel_path if font_rel_path else default_font_rel_path
-                    font_path_abs = BASE_DIR / final_rel_path
-                    if font_path_abs.is_file():
-                        final_font_path = str(font_path_abs)
-                        logger.info(f"Выбран шрифт: {final_font_path}")
-                    else:
-                        logger.error(f"Файл шрифта не найден: {font_path_abs}")
-                        if font_rel_path and font_rel_path != default_font_rel_path:
-                             logger.warning(f"Попытка использовать шрифт по умолчанию: {default_font_rel_path}")
-                             font_path_abs_default = BASE_DIR / default_font_rel_path
-                             if font_path_abs_default.is_file():
-                                 final_font_path = str(font_path_abs_default)
-                                 logger.info(f"Используется шрифт по умолчанию: {final_font_path}")
-                             else: logger.error(f"Файл шрифта по умолчанию также не найден: {font_path_abs_default}")
-                        if not final_font_path: raise FileNotFoundError("Не удалось найти файл шрифта.")
+                logger.info("Определение шрифта для заголовка...")
+                creative_config_path_str = config.get('FILE_PATHS.creative_config')
+                creative_config_data = {}
+                if creative_config_path_str:
+                    # <<< ИЗМЕНЕНИЕ: Убедимся, что путь абсолютный >>>
+                    creative_config_path = Path(creative_config_path_str)
+                    if not creative_config_path.is_absolute():
+                        creative_config_path = BASE_DIR / creative_config_path
+                    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+                    creative_config_data = load_json_config(str(creative_config_path)) or {}
                 else:
-                    logger.error("Не удалось получить 'selected_focus'. Невозможно выбрать шрифт.")
-                    raise ValueError("selected_focus не найден")
+                    logger.error("Путь к creative_config не найден!")
+
+                fonts_mapping = creative_config_data.get("FOCUS_FONT_MAPPING", {})
+                fonts_folder_rel = config.get("FILE_PATHS.fonts_folder", "fonts/") # Не используется напрямую здесь, но может быть полезен
+                default_font_rel_path = fonts_mapping.get("__default__")
+
+                if not default_font_rel_path:
+                    logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан в FOCUS_FONT_MAPPING!")
+                    # Можно установить жестко заданный путь или прервать выполнение
+                    # Пока прерываем, чтобы обратить внимание на проблему конфигурации
+                    raise ValueError("Шрифт по умолчанию не настроен в creative_config.json")
+
+                font_rel_path = None
+                if selected_focus and isinstance(selected_focus, str): # Проверяем, что фокус есть и это строка
+                    font_rel_path = fonts_mapping.get(selected_focus)
+                    if font_rel_path:
+                        logger.info(f"Найден шрифт для фокуса '{selected_focus}': {font_rel_path}")
+                    else:
+                        logger.warning(f"Шрифт для фокуса '{selected_focus}' не найден в FOCUS_FONT_MAPPING. Будет использован шрифт по умолчанию.")
+                else:
+                    # selected_focus отсутствует или имеет неверный тип
+                    logger.warning(f"Ключ 'selected_focus' отсутствует или некорректен в данных контента ({selected_focus}). Будет использован шрифт по умолчанию.")
+                    # font_rel_path остается None
+
+                # Выбираем финальный относительный путь
+                final_rel_path = font_rel_path if font_rel_path else default_font_rel_path
+                logger.info(f"Используемый относительный путь к шрифту: {final_rel_path}")
+
+                # Формируем абсолютный путь и проверяем файл
+                font_path_abs = BASE_DIR / final_rel_path
+                if font_path_abs.is_file():
+                    final_font_path = str(font_path_abs)
+                    logger.info(f"Финальный абсолютный путь к шрифту: {final_font_path}")
+                else:
+                    logger.error(f"Файл шрифта не найден по пути: {font_path_abs}")
+                    # Если не нашли даже шрифт по умолчанию (что странно, т.к. проверили default_font_rel_path)
+                    if final_rel_path == default_font_rel_path:
+                         logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не найден даже файл шрифта по умолчанию: {font_path_abs}")
+                         raise FileNotFoundError(f"Не найден файл шрифта по умолчанию: {font_path_abs}")
+                    else:
+                         # Если не нашли шрифт для фокуса, пытаемся использовать дефолтный
+                         logger.warning(f"Попытка использовать шрифт по умолчанию: {default_font_rel_path}")
+                         font_path_abs_default = BASE_DIR / default_font_rel_path
+                         if font_path_abs_default.is_file():
+                             final_font_path = str(font_path_abs_default)
+                             logger.info(f"Успешно использован шрифт по умолчанию: {final_font_path}")
+                         else:
+                             logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Файл шрифта по умолчанию также не найден: {font_path_abs_default}")
+                             raise FileNotFoundError(f"Не найден файл шрифта по умолчанию: {font_path_abs_default}")
+
+                if not final_font_path:
+                     # Эта ветка не должна достигаться при правильной логике выше, но на всякий случай
+                     logger.critical("Не удалось определить финальный путь к шрифту!")
+                     raise RuntimeError("Не удалось определить финальный путь к шрифту")
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                 # --- Создание картинки-заголовка ---
                 logger.info("Создание изображения-заголовка...")
@@ -1161,19 +1200,16 @@ def main():
                     title_bg_opacity = 0
 
                     if callable(add_text_to_image):
-                        # *** ИСПРАВЛЕНИЕ ОШИБКИ f-string ***
                         # Создаем переменную для лога ПЕРЕД f-строкой
                         log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
                         # Используем переменную в f-строке
                         logger.info(f"Параметры для add_text_to_image: text='{log_text_preview}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
-                        # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
 
                         if add_text_to_image(
                             image_path_str=str(title_base_path),
                             text=placement_suggestions["formatted_text"], # Текст с переносами
-                            font_path_str=final_font_path,
+                            font_path_str=final_font_path, # <<< Используем определенный путь
                             output_path_str=str(final_title_image_path),
-                            # font_size=placement_suggestions["font_size"], # <<< УДАЛЕНО
                             text_color_hex=placement_suggestions["text_color"], # Передаем HEX цвет
                             position=placement_suggestions["position"], # Рекомендуемая позиция (должна быть center, center)
                             padding=title_padding,
@@ -1198,7 +1234,6 @@ def main():
                     local_image_path = None # Финальное изображение не создано
 
                 # --- Запуск Upscale для картинки Runway ---
-                # (Логика запуска апскейла остается без изменений)
                 action_to_trigger = f"upscale{best_index_runway + 1}"
                 available_actions = task_result_data.get("actions", [])
                 logger.info(f"Запуск Upscale для картинки Runway (индекс {best_index_runway}). Действие: {action_to_trigger}.")
@@ -1241,7 +1276,6 @@ def main():
 
             elif config_mj.get("generation") is True:
                 # --- Сценарий 1: Запускаем imagine ---
-                # (Логика остается без изменений)
                 logger.info(f"Нет результатов MJ, флаг generation=true. Запуск /imagine для ID {generation_id}...")
                 if not final_mj_prompt:
                     logger.error("❌ Промпт MJ отсутствует!"); config_mj['generation'] = False
@@ -1275,7 +1309,6 @@ def main():
                 local_image_path = None; video_path = None
 
             # --- Загрузка файлов в B2 ---
-            # (Логика загрузки остается без изменений)
             target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
 
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
@@ -1310,7 +1343,6 @@ def main():
 
 
         # --- Сохранение финального состояния config_mj ---
-        # (Логика сохранения остается без изменений)
         logger.info(f"Сохранение config_midjourney.json в B2...")
         if config_mj_local_path and Path(config_mj_local_path).exists():
             try: os.remove(config_mj_local_path); logger.debug(f"Удален старый temp конфиг MJ: {config_mj_local_path}")
@@ -1329,7 +1361,6 @@ def main():
         logger.info(f"✅ Работа generate_media.py успешно завершена для ID {generation_id}.")
 
     # --- Обработка исключений верхнего уровня ---
-    # (Остается без изменений)
     except ConnectionError as conn_err:
         if 'logger' in globals() and logger: logger.error(f"❌ Ошибка соединения B2: {conn_err}")
         else: print(f"ERROR: Ошибка соединения B2: {conn_err}")
@@ -1348,7 +1379,6 @@ def main():
         sys.exit(1)
     # --- Внешний finally для очистки временных файлов конфигов ---
     finally:
-        # (Остается без изменений)
         if 'generation_id' in locals() and generation_id and \
            'timestamp_suffix' in locals() and timestamp_suffix:
             if 'content_local_temp_path' in locals() and content_local_temp_path:
@@ -1371,7 +1401,6 @@ def main():
 
 # === Точка входа ===
 if __name__ == "__main__":
-    # (Остается без изменений)
     exit_code_main = 1
     try:
         main()
