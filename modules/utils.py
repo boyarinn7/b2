@@ -372,19 +372,19 @@ def add_text_to_image(
     logger_instance=None,
     stroke_width: int = 2,
     stroke_color_hex: str = "#404040",
-    target_width_fraction: float = 0.85, # Оставляем 85%
+    target_width_fraction: float = 0.92, # <<< ИЗМЕНЕНИЕ: Увеличена доля ширины до 92%
     initial_font_size: int = 140,  # Оставляем старт с 140
-    min_font_size: int = 40, # Общий минимальный размер
-    fixed_font_size_3_lines: int = 55 # *** НОВОЕ: Фиксированный размер для 3+ строк ***
+    min_font_size: int = 50,       # <<< ИЗМЕНЕНИЕ: Увеличен общий минимум до 50
+    min_font_size_multiline: int = 60 # <<< ИЗМЕНЕНИЕ: Увеличен минимум для 3+ строк до 60
     ):
     """
-    Наносит текст на изображение. Если строк 1-2, подбирает размер шрифта.
-    Если строк 3+, использует фиксированный размер (fixed_font_size_3_lines).
-    Добавляет белую "дымку" и обводку текста.
+    Наносит текст на изображение с автоподбором размера шрифта (с порогом для 3+ строк),
+    добавляя белую "дымку" и обводку текста.
+    (Версия с увеличенными мин. размерами и шириной)
     """
     # Получаем логгер
     log = logger_instance if logger_instance else logger
-    log.debug(">>> Вход в add_text_to_image (фикс. размер для 3+ строк)")
+    log.debug(">>> Вход в add_text_to_image (автоподбор v4 - крупнее)")
 
     # Проверка доступности Pillow
     if not PIL_AVAILABLE or Image is None:
@@ -426,10 +426,20 @@ def add_text_to_image(
         draw = ImageDraw.Draw(img)
         log.debug("Объект ImageDraw создан/обновлен.")
 
-        # *** Определение финального размера шрифта ***
+        # *** Автоподбор размера шрифта ***
         num_lines = text.count('\n') + 1
-        final_font_size = 0
+        log.info(f"Начало автоподбора размера шрифта (старт: {initial_font_size}, строк: {num_lines})...")
+
+        # *** ИЗМЕНЕНИЕ: Определяем минимальный размер в зависимости от числа строк ***
+        current_min_font_size = min_font_size_multiline if num_lines >= 3 else min_font_size
+        log.debug(f"Минимальный размер для {num_lines} строк: {current_min_font_size}")
+        # *** КОНЕЦ ИЗМЕНЕНИЯ ***
+
         font = None
+        current_font_size = initial_font_size
+        text_width = img_width * 2 # Инициализируем ширину больше максимальной
+        max_text_width = img_width * target_width_fraction
+        log.debug(f"Целевая ширина текста: {max_text_width:.0f}")
 
         font_bytes = None
         try:
@@ -441,67 +451,55 @@ def add_text_to_image(
              log.error(f"Ошибка чтения файла шрифта '{font_path}': {read_font_err}", exc_info=True)
              return False
 
-        if num_lines >= 3:
-            # *** ИСПОЛЬЗУЕМ ФИКСИРОВАННЫЙ РАЗМЕР ДЛЯ 3+ СТРОК ***
-            final_font_size = fixed_font_size_3_lines
-            log.info(f"Обнаружено {num_lines} строк. Используется фиксированный размер шрифта: {final_font_size}")
+        # *** ИЗМЕНЕНИЕ: Используем current_min_font_size в условии цикла ***
+        while current_font_size >= current_min_font_size:
             try:
-                font = ImageFont.truetype(io.BytesIO(font_bytes), final_font_size)
-                log.debug("Шрифт загружен (фиксированный размер).")
-            except Exception as font_err:
-                log.error(f"Ошибка при загрузке шрифта с фиксированным размером {final_font_size}: {font_err}", exc_info=True)
+                log.debug(f"Пробуем размер шрифта: {current_font_size}")
+                font = ImageFont.truetype(io.BytesIO(font_bytes), current_font_size)
+                log.debug("Шрифт загружен для текущего размера.")
+
+                # Считаем bbox для многострочного текста БЕЗ anchor
+                bbox_multiline = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox_multiline[2] - bbox_multiline[0]
+                text_height = bbox_multiline[3] - bbox_multiline[1]
+                log.debug(f"Размер {current_font_size}: Ширина={text_width:.0f}, Высота={text_height:.0f}")
+
+                if text_width <= max_text_width:
+                    log.info(f"Найден подходящий размер шрифта: {current_font_size}")
+                    break # Выходим из цикла, размер найден
+
+                current_font_size -= 2 # Уменьшаем размер на 2 пикселя
+
+            except Exception as size_calc_err:
+                log.error(f"Ошибка при расчете размера для шрифта {current_font_size}: {size_calc_err}", exc_info=True)
+                # Уменьшаем размер и пробуем снова, если не достигли минимума
+                current_font_size -= 2
+                if current_font_size < current_min_font_size: # <<< Проверяем с нужным минимумом
+                    log.error("Не удалось подобрать размер шрифта.")
+                    return False # Выходим, если не удалось посчитать даже для минимального
+
+        else: # Срабатывает, если цикл завершился без break
+            log.warning(f"Не удалось вместить текст в {target_width_fraction*100:.0f}% ширины даже с минимальным размером {current_min_font_size}. Используется минимальный размер.")
+            # Загружаем шрифт с минимальным размером еще раз
+            try:
+                font = ImageFont.truetype(io.BytesIO(font_bytes), current_min_font_size)
+                bbox_multiline = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox_multiline[2] - bbox_multiline[0]
+                text_height = bbox_multiline[3] - bbox_multiline[1]
+                current_font_size = current_min_font_size # Устанавливаем финальный размер
+            except Exception as min_font_err:
+                log.error(f"Ошибка при загрузке/расчете минимального шрифта {current_min_font_size}: {min_font_err}", exc_info=True)
                 return False
-        else:
-            # *** АВТОПОДБОР РАЗМЕРА ДЛЯ 1-2 СТРОК ***
-            log.info(f"Начало автоподбора размера шрифта для {num_lines} строк (старт: {initial_font_size}, мин: {min_font_size}, ширина: {target_width_fraction*100:.0f}%)...")
-            current_font_size = initial_font_size
-            text_width_check = img_width * 2
-            max_text_width = img_width * target_width_fraction
-            log.debug(f"Целевая ширина текста: {max_text_width:.0f}")
 
-            while current_font_size >= min_font_size:
-                try:
-                    log.debug(f"Пробуем размер шрифта: {current_font_size}")
-                    font = ImageFont.truetype(io.BytesIO(font_bytes), current_font_size)
-                    log.debug("Шрифт загружен для текущего размера.")
+        final_font_size = current_font_size # Запоминаем финальный размер
+        log.debug(f"Финальный размер шрифта: {final_font_size}")
+        # *** Конец автоподбора размера шрифта ***
 
-                    # Считаем bbox для многострочного текста БЕЗ anchor
-                    bbox_multiline_check = draw.textbbox((0, 0), text, font=font)
-                    text_width_check = bbox_multiline_check[2] - bbox_multiline_check[0]
-                    log.debug(f"Размер {current_font_size}: Ширина={text_width_check:.0f}")
-
-                    if text_width_check <= max_text_width:
-                        log.info(f"Найден подходящий размер шрифта: {current_font_size}")
-                        final_font_size = current_font_size
-                        break # Выходим из цикла, размер найден
-
-                    current_font_size -= 2 # Уменьшаем размер на 2 пикселя
-
-                except Exception as size_calc_err:
-                    log.error(f"Ошибка при расчете размера для шрифта {current_font_size}: {size_calc_err}", exc_info=True)
-                    current_font_size -= 2
-                    if current_font_size < min_font_size:
-                        log.error("Не удалось подобрать размер шрифта.")
-                        return False
-
-            else: # Срабатывает, если цикл завершился без break
-                log.warning(f"Не удалось вместить текст в {target_width_fraction*100:.0f}% ширины даже с минимальным размером {min_font_size}. Используется минимальный размер.")
-                final_font_size = min_font_size
-                try:
-                    font = ImageFont.truetype(io.BytesIO(font_bytes), final_font_size)
-                except Exception as min_font_err:
-                    log.error(f"Ошибка при загрузке минимального шрифта {final_font_size}: {min_font_err}", exc_info=True)
-                    return False
-
-            log.debug(f"Финальный размер шрифта (автоподбор): {final_font_size}")
-            # *** КОНЕЦ АВТОПОДБОРА РАЗМЕРА ***
 
         # --- Расчет финальных размеров и позиции с выбранным шрифтом ---
         log.debug("Расчет финальных размеров и позиции...")
-        text_width = 0
-        text_height = 0
+        # Пересчитываем финальные размеры на всякий случай
         try:
-            # Считаем финальный bbox с выбранным font
             bbox_multiline = draw.textbbox((0, 0), text, font=font)
             text_width = bbox_multiline[2] - bbox_multiline[0]
             text_height = bbox_multiline[3] - bbox_multiline[1]
