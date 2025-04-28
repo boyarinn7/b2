@@ -2,8 +2,8 @@ name: Test
 
 on:
   schedule:
-    - cron: '30 20 * * *'  # 20:30 UTC
-  workflow_dispatch:
+    # - cron: '30 20 * * *'  # Запуск по расписанию отключен (20:30 UTC)
+  workflow_dispatch: # Разрешает ручной запуск
 
 jobs:
   run-b2-storage-manager:
@@ -68,7 +68,7 @@ jobs:
         echo "--- GITHUB ACTION: Python script finished (or failed). ---"
 
     - name: Загрузка логов как артефакта
-      if: always()
+      if: always() # Выполнять всегда, даже если предыдущие шаги упали
       uses: actions/upload-artifact@v4
       with:
         name: all-logs # Собираем все .log файлы
