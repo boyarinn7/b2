@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Отладочный вывод для проверки старта скрипта в GitHub Actions
-print("--- SCRIPT START (generate_media.py) ---", flush=True)
+print("--- SCRIPT START (generate_media.py v4 - sarcasm integrated - FULL) ---", flush=True)
 
 # В файле scripts/generate_media.py
 
@@ -11,32 +11,30 @@ import os, json, sys, time, argparse, requests, shutil, base64, re, urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 # --- Импорт кастомных модулей ---
-# Попытка абсолютного импорта
 try:
-    # <<< ИЗМЕНЕНИЕ: Добавляем BASE_DIR для корректного импорта >>>
+    # Абсолютный импорт
     BASE_DIR = Path(__file__).resolve().parent.parent
     if str(BASE_DIR) not in sys.path:
         sys.path.append(str(BASE_DIR))
-    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
     from modules.config_manager import ConfigManager
     from modules.logger import get_logger
     from modules.utils import (
         ensure_directory_exists, load_b2_json, save_b2_json,
         download_image, download_video, upload_to_b2, load_json_config,
-        add_text_to_image # <--- Функция для текста ИЗ utils.py
-        # Функции resize_existing_image и create_mock_video НЕ импортируются отсюда
+        add_text_to_image # <-- Оригинальная функция для заголовков
     )
+    # +++ НОВЫЙ ИМПОРТ +++
+    from modules.sarcasm_image_utils import add_text_to_image_sarcasm
+    # ++++++++++++++++++++
     from modules.api_clients import get_b2_client
     # from modules.error_handler import handle_error # Если используется
-except ModuleNotFoundError:
-    # Попытка относительного импорта, если запускается из папки scripts
-    # или если абсолютный не сработал
+except ModuleNotFoundError as import_err:
+    # Попытка относительного импорта
     try:
-        # Добавляем родительскую директорию в sys.path
         _BASE_DIR_FOR_IMPORT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         if _BASE_DIR_FOR_IMPORT not in sys.path:
-            sys.path.insert(0, _BASE_DIR_FOR_IMPORT) # Добавляем в начало для приоритета
+            sys.path.insert(0, _BASE_DIR_FOR_IMPORT)
 
         from modules.config_manager import ConfigManager
         from modules.logger import get_logger
@@ -45,91 +43,77 @@ except ModuleNotFoundError:
             download_image, download_video, upload_to_b2, load_json_config,
             add_text_to_image
         )
+        # +++ НОВЫЙ ИМПОРТ +++
+        from modules.sarcasm_image_utils import add_text_to_image_sarcasm
+        # ++++++++++++++++++++
         from modules.api_clients import get_b2_client
         # from modules.error_handler import handle_error # Если используется
-        del _BASE_DIR_FOR_IMPORT # Очищаем временную переменную
-    except ModuleNotFoundError as import_err:
-        print(f"Критическая Ошибка: Не найдены модули проекта: {import_err}", file=sys.stderr)
+        del _BASE_DIR_FOR_IMPORT
+    except ModuleNotFoundError as import_err_rel:
+        print(f"Критическая Ошибка: Не найдены модули проекта: {import_err_rel}", file=sys.stderr)
         sys.exit(1)
-    except ImportError as import_err_rel:
-        print(f"Критическая Ошибка импорта (относительный): {import_err_rel}", file=sys.stderr)
+    except ImportError as import_err_rel_imp:
+        print(f"Критическая Ошибка импорта (относительный): {import_err_rel_imp}", file=sys.stderr)
         sys.exit(1)
 # --------------------------------------------
 # --- Импорт сторонних библиотек ---
 try:
     from runwayml import RunwayML
     RUNWAY_SDK_AVAILABLE = True
-    # Пытаемся импортировать специфичное исключение RunwayError
-    try:
-        from runwayml.exceptions import RunwayError
+    try: from runwayml.exceptions import RunwayError
     except ImportError:
-        # Используем базовый класс ошибок Runway, если он доступен, иначе requests.HTTPError
-        try:
-            from runwayml.exceptions import RunwayError as BaseRunwayError
-            RunwayError = BaseRunwayError
-        except ImportError:
-             RunwayError = requests.HTTPError # Fallback на HTTPError
-except ImportError:
-    RUNWAY_SDK_AVAILABLE = False; RunwayML = None; RunwayError = requests.HTTPError
+        try: from runwayml.exceptions import RunwayError as BaseRunwayError; RunwayError = BaseRunwayError
+        except ImportError: RunwayError = requests.HTTPError
+except ImportError: RUNWAY_SDK_AVAILABLE = False; RunwayML = None; RunwayError = requests.HTTPError
 try:
     from PIL import Image, ImageFilter, ImageFont, ImageDraw
+    PIL_AVAILABLE = True # <-- Добавить эту строку
 except ImportError:
     Image = None; ImageFilter = None; ImageFont = None; ImageDraw = None
+    PIL_AVAILABLE = False # <-- Добавить эту строку
 try:
     from moviepy.editor import ImageClip
-except ImportError:
-    ImageClip = None
-try:
-    import openai
-except ImportError:
-    openai = None
+except ImportError: ImageClip = None
+try: import openai
+except ImportError: openai = None
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
-except ImportError:
-    # Логирование ошибки будет позже, когда logger будет инициализирован
-    pass
+except ImportError: pass
 # ---------------------------------------------------------------------------
 
 # === Инициализация конфигурации и логгера ===
-# Этот блок ДОЛЖЕН идти СРАЗУ ПОСЛЕ импортов и ПЕРЕД использованием config или logger
 try:
     config = ConfigManager()
-    # Теперь, когда config создан, можно инициализировать логгер
-    logger = get_logger("generate_media") # Используем имя скрипта для логгера
+    logger = get_logger("generate_media")
     logger.info("ConfigManager и Logger для generate_media инициализированы.")
 except Exception as init_err:
-    # Если что-то пойдет не так на этом раннем этапе,
-    # используем стандартный logging для вывода критической ошибки.
-    # Кастомный логгер может быть еще недоступен.
     import logging
     logging.critical(f"Критическая ошибка инициализации ConfigManager или Logger в generate_media: {init_err}", exc_info=True)
-    # Выход из скрипта, так как без конфига или логгера работа невозможна
     import sys
     sys.exit(1)
 # === Конец блока инициализации ===
 
 # --- Определение BASE_DIR (если не определен ранее) ---
-# Этот блок идет ПОСЛЕ инициализации config и logger
 try:
-    if 'BASE_DIR' not in globals():
-        BASE_DIR = Path(__file__).resolve().parent.parent
+    if 'BASE_DIR' not in globals(): BASE_DIR = Path(__file__).resolve().parent.parent
 except NameError:
      BASE_DIR = Path.cwd()
-     # Используем logger, т.к. он уже должен быть инициализирован
      logger.warning(f"Переменная __file__ не определена, BASE_DIR установлен как {BASE_DIR}")
 # -----------------------------
 
 # --- Глобальные константы из конфига ---
-# Этот блок идет ПОСЛЕ инициализации config и logger и определения BASE_DIR
 try:
-    # Используем УЖЕ созданный объект config
     CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json")
     B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
     IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png")
     VIDEO_FORMAT = "mp4"
+    # +++ НОВЫЕ КОНСТАНТЫ +++
+    SARCASM_BASE_IMAGE_REL_PATH = config.get("FILE_PATHS.sarcasm_baron_image", "assets/Барон.png")
+    SARCASM_FONT_REL_PATH = config.get("FILE_PATHS.sarcasm_font", "assets/fonts/Kurale-Regular.ttf")
+    SARCASM_IMAGE_SUFFIX = config.get("FILE_PATHS.sarcasm_image_suffix", "_sarcasm.png")
+    # ++++++++++++++++++++++++
 
-    # Получаем и парсим размер изображения
     output_size_str = config.get("IMAGE_GENERATION.output_size", "1792x1024")
     delimiter = next((d for d in ['x', '×', ':'] if d in output_size_str), 'x')
     try:
@@ -137,7 +121,6 @@ try:
         PLACEHOLDER_WIDTH = int(width_str.strip())
         PLACEHOLDER_HEIGHT = int(height_str.strip())
     except ValueError:
-        # Используем logger для записи ошибки
         logger.error(f"Ошибка парсинга размеров '{output_size_str}'. Используем 1792x1024.")
         PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT = 1792, 1024
 
@@ -149,32 +132,32 @@ try:
     MJ_IMAGINE_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
     MJ_FETCH_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
 
-    # Добавляем константы, которые были в удаленном блоке, если они нужны
     MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
-    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o") # Используем gpt-4o по умолчанию
-    OPENAI_VISION_MODEL = config.get("OPENAI_SETTINGS.vision_model", "gpt-4o") # Отдельная настройка для Vision
+    OPENAI_MODEL = config.get("OPENAI_SETTINGS.model", "gpt-4o")
+    OPENAI_VISION_MODEL = config.get("OPENAI_SETTINGS.vision_model", "gpt-4o")
     TASK_REQUEST_TIMEOUT = int(config.get("WORKFLOW.task_request_timeout", 60))
+    HAZE_OPACITY_DEFAULT = int(config.get("VIDEO.title_haze_opacity", 128))
 
-    # *** НОВОЕ: Параметр для дымки ***
-    HAZE_OPACITY_DEFAULT = int(config.get("VIDEO.title_haze_opacity", 128)) # Прозрачность дымки (0-255)
-
-    # Проверка наличия ключей API
     if not B2_BUCKET_NAME: logger.warning("B2_BUCKET_NAME не определен.")
-    if not MIDJOURNEY_API_KEY: logger.warning("MIDJOURNEY_API_KEY не найден в переменных окружения.")
-    if not RUNWAY_API_KEY: logger.warning("RUNWAY_API_KEY не найден в переменных окружения.")
-    if not OPENAI_API_KEY: logger.warning("OPENAI_API_KEY не найден в переменных окружения.")
-    if not MJ_IMAGINE_ENDPOINT: logger.warning("API_KEYS.midjourney.endpoint не найден в конфиге.")
-    if not MJ_FETCH_ENDPOINT: logger.warning("API_KEYS.midjourney.task_endpoint не найден в конфиге.")
+    if not MIDJOURNEY_API_KEY: logger.warning("MIDJOURNEY_API_KEY не найден.")
+    if not RUNWAY_API_KEY: logger.warning("RUNWAY_API_KEY не найден.")
+    if not OPENAI_API_KEY: logger.warning("OPENAI_API_KEY не найден.")
+    if not MJ_IMAGINE_ENDPOINT: logger.warning("API_KEYS.midjourney.endpoint не найден.")
+    if not MJ_FETCH_ENDPOINT: logger.warning("API_KEYS.midjourney.task_endpoint не найден.")
+    # +++ ПРОВЕРКА НОВЫХ ПУТЕЙ +++
+    if not SARCASM_BASE_IMAGE_REL_PATH: logger.warning("FILE_PATHS.sarcasm_baron_image не задан.")
+    if not SARCASM_FONT_REL_PATH: logger.warning("FILE_PATHS.sarcasm_font не задан.")
+    if not SARCASM_IMAGE_SUFFIX: logger.warning("FILE_PATHS.sarcasm_image_suffix не задан, используется '_sarcasm.png'.")
+    # ++++++++++++++++++++++++++++
 
 except Exception as _cfg_err:
-    # Используем logger для записи ошибки
     logger.critical(f"Критическая ошибка при загрузке констант из конфига: {_cfg_err}", exc_info=True)
     sys.exit(1)
 # ------------------------------------
 
 # --- Проверка доступности сторонних библиотек (после инициализации logger) ---
 if not RUNWAY_SDK_AVAILABLE: logger.warning("RunwayML SDK недоступен.")
-if Image is None: logger.warning("Библиотека Pillow (PIL) недоступна.")
+if not PIL_AVAILABLE: logger.warning("Библиотека Pillow (PIL) недоступна. Функции обработки изображений будут отключены.") # Добавили проверку
 if ImageClip is None: logger.warning("Библиотека MoviePy недоступна.")
 if openai is None: logger.warning("Библиотека OpenAI недоступна.")
 # ---------------------------------------------------------------------------
@@ -182,7 +165,7 @@ if openai is None: logger.warning("Библиотека OpenAI недоступ�
 # === Глобальная переменная для клиента OpenAI ===
 openai_client_instance = None
 
-# === Вспомогательные Функции ===
+# === Вспомогательные Функции (оставляем как есть, кроме добавления Pillow) ===
 
 def _initialize_openai_client():
     """Инициализирует глобальный клиент OpenAI, если он еще не создан."""
@@ -523,7 +506,7 @@ Evaluation Criteria: {criteria}
 
 def resize_existing_image(image_path_str: str) -> bool:
     """Изменяет размер существующего изображения."""
-    if Image is None: logger.warning("Pillow не импортирован."); return True # Не ошибка, просто пропускаем
+    if not PIL_AVAILABLE: logger.warning("Pillow недоступен, ресайз пропущен."); return True # Не ошибка, просто пропускаем
     image_path = Path(image_path_str)
     if not image_path.is_file(): logger.error(f"Ошибка ресайза: Файл не найден {image_path}"); return False
     try:
@@ -694,7 +677,9 @@ def create_mock_video(image_path_str: str) -> str | None:
     if not image_path_obj.is_file(): logger.error(f"{image_path_obj} не найден или не файл."); return None
 
     clip = None; base_name = image_path_obj.stem
-    suffixes_to_remove = ["_mj_final", "_placeholder", "_best", "_temp", "_upscaled"] # Добавлено _upscaled
+    # +++ ШАГ 6: Добавляем суффикс сарказма в список для удаления +++
+    suffixes_to_remove = ["_mj_final", "_placeholder", "_best", "_temp", "_upscaled", SARCASM_IMAGE_SUFFIX.replace('.png','')]
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     for suffix in suffixes_to_remove:
         if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]; break
     output_path = str(image_path_obj.parent / f"{base_name}.{VIDEO_FORMAT}")
@@ -893,6 +878,47 @@ def main():
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         # ------------------------------------
 
+        # +++ ИЗВЛЕЧЕНИЕ ТЕКСТА САРКАЗМА +++
+        sarcasm_comment_text = None
+        sarcasm_data = content_data.get("sarcasm")
+        if isinstance(sarcasm_data, dict):
+            comment_value = sarcasm_data.get("comment") # Получаем значение ключа comment
+            if isinstance(comment_value, str):
+                # --- ИСПРАВЛЕННАЯ ЛОГИКА ПАРСИНГА ---
+                parsed_comment_value = None
+                is_parsed_as_dict = False
+                try:
+                    # Пытаемся распарсить строку как JSON
+                    parsed_comment_value = json.loads(comment_value)
+                    # Проверяем, является ли результат словарем
+                    if isinstance(parsed_comment_value, dict):
+                        is_parsed_as_dict = True
+                        # Ищем ключ comment или комментарий
+                        sarcasm_comment_text = parsed_comment_value.get("comment") or parsed_comment_value.get("комментарий")
+                        if sarcasm_comment_text:
+                             logger.info("Текст сарказма извлечен из JSON-строки.")
+                        else:
+                             logger.warning("В JSON-строке 'sarcasm.comment' не найден ключ 'comment'/'комментарий'.")
+                             sarcasm_comment_text = None # Сбрасываем, если ключ не найден
+                    else:
+                        # json.loads вернул не словарь (например, строку)
+                        if isinstance(parsed_comment_value, str):
+                            logger.info("JSON-строка 'sarcasm.comment' содержит простую строку, используем ее.")
+                            sarcasm_comment_text = parsed_comment_value
+                        else:
+                            logger.warning(f"JSON-строка 'sarcasm.comment' содержит не строку и не словарь: {type(parsed_comment_value)}. Игнорируем.")
+                            sarcasm_comment_text = None
+                except json.JSONDecodeError:
+                    # Если парсинг как JSON не удался, считаем исходное значение простой строкой
+                    logger.info("Значение 'sarcasm.comment' не JSON, используется как простая строка.")
+                    sarcasm_comment_text = comment_value.strip('"') # Убираем лишние кавычки
+                # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
+            elif comment_value is not None:
+                 logger.warning(f"Значение 'sarcasm.comment' не строка: {type(comment_value)}")
+        if sarcasm_comment_text: logger.info(f"Текст для картинки сарказма: '{sarcasm_comment_text[:60]}...'")
+        else: logger.info("Текст сарказма не найден в данных контента.")
+        # +++++++++++++++++++++++++++++++++++++
+
         # --- Загрузка config_mj ---
         logger.info(f"Загрузка состояния: {CONFIG_MJ_REMOTE_PATH}...")
         # Используем config_mj_local_path, определенный ранее
@@ -994,10 +1020,10 @@ def main():
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
                 logger.info(f"Апскейл для Runway сохранен: {runway_base_image_path}")
 
-                if Image and callable(resize_existing_image):
+                if PIL_AVAILABLE and callable(resize_existing_image): # Используем флаг PIL_AVAILABLE
                     if not resize_existing_image(str(runway_base_image_path)):
                         logger.warning(f"Не удалось выполнить ресайз для {runway_base_image_path}, но продолжаем.")
-                elif not Image:
+                elif not PIL_AVAILABLE:
                      logger.warning("Pillow не найден, ресайз не выполнен.")
                 else:
                      if not callable(resize_existing_image):
@@ -1199,7 +1225,7 @@ def main():
                     title_bg_blur_radius = 0
                     title_bg_opacity = 0
 
-                    if callable(add_text_to_image):
+                    if PIL_AVAILABLE and callable(add_text_to_image): # Используем флаг PIL_AVAILABLE
                         # Создаем переменную для лога ПЕРЕД f-строкой
                         log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
                         # Используем переменную в f-строке
@@ -1225,6 +1251,9 @@ def main():
                             logger.error("Не удалось создать изображение-заголовок.")
                             local_image_path = title_base_path # Используем базовое изображение
                             logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
+                    elif not PIL_AVAILABLE:
+                         logger.warning("Pillow недоступен, текст на заголовок не добавлен.")
+                         local_image_path = title_base_path # Используем базовое изображение
                     else:
                          logger.error("Функция add_text_to_image не найдена/импортирована!")
                          local_image_path = title_base_path # Используем базовое изображение
@@ -1308,9 +1337,58 @@ def main():
                 logger.warning("Нет активной задачи MJ, результатов или флага 'generation'. Пропуск.")
                 local_image_path = None; video_path = None
 
-            # --- Загрузка файлов в B2 ---
-            target_folder_b2 = "666/"; upload_success_img = False; upload_success_vid = False
+            # +++ ГЕНЕРАЦИЯ КАРТИНКИ С САРКАЗМОМ +++
+            sarcasm_image_path = None # Инициализируем здесь
+            # Проверяем наличие текста, Pillow и функции add_text_to_image_sarcasm
+            if sarcasm_comment_text and PIL_AVAILABLE and callable(add_text_to_image_sarcasm):
+                logger.info("Генерация изображения с сарказмом...")
+                # Предполагаем наличие BASE_DIR, SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX
+                sarcasm_base_image_path_abs = BASE_DIR / SARCASM_BASE_IMAGE_REL_PATH
+                sarcasm_font_path_abs = BASE_DIR / SARCASM_FONT_REL_PATH
+                # Создаем путь для временного файла картинки с сарказмом
+                sarcasm_output_path_temp = temp_dir_path / f"{generation_id}{SARCASM_IMAGE_SUFFIX}"
 
+                # Проверяем наличие базового изображения и шрифта
+                if not sarcasm_base_image_path_abs.is_file():
+                    logger.error(f"Базовое изображение Барона не найдено: {sarcasm_base_image_path_abs}")
+                elif not sarcasm_font_path_abs.is_file():
+                    logger.error(f"Шрифт для сарказма не найден: {sarcasm_font_path_abs}")
+                else:
+                    # Вызываем новую функцию из sarcasm_image_utils
+                    sarcasm_success = add_text_to_image_sarcasm(
+                        image_path_str=str(sarcasm_base_image_path_abs),
+                        text=sarcasm_comment_text,
+                        font_path_str=str(sarcasm_font_path_abs),
+                        output_path_str=str(sarcasm_output_path_temp),
+                        text_color_hex="#FFFFFF", # Белый
+                        align='right',
+                        vertical_align='center',
+                        padding=40, # Отступы (можно настроить)
+                        initial_font_size=80, # Можно вынести в конфиг
+                        min_font_size=24,     # Можно вынести в конфиг
+                        logger_instance=logger # Передаем логгер
+                    )
+                    if sarcasm_success:
+                        sarcasm_image_path = sarcasm_output_path_temp # Запоминаем путь для загрузки
+                        logger.info(f"✅ Изображение с сарказмом создано: {sarcasm_image_path.name}")
+                    else:
+                        logger.error("Не удалось создать изображение с сарказмом.")
+            # Логируем причины пропуска генерации картинки с сарказмом
+            elif not sarcasm_comment_text:
+                logger.info("Пропуск генерации картинки с сарказмом (нет текста).")
+            elif not PIL_AVAILABLE:
+                logger.warning("Pillow недоступен, пропуск генерации картинки с сарказмом.")
+            else: # Если callable(add_text_to_image_sarcasm) == False
+                logger.error("Функция add_text_to_image_sarcasm не найдена!")
+            # ++++++++++++++++++++++++++++++++++++++++++++++
+
+            # --- Загрузка файлов в B2 ---
+            target_folder_b2 = "666/"
+            upload_success_img = False
+            upload_success_vid = False
+            upload_success_sarcasm = False # Инициализируем флаг загрузки сарказма
+
+            # Загрузка основного изображения (заголовка)
             if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
                  b2_image_filename = f"{generation_id}.png" # Всегда PNG
                  upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
@@ -1318,6 +1396,7 @@ def main():
             elif local_image_path:
                  logger.warning(f"Финальное изображение {local_image_path} не найдено для загрузки.")
 
+            # Загрузка видео
             if video_path and isinstance(video_path, Path) and video_path.is_file():
                  b2_video_filename = f"{generation_id}.mp4" # Всегда MP4
                  upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
@@ -1325,10 +1404,24 @@ def main():
             elif video_path:
                  logger.error(f"Видео {video_path} не найдено для загрузки!")
 
-            if upload_success_img and upload_success_vid: logger.info("✅ Изображение и видео успешно загружены.")
-            elif upload_success_img: logger.info("✅ Изображение успешно загружено.")
-            elif upload_success_vid: logger.info("✅ Видео успешно загружено.")
-            elif local_image_path or video_path:
+            # +++ ЗАГРУЗКА КАРТИНКИ С САРКАЗМОМ +++
+            if sarcasm_image_path and isinstance(sarcasm_image_path, Path) and sarcasm_image_path.is_file():
+                 b2_sarcasm_filename = f"{generation_id}{SARCASM_IMAGE_SUFFIX}" # Используем суффикс из конфига
+                 upload_success_sarcasm = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(sarcasm_image_path), b2_sarcasm_filename)
+                 if not upload_success_sarcasm: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ КАРТИНКИ С САРКАЗМОМ {b2_sarcasm_filename} !!!")
+            elif sarcasm_image_path: # Если путь был, но файла нет
+                 logger.warning(f"Картинка с сарказмом {sarcasm_image_path} не найдена для загрузки.")
+            # ++++++++++++++++++++++++++++++++++++++
+
+            # Логирование результатов загрузки
+            uploaded_items = []
+            if upload_success_img: uploaded_items.append("Изображение")
+            if upload_success_vid: uploaded_items.append("Видео")
+            if upload_success_sarcasm: uploaded_items.append("Сарказм") # <-- Добавлено
+            if uploaded_items: logger.info(f"✅ Успешно загружены: {', '.join(uploaded_items)}.")
+
+            # Проверяем все три флага
+            if not all([upload_success_img, upload_success_vid, upload_success_sarcasm]) and (local_image_path or video_path or sarcasm_image_path):
                  logger.warning("⚠️ Не все созданные медиа файлы были успешно загружены.")
 
         # --- finally для очистки temp_dir_path ---
@@ -1423,4 +1516,3 @@ if __name__ == "__main__":
         exit_code_main = 1
     finally:
         sys.exit(exit_code_main)
-

@@ -39,8 +39,10 @@
         "output_image_format": "png",
         "creative_config": "config/creative_config.json",
         "prompts_config": "config/prompts_config.json",
-        "fonts_folder": "fonts/"
-
+        "fonts_folder": "fonts/",
+        "sarcasm_baron_image": "assets/Барон.png",
+        "sarcasm_font": "assets/fonts/Kurale-Regular.ttf",
+        "sarcasm_image_suffix": "_sarcasm.png"
     },
     "CONTENT": {
         "topic": {
