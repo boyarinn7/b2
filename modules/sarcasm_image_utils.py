@@ -34,6 +34,37 @@ except ImportError:
 
 
 # Вспомогательная функция (копия из тестового скрипта)
+# -*- coding: utf-8 -*-
+# modules/sarcasm_image_utils.py
+
+
+# --- Pillow ---
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    ImageFilter = None
+    # Логирование ошибки будет в вызывающем коде, если PIL недоступен
+
+# Получаем логгер для этого модуля
+# Используем стандартный logging, если get_logger не доступен при прямом импорте
+try:
+    # Попытка импортировать кастомный логгер
+    from modules.logger import get_logger
+    logger = get_logger("sarcasm_image_utils")
+except ImportError:
+    # Fallback на стандартный logging
+    logger = logging.getLogger("sarcasm_image_utils")
+    if not logger.hasHandlers():
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+        logger.warning("Кастомный логгер не найден в sarcasm_image_utils, используется стандартный logging.")
+
+
+# Вспомогательная функция (копия из тестового скрипта)
 def hex_to_rgba(hex_color, alpha=255):
     """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
     hex_color = hex_color.lstrip('#')
@@ -56,7 +87,7 @@ def add_text_to_image_sarcasm(
     output_path_str: str,
     text_color_hex: str = "#FFFFFF",
     align: str = 'right', # Выравнивание текста внутри блока
-    vertical_align: str = 'center', # Вертикальное выравнивание блока текста
+    vertical_align: str = 'center', # Вертикальное выравнивание блока текста (теперь используется для расчета смещения)
     padding: int = 40, # Отступы от краев правой зоны
     stroke_width: int = 2,
     stroke_color_hex: str = "#404040", # Обводка для белого текста
@@ -66,10 +97,10 @@ def add_text_to_image_sarcasm(
     ):
     """
     Наносит текст на ПРАВУЮ ПОЛОВИНУ изображения с автоподбором размера,
-    выравниванием по правому краю и вертикальным центрированием.
+    выравниванием по правому краю и смещением вверх относительно центра.
     """
     log = logger_instance if logger_instance else logger # Используем переданный или локальный логгер
-    log.info(">>> Запуск add_text_to_image_sarcasm")
+    log.info(">>> Запуск add_text_to_image_sarcasm (с вертикальным смещением)")
 
     if not PIL_AVAILABLE:
         log.error("Pillow недоступна. Невозможно добавить текст.")
@@ -133,22 +164,26 @@ def add_text_to_image_sarcasm(
                 current_line = words[0]
                 for word in words[1:]:
                     test_line = current_line + " " + word
-                    line_width = draw.textlength(test_line, font=font)
+                    # Используем getlength вместо устаревшего textlength
+                    line_width = font.getlength(test_line)
                     if line_width <= text_area_width:
                         current_line = test_line
                     else:
                         current_lines.append(current_line)
-                        current_line_width = draw.textlength(current_line, font=font)
+                        # Используем getlength вместо устаревшего textlength
+                        current_line_width = font.getlength(current_line)
                         if current_line_width > max_line_width: max_line_width = current_line_width
                         current_line = word
-                        single_word_width = draw.textlength(current_line, font=font)
+                        # Используем getlength вместо устаревшего textlength
+                        single_word_width = font.getlength(current_line)
                         if single_word_width > text_area_width:
                              log.debug(f"Слово '{current_line}' шире области ({single_word_width:.0f} > {text_area_width}) при размере {current_font_size}.")
                              max_line_width = single_word_width
                              break
                 if current_line:
                     current_lines.append(current_line)
-                    current_line_width = draw.textlength(current_line, font=font)
+                    # Используем getlength вместо устаревшего textlength
+                    current_line_width = font.getlength(current_line)
                     if current_line_width > max_line_width: max_line_width = current_line_width
 
                 if max_line_width > text_area_width:
@@ -160,8 +195,13 @@ def add_text_to_image_sarcasm(
                 if not current_lines: text_height = 0
                 else:
                     multiline_text_check = "\n".join(current_lines)
-                    bbox_check = draw.textbbox((0, 0), multiline_text_check, font=font, align=align)
-                    text_height = bbox_check[3] - bbox_check[1]
+                    # Используем getbbox вместо устаревшего textbbox
+                    bbox_check = font.getbbox(multiline_text_check)
+                    # bbox возвращает (left, top, right, bottom), где top обычно 0 или отрицательное
+                    # text_height = bbox_check[3] - bbox_check[1] # Старый расчет
+                    # Новый расчет высоты с использованием getmask
+                    text_height = font.getmask(multiline_text_check).size[1]
+
 
                 if text_height <= text_area_height:
                     log.info(f"Найден подходящий размер шрифта: {current_font_size}")
@@ -186,10 +226,14 @@ def add_text_to_image_sarcasm(
                 # Повторная разбивка с минимальным размером
                 max_line_width = 0; current_lines = []; words = text.split(); current_line = words[0] if words else ""
                 for word in words[1:]:
-                    test_line = current_line + " " + word; line_width = draw.textlength(test_line, font=font)
+                    test_line = current_line + " " + word
+                    # Используем getlength
+                    line_width = font.getlength(test_line)
                     if line_width <= text_area_width: current_line = test_line
                     else:
-                        current_lines.append(current_line); current_line_width = draw.textlength(current_line, font=font)
+                        current_lines.append(current_line)
+                        # Используем getlength
+                        current_line_width = font.getlength(current_line)
                         if current_line_width > max_line_width: max_line_width = current_line_width
                         current_line = word
                 if current_line: current_lines.append(current_line)
@@ -207,21 +251,32 @@ def add_text_to_image_sarcasm(
 
         # 3. Расчет финальных координат X, Y
         try:
-            bbox_final = draw.textbbox((0, 0), final_text_string, font=font, align=align)
+            # Используем getbbox для финального расчета
+            bbox_final = font.getbbox(final_text_string)
+            # bbox возвращает (left, top, right, bottom)
             final_text_width = bbox_final[2] - bbox_final[0]
-            final_text_height = bbox_final[3] - bbox_final[1]
+            # Используем getmask для точной высоты
+            final_text_height = font.getmask(final_text_string).size[1]
+
         except Exception as final_bbox_err:
-             log.error(f"Ошибка финального расчета bbox: {final_bbox_err}"); return False
+             log.error(f"Ошибка финального расчета bbox/mask: {final_bbox_err}"); return False
 
         # Координата X для выравнивания по правому краю области
         x = text_area_x_start + text_area_width - final_text_width
-        # Координата Y
-        if vertical_align == 'center': y = text_area_y_start + (text_area_height - final_text_height) / 2
-        elif vertical_align == 'top': y = text_area_y_start
-        elif vertical_align == 'bottom': y = text_area_y_start + text_area_height - final_text_height
-        else: y = text_area_y_start + (text_area_height - final_text_height) / 2
+
+        # *** ИЗМЕНЕНИЕ: Расчет координаты Y с вертикальным смещением ***
+        # Рассчитываем базовую Y для центрирования
+        base_y_center = text_area_y_start + (text_area_height - final_text_height) / 2
+        # Рассчитываем смещение вверх (половина размера шрифта)
+        vertical_offset = best_font_size // 2
+        # Применяем смещение
+        y = base_y_center - vertical_offset
+        # Убедимся, что текст не выходит за верхнюю границу области
+        y = max(text_area_y_start, y)
+        # *** КОНЕЦ ИЗМЕНЕНИЯ ***
+
         text_position = (int(x), int(y))
-        log.info(f"Финальная позиция текста (левый верх блока): {text_position}")
+        log.info(f"Финальная позиция текста (левый верх блока): {text_position} (смещено вверх на {vertical_offset}px)")
 
         # 4. Нанесение текста
         final_text_color = hex_to_rgba(text_color_hex)
@@ -230,12 +285,16 @@ def add_text_to_image_sarcasm(
         log.info(f"Нанесение текста '{log_text_preview}...' цветом {text_color_hex} с обводкой")
 
         try:
+             # Используем anchor='ra' для выравнивания по правому краю относительно точки X
+             # и align='right' для выравнивания строк между собой
+             # Позиция теперь указывает на правый верхний угол блока текста
              draw.text(
-                 text_position,
+                 (text_area_x_start + text_area_width, int(y)), # Точка X - правый край области
                  final_text_string,
                  font=font,
                  fill=final_text_color,
-                 align=align,
+                 anchor="ra", # Right Ascender anchor
+                 align='right',
                  stroke_width=stroke_width,
                  stroke_fill=final_stroke_color
              )
@@ -255,4 +314,3 @@ def add_text_to_image_sarcasm(
     except Exception as e:
         log.error(f"Критическая ошибка в add_text_to_image_sarcasm: {e}", exc_info=True)
         return False
-
