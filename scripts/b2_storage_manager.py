@@ -17,7 +17,7 @@ try:
     # Абсолютный импорт, если структура позволяет
     from modules.utils import (
         is_folder_empty, ensure_directory_exists, generate_file_id,
-        load_b2_json, save_b2_json, list_b2_folder_contents, # Убедимся, что list_b2_folder_contents импортирован
+        load_b2_json, save_b2_json, list_b2_folder_contents,
         move_b2_object, delete_b2_object
     )
     from modules.api_clients import get_b2_client
@@ -35,7 +35,7 @@ except ModuleNotFoundError as import_err:
 
         from modules.utils import (
             is_folder_empty, ensure_directory_exists, generate_file_id,
-            load_b2_json, save_b2_json, list_b2_folder_contents, # Убедимся, что list_b2_folder_contents импортирован
+            load_b2_json, save_b2_json, list_b2_folder_contents,
             move_b2_object, delete_b2_object
         )
         from modules.api_clients import get_b2_client
@@ -96,7 +96,11 @@ try:
     CONFIG_MJ_LOCAL_RESET_PATH = f"config_mj_local_reset_{timestamp_suffix}.json"
     CONFIG_MJ_LOCAL_MEDIA_CHECK_PATH = f"config_mj_local_media_check_{timestamp_suffix}.json" # Новый для проверки после media
 
-    FILE_EXTENSIONS = ['.json', '.png', '.mp4']
+    # *** ИЗМЕНЕНИЕ: Определяем требуемые СУФФИКСЫ файлов ***
+    SARCASM_SUFFIX = config.get('FILE_PATHS.sarcasm_image_suffix', '_sarcasm.png')
+    REQUIRED_SUFFIXES = ['.json', '.png', '.mp4', SARCASM_SUFFIX]
+    # *** КОНЕЦ ИЗМЕНЕНИЯ ***
+
     FOLDERS = [
         config.get('FILE_PATHS.folder_444', '444/'),
         config.get('FILE_PATHS.folder_555', '555/'),
@@ -137,12 +141,26 @@ def list_files_in_folder(s3, folder_prefix):
                     # Пропускаем саму папку и placeholder'ы
                     if key == prefix or key.endswith('/') or key.endswith('.bzEmpty'):
                         continue
-                    # Проверяем, соответствует ли *имя файла* (без расширения) паттерну
-                    base_name = os.path.splitext(os.path.basename(key))[0]
-                    if FILE_NAME_PATTERN.match(base_name):
+
+                    # *** ИЗМЕНЕНИЕ: Проверяем, соответствует ли *начало имени файла* паттерну ID ***
+                    filename = os.path.basename(key)
+                    matched = False
+                    # Проверяем стандартные расширения
+                    base_name_std, ext_std = os.path.splitext(filename)
+                    if FILE_NAME_PATTERN.match(base_name_std) and ext_std.lower() in ['.json', '.png', '.mp4']:
+                        matched = True
+                    # Проверяем суффикс сарказма
+                    elif filename.endswith(SARCASM_SUFFIX):
+                        base_name_sarcasm = filename[:-len(SARCASM_SUFFIX)]
+                        if FILE_NAME_PATTERN.match(base_name_sarcasm):
+                            matched = True
+
+                    if matched:
                         files.append(key)
                     # else:
                     #     logger.debug(f"Файл {key} не соответствует паттерну ID, пропуск.")
+                    # *** КОНЕЦ ИЗМЕНЕНИЯ ***
+
     except ClientError as e:
         logger.error(f"Ошибка Boto3 при листинге папки '{folder_prefix}': {e}")
     except Exception as e:
@@ -150,34 +168,56 @@ def list_files_in_folder(s3, folder_prefix):
     # logger.debug(f"Файлы в {folder_prefix}: {files}")
     return files
 
+# *** ИЗМЕНЕНИЕ: Функция get_ready_groups теперь проверяет 4 файла ***
 def get_ready_groups(files):
-    """Определяет ID групп, для которых есть все 3 файла (.json, .png, .mp4)."""
+    """Определяет ID групп, для которых есть все 4 файла (.json, .png, .mp4, _sarcasm.png)."""
     groups = {}
-    required_extensions = set(FILE_EXTENSIONS)
+    required_suffixes_set = set(REQUIRED_SUFFIXES) # Используем константу
+
     for file_key in files:
-        base_name = os.path.splitext(os.path.basename(file_key))
-        group_id = base_name[0]
-        ext = base_name[1].lower()
-        if FILE_NAME_PATTERN.match(group_id) and ext in required_extensions:
-            groups.setdefault(group_id, set()).add(ext)
+        filename = os.path.basename(file_key)
+        group_id = None
+        found_suffix = None
 
-    ready_group_ids = [gid for gid, exts in groups.items() if exts == required_extensions]
+        # Проверяем стандартные расширения
+        base_name_std, ext_std = os.path.splitext(filename)
+        if FILE_NAME_PATTERN.match(base_name_std) and ext_std.lower() in required_suffixes_set:
+            group_id = base_name_std
+            found_suffix = ext_std.lower()
+
+        # Проверяем суффикс сарказма
+        elif filename.endswith(SARCASM_SUFFIX):
+            base_name_sarcasm = filename[:-len(SARCASM_SUFFIX)]
+            if FILE_NAME_PATTERN.match(base_name_sarcasm) and SARCASM_SUFFIX in required_suffixes_set:
+                group_id = base_name_sarcasm
+                found_suffix = SARCASM_SUFFIX
+
+        # Если ID и суффикс найдены, добавляем в группы
+        if group_id and found_suffix:
+            groups.setdefault(group_id, set()).add(found_suffix)
+
+    # Проверяем полноту группы
+    ready_group_ids = [gid for gid, suffixes in groups.items() if suffixes == required_suffixes_set]
+
     if ready_group_ids:
-        logger.debug(f"Найдены готовые группы: {ready_group_ids}")
+        logger.debug(f"Найдены готовые группы (4 файла): {ready_group_ids}")
     # else:
-    #     logger.debug(f"Готовые группы не найдены среди {len(groups)} частичных групп.")
+    #     logger.debug(f"Готовые группы (4 файла) не найдены среди {len(groups)} частичных групп.")
     return ready_group_ids
+# *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
+# *** ИЗМЕНЕНИЕ: Функция move_group теперь перемещает 4 файла ***
 def move_group(s3, src_folder, dst_folder, group_id):
-    """Перемещает все файлы группы (json, png, mp4) из одной папки в другую."""
+    """Перемещает все файлы группы (json, png, mp4, _sarcasm.png) из одной папки в другую."""
     logger.info(f"Перемещение группы '{group_id}' из {src_folder} в {dst_folder}...")
     all_moved = True
     src_folder_norm = src_folder.rstrip('/') + '/'
     dst_folder_norm = dst_folder.rstrip('/') + '/'
 
-    for ext in FILE_EXTENSIONS:
-        src_key = f"{src_folder_norm}{group_id}{ext}"
-        dst_key = f"{dst_folder_norm}{group_id}{ext}"
+    # Итерируемся по ТРЕБУЕМЫМ СУФФИКСАМ
+    for suffix in REQUIRED_SUFFIXES:
+        src_key = f"{src_folder_norm}{group_id}{suffix}"
+        dst_key = f"{dst_folder_norm}{group_id}{suffix}"
         try:
             # Проверяем наличие исходного файла перед копированием
             try:
@@ -201,6 +241,7 @@ def move_group(s3, src_folder, dst_folder, group_id):
             logger.error(f"Неизвестная ошибка при перемещении {src_key}: {e}", exc_info=True)
             all_moved = False
     return all_moved
+# *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
 def process_folders(s3, folders):
     """Сортирует готовые группы файлов по папкам (666 -> 555 -> 444)."""
@@ -212,7 +253,7 @@ def process_folders(s3, folders):
         logger.info(f"Проверка папки {src_folder} для перемещения в {dst_folder}...")
 
         src_files = list_files_in_folder(s3, src_folder)
-        ready_groups_src = get_ready_groups(src_files)
+        ready_groups_src = get_ready_groups(src_files) # Теперь ищет 4 файла
 
         if not ready_groups_src:
             logger.info(f"В папке {src_folder} нет готовых групп для перемещения.")
@@ -222,7 +263,7 @@ def process_folders(s3, folders):
 
         # Проверяем, есть ли место в целевой папке (наличие хотя бы одной ГОТОВОЙ группы)
         dst_files = list_files_in_folder(s3, dst_folder)
-        ready_groups_dst = get_ready_groups(dst_files)
+        ready_groups_dst = get_ready_groups(dst_files) # Теперь ищет 4 файла
 
         moved_count = 0
         can_move = len(ready_groups_dst) == 0 # Можно перемещать, если в целевой папке НЕТ готовых групп
@@ -234,7 +275,7 @@ def process_folders(s3, folders):
         # Если можно перемещать
         for group_id in ready_groups_src:
             logger.info(f"Попытка перемещения группы {group_id} из {src_folder} в {dst_folder}...")
-            if move_group(s3, src_folder, dst_folder, group_id):
+            if move_group(s3, src_folder, dst_folder, group_id): # Теперь перемещает 4 файла
                 moved_count += 1
                 # После успешного перемещения целевая папка становится "занятой"
                 # и мы не можем перемещать другие группы в НЕЕ в ЭТОМ цикле
@@ -249,6 +290,7 @@ def process_folders(s3, folders):
     logger.info("Сортировка папок завершена.")
 
 
+# *** ИЗМЕНЕНИЕ: Функция handle_publish теперь архивирует 4 файла ***
 def handle_publish(s3, config_public):
     """
     Архивирует группы файлов по generation_id из config_public["generation_id"].
@@ -288,9 +330,10 @@ def handle_publish(s3, config_public):
         # Ищем файлы во всех рабочих папках (444, 555, 666)
         for folder in FOLDERS:
             folder_norm = folder.rstrip('/') + '/'
-            for ext in FILE_EXTENSIONS:
-                src_key = f"{folder_norm}{clean_id}{ext}"
-                dst_key = f"{ARCHIVE_FOLDER.rstrip('/')}/{clean_id}{ext}"
+            # Итерируемся по ТРЕБУЕМЫМ СУФФИКСАМ
+            for suffix in REQUIRED_SUFFIXES:
+                src_key = f"{folder_norm}{clean_id}{suffix}"
+                dst_key = f"{ARCHIVE_FOLDER.rstrip('/')}/{clean_id}{suffix}"
                 try:
                     # Проверяем наличие файла перед перемещением
                     s3.head_object(Bucket=B2_BUCKET_NAME, Key=src_key)
@@ -350,6 +393,7 @@ def handle_publish(s3, config_public):
     else:
         logger.info("Не было успешно заархивировано ни одного ID из списка.")
         return False # Изменений не было
+# *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
 def run_script(script_path, args_list=[], timeout=600):
     """Запускает дочерний Python скрипт и возвращает True при успехе."""
@@ -675,7 +719,7 @@ def main():
                 # "Уборка"
                 logger.info("Запуск handle_publish (архивация)...")
                 config_public_copy = config_public.copy() # Работаем с копией
-                if handle_publish(b2_client, config_public_copy):
+                if handle_publish(b2_client, config_public_copy): # Теперь архивирует 4 файла
                     logger.info("handle_publish внес изменения, сохраняем config_public...")
                     if save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_PUBLIC_REMOTE_PATH, CONFIG_PUBLIC_LOCAL_PATH, config_public_copy):
                         config_public = config_public_copy # Обновляем основную переменную
@@ -687,12 +731,12 @@ def main():
                     logger.info("handle_publish не внес изменений в config_public.")
 
                 logger.info("Запуск process_folders (сортировка)...")
-                process_folders(b2_client, FOLDERS)
+                process_folders(b2_client, FOLDERS) # Теперь сортирует группы из 4 файлов
 
                 # Проверка папки 666/ на ГОТОВЫЕ группы
                 logger.info("Проверка наличия ГОТОВЫХ ГРУПП в папке 666/...")
                 files_in_666 = list_files_in_folder(b2_client, FOLDERS[-1]) # FOLDERS[-1] это '666/'
-                ready_groups_in_666 = get_ready_groups(files_in_666)
+                ready_groups_in_666 = get_ready_groups(files_in_666) # Теперь ищет 4 файла
 
                 if not ready_groups_in_666:
                     # Если ГОТОВЫХ групп нет, запускаем генерацию нового контента
@@ -828,5 +872,7 @@ if __name__ == "__main__":
              print(f"!!! НЕПЕРЕХВАЧЕННАЯ ОШИБКА ВЫСШЕГО УРОВНЯ (логгер недоступен): {top_level_err}")
          exit_code = 1 # Общий код ошибки
     finally:
+        # Используем logging напрямую, т.к. logger может быть недоступен
         logging.info(f"Скрипт завершается с кодом выхода: {exit_code}")
         sys.exit(exit_code) # Выход с финальным кодом
+
