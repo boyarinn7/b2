@@ -105,7 +105,9 @@ def save_local_json(file_path_str, data):
         ensure_directory_exists(file_path_str)
         path_obj = Path(file_path_str)
         with open(path_obj, 'w', encoding='utf-8') as f:
+            # *** ИЗМЕНЕНИЕ: Добавлен ensure_ascii=False ***
             json.dump(data, f, ensure_ascii=False, indent=4)
+            # *** КОНЕЦ ИЗМЕНЕНИЯ ***
         logger.info(f"Данные успешно сохранены в локальный файл: {path_obj}")
         return True
     except Exception as e:
