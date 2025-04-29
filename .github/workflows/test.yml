@@ -1,33 +1,31 @@
-name: Test
+name: Test # Имя рабочего процесса
 
 on:
-  schedule:
-    #- cron: '30 20 * * *'  
-  workflow_dispatch: # Разрешает ручной запуск
+  workflow_dispatch: # Разрешает ручной запуск (блок schedule полностью удален)
 
 jobs:
   run-b2-storage-manager:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-    - name: Извлечение кода
+    - name: Извлечение кода # Checkout the repository code
       uses: actions/checkout@v4
 
-    - name: Настройка Python
+    - name: Настройка Python # Setup Python environment
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.10' # Specify Python version
 
-    - name: Установка системных зависимостей
+    - name: Установка системных зависимостей # Install system dependencies like ffmpeg
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
 
-    - name: Очистка кэша pip
+    - name: Очистка кэша pip # Clear pip cache
       run: |
         rm -rf ~/.cache/pip
 
-    - name: Установка зависимостей Python
+    - name: Установка зависимостей Python # Install Python dependencies from requirements.txt
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt не найден"; exit 1; fi
@@ -35,9 +33,9 @@ jobs:
         # Добавлена явная проверка импорта runwayml
         python -c "import runwayml; print('RunwayML version:', runwayml.__version__)" || echo "ОШИБКА: Не удалось импортировать runwayml"
         echo "--- Вывод pip list ---"
-        pip list
+        pip list # List installed packages
 
-    - name: Установка переменных среды
+    - name: Установка переменных среды # Set environment variables from secrets
       run: |
         echo "B2_ENDPOINT=${{ secrets.B2_ENDPOINT }}" >> $GITHUB_ENV
         echo "B2_ACCESS_KEY=${{ secrets.B2_ACCESS_KEY }}" >> $GITHUB_ENV
@@ -47,35 +45,34 @@ jobs:
         echo "MIDJOURNEY_API_KEY=${{ secrets.MIDJOURNEY_API_KEY }}" >> $GITHUB_ENV
         echo "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}" >> $GITHUB_ENV
 
-    - name: Проверка структуры директорий
+    - name: Проверка структуры директорий # Check directory structure and look for conflicting files
       run: |
-        ls -la
-        pwd # Показываем текущую рабочую директорию
-        ls -la scripts || echo "Каталог scripts не найден"
-        ls -la modules || echo "Каталог modules не найден"
+        ls -la # List files in the current directory
+        pwd # Print working directory
+        ls -la scripts || echo "Каталог scripts не найден" # List scripts directory
+        ls -la modules || echo "Каталог modules не найден" # List modules directory
         # Проверим, нет ли файла runwayml.py в корне или модулях/скриптах
         find . -name 'runwayml.py' -o -name 'runwayml' -type f -print || echo "Локальный файл/папка runwayml не найдены."
 
-    - name: Запуск b2_storage_manager.py
+    - name: Запуск b2_storage_manager.py # Run the main Python script
       run: |
         echo "--- GITHUB ACTION: Setting PYTHONPATH ---"
         # Убедимся, что путь к корневой папке проекта добавлен правильно
-        export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE
-        echo "PYTHONPATH is: $PYTHONPATH" # Выводим PYTHONPATH для отладки
+        export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE # Add workspace to PYTHONPATH
+        echo "PYTHONPATH is: $PYTHONPATH" # Print PYTHONPATH for debugging
         echo "--- GITHUB ACTION: PYTHONPATH Set. Executing Python Script (Direct Output) ---"
         # Запускаем Python НАПРЯМУЮ, без || {...} и без > logfile
-        python -u scripts/b2_storage_manager.py --zero-delay
+        python -u scripts/b2_storage_manager.py --zero-delay # Run the script with unbuffered output
         echo "--- GITHUB ACTION: Python script finished (or failed). ---"
 
-    - name: Загрузка логов как артефакта
-      if: always() # Выполнять всегда, даже если предыдущие шаги упали
+    - name: Загрузка логов как артефакта # Upload log files as artifacts
+      if: always() # Run this step even if previous steps failed
       uses: actions/upload-artifact@v4
       with:
-        name: all-logs # Собираем все .log файлы
-        path: |
-          logs/*.log # Собираем все файлы из папки logs
-          *.log # Собираем логи из корня, если есть
-        retention-days: 7
+        name: all-logs # Name of the artifact
+        path: | # Paths to include in the artifact
+          logs/*.log # Include all .log files from the logs directory
+          *.log # Include all .log files from the root directory
+        retention-days: 7 # How long to keep the artifact
         # Добавим опцию, чтобы не падать, если файлы не найдены
-        if-no-files-found: warn
-
+        if-no-files-found: warn # Warn instead of failing if no files are found
