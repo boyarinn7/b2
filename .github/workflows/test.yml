@@ -2,7 +2,7 @@ name: Test
 
 on:
   schedule:
-    # - cron: '30 20 * * *'  # Запуск по расписанию отключен (20:30 UTC)
+    #- cron: '30 20 * * *'  
   workflow_dispatch: # Разрешает ручной запуск
 
 jobs:
