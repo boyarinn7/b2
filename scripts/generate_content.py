@@ -693,287 +693,314 @@ class ContentGenerator:
                 self.logger.error("Не удалось сгенерировать тему или получить фокус. Прерывание.")
                 raise RuntimeError("Ошибка генерации темы")
 
-            # Шаг 3: Генерация Текста (RU)
-            # <<< ИЗМЕНЕНИЕ: Переменная для хранения *сырого* текста >>>
-            text_initial_raw = ""
-            # <<< ИЗМЕНЕНИЕ: Переменная для хранения *отформатированной* JSON-строки >>>
-            content_json_str = None
-
-            generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
-            generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
-
-            if (content_data.get("theme") == "tragic" and generate_tragic_text_enabled) or \
-                    (content_data.get("theme") != "tragic" and generate_text_enabled):
-                prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"
-                prompt_config_key_generate = f"content.{prompt_key_suffix}"
-                prompt_template_generate = self._get_prompt_template(prompt_config_key_generate)
-                if prompt_template_generate:
-                    self.logger.info(f"Запрос генерации текста (ключ: {prompt_config_key_generate}).")
-                    # Получаем сырой текст (ожидаем строку, не JSON)
-                    text_initial_raw = call_openai(
-                        prompt_template_generate.format(topic=topic),
-                        prompt_config_key=prompt_config_key_generate,
-                        use_json_mode=False,  # Генерируем просто текст
-                        config_manager_instance=self.config,
-                        prompts_config_data_instance=self.prompts_config_data
-                    )
-                    if text_initial_raw:
-                        self.logger.info(f"Сырой текст получен: {text_initial_raw[:100]}...")
-                        self.save_to_generated_content("text_raw",
-                                                       {"text_raw": text_initial_raw})  # Сохраняем сырой текст
-
-                        # +++ НОВЫЙ ШАГ: Форматирование текста +++
-                        self.logger.info("Запрос форматирования текста в JSON...")
-                        prompt_config_key_format = "content.format_text"
-                        prompt_template_format = self._get_prompt_template(prompt_config_key_format)
-                        if prompt_template_format:
-                            formatted_data = call_openai(
-                                prompt_template_format.format(input_text=text_initial_raw),
-                                prompt_config_key=prompt_config_key_format,
-                                use_json_mode=True,  # Ожидаем JSON {"текст": "..."}
-                                config_manager_instance=self.config,
-                                prompts_config_data_instance=self.prompts_config_data
-                            )
-                            if isinstance(formatted_data, dict) and "текст" in formatted_data:
-                                # <<< ИЗМЕНЕНИЕ: Сохраняем как JSON-строку >>>
-                                content_json_str = json.dumps(formatted_data, ensure_ascii=False, indent=2)
-                                self.logger.info(f"Текст успешно отформатирован в JSON: {content_json_str[:100]}...")
-                            else:
-                                self.logger.error(
-                                    f"❌ Ошибка форматирования текста: не получен ожидаемый JSON. Ответ: {formatted_data}")
-                                # Можно либо прервать, либо использовать сырой текст (но валидация упадет)
-                                # Пока оставляем content_json_str = None
-                        else:
-                            self.logger.error(f"❌ Промпт форматирования '{prompt_config_key_format}' не найден!")
-                        # +++ КОНЕЦ НОВОГО ШАГА +++
-
-                    else:
-                        self.logger.warning(f"Генерация сырого текста ({prompt_config_key_generate}) не удалась.")
-                        text_initial_raw = ""  # Устанавливаем пустую строку при ошибке
-                else:
-                    self.logger.warning(f"Промпт генерации {prompt_config_key_generate} не найден.")
-                    text_initial_raw = ""
-            else:
-                self.logger.info(f"Генерация текста (тема: {content_data.get('theme')}) отключена.")
+                # Шаг 3: Генерация Текста (RU)
                 text_initial_raw = ""
+                content_json_str = None  # Инициализируем как None
 
-            # Шаг 4: Критика (используем сырой текст)
-            critique_result = self.critique_content(text_initial_raw, topic)  # Критикуем сырой текст
-            self.save_to_generated_content("critique", {"critique": critique_result})
+                generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
+                generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
 
-            # Шаг 5: Генерация Сарказма (RU)
-            sarcastic_comment_json_str = None
-            sarcastic_poll = {}
-            if text_initial_raw:  # Используем сырой текст для генерации сарказма
-                sarcastic_comment_json_str = self.generate_sarcasm(text_initial_raw, content_data)
-                sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_data)
-            # Сохраняем JSON-строку или None для комментария
-            self.save_to_generated_content("sarcasm", {"comment": sarcastic_comment_json_str, "poll": sarcastic_poll})
+                if (content_data.get("theme") == "tragic" and generate_tragic_text_enabled) or \
+                        (content_data.get("theme") != "tragic" and generate_text_enabled):
+                    prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"
+                    prompt_config_key_generate = f"content.{prompt_key_suffix}"
+                    prompt_template_generate = self._get_prompt_template(prompt_config_key_generate)
+                    if prompt_template_generate:
+                        self.logger.info(f"Запрос генерации текста (ключ: {prompt_config_key_generate}).")
+                        # Получаем сырой текст (ожидаем строку, не JSON)
+                        text_initial_raw = call_openai(
+                            prompt_template_generate.format(topic=topic),
+                            prompt_config_key=prompt_config_key_generate,
+                            use_json_mode=False,  # Генерируем просто текст
+                            config_manager_instance=self.config,
+                            prompts_config_data_instance=self.prompts_config_data
+                        )
+                        if text_initial_raw and text_initial_raw.strip():
+                            self.logger.info(f"Сырой текст получен: {text_initial_raw[:100]}...")
+                            self.save_to_generated_content("text_raw", {"text_raw": text_initial_raw})
 
-            # Шаг 6: Многошаговая Генерация Брифа и Промптов (EN) + Перевод (RU)
-            # ... (этот блок остается без изменений) ...
-            self.logger.info("--- Запуск многошаговой генерации ---")
-            creative_brief, script_en, frame_description_en, final_mj_prompt_en, final_runway_prompt_en = None, None, None, None, None
-            script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru = None, None, None, None
-            enable_russian_translation = self.config.get("WORKFLOW.enable_russian_translation", False)
-            self.logger.info(f"Перевод {'ВКЛЮЧЕН' if enable_russian_translation else 'ОТКЛЮЧЕН'}.")
-            try:
-                # ... (весь код шагов 6.1 - 6.6c остается здесь без изменений) ...
-                # Подготовка списков
-                moods_list_str = self.format_list_for_prompt(self.creative_config_data.get("moods", []),
-                                                             use_weights=True)
-                arcs_list_str = self.format_list_for_prompt(self.creative_config_data.get("emotional_arcs", []))
-                main_prompts_list = self.creative_config_data.get("creative_prompts", {}).get("main", [])
-                prompts_list_str = self.format_list_for_prompt(main_prompts_list, use_weights=True)
-                perspectives_list_str = self.format_list_for_prompt(
-                    self.creative_config_data.get("perspective_types", []))
-                metaphors_list_str = self.format_list_for_prompt(
-                    self.creative_config_data.get("visual_metaphor_types", []))
-                directors_list_str = self.format_list_for_prompt(self.creative_config_data.get("director_styles", []))
-                artists_list_str = self.format_list_for_prompt(self.creative_config_data.get("artist_styles", []))
+                            # +++ НОВЫЙ ШАГ: Программное форматирование текста +++
+                            self.logger.info("Выполнение программного форматирования текста...")
+                            try:
+                                # 1. Разделяем текст на строки, учитывая разные виды переносов
+                                lines = re.split(r'\n\s*\n*', text_initial_raw.strip())
+                                # 2. Удаляем пустые строки или строки, состоящие только из пробелов
+                                paragraphs = [line.strip() for line in lines if line.strip()]
+                                # 3. Соединяем непустые абзацы двойным переносом
+                                formatted_text_value = "\n\n".join(paragraphs)
 
-                # Шаг 6.1: Ядро
-                self.logger.info("--- Шаг 6.1: Ядро ---");
-                prompt_key1 = "multi_step.step1_core";
-                tmpl1 = self._get_prompt_template(prompt_key1);
-                if not tmpl1: raise ValueError(f"{prompt_key1} не найден.")
-                prompt1 = tmpl1.format(input_text=topic, moods_list_str=moods_list_str, arcs_list_str=arcs_list_str)
-                core_brief = call_openai(prompt1, prompt_config_key=prompt_key1, use_json_mode=True,
-                                         config_manager_instance=self.config,
-                                         prompts_config_data_instance=self.prompts_config_data)
-                if not core_brief: raise ValueError("Шаг 6.1 не удался.");  # core_brief уже словарь
-                if not all(k in core_brief for k in ["chosen_type", "chosen_value", "justification"]): raise ValueError(
-                    f"Шаг 6.1: неверный JSON {core_brief}.")
+                                if formatted_text_value:
+                                    # 4. Создаем финальный JSON-объект и кодируем его в строку
+                                    formatted_data = {"текст": formatted_text_value}
+                                    content_json_str = json.dumps(formatted_data, ensure_ascii=False, indent=2)
+                                    self.logger.info(
+                                        f"Текст успешно отформатирован программно: {content_json_str[:100]}...")
+                                else:
+                                    # Это маловероятно, если text_initial_raw был непустым, но на всякий случай
+                                    self.logger.error("❌ Ошибка форматирования: после обработки текст стал пустым.")
+                                    raise ValueError("Programmatic formatting resulted in empty text.")
 
-                # Шаг 6.2: Драйвер
-                self.logger.info("--- Шаг 6.2: Драйвер ---");
-                prompt_key2 = "multi_step.step2_driver";
-                tmpl2 = self._get_prompt_template(prompt_key2);
-                if not tmpl2: raise ValueError(f"{prompt_key2} не найден.")
-                prompt2 = tmpl2.format(input_text=topic,
-                                       chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False, indent=2),
-                                       prompts_list_str=prompts_list_str, perspectives_list_str=perspectives_list_str,
-                                       metaphors_list_str=metaphors_list_str)
-                driver_brief = call_openai(prompt2, prompt_config_key=prompt_key2, use_json_mode=True,
-                                           config_manager_instance=self.config,
-                                           prompts_config_data_instance=self.prompts_config_data)
-                if not driver_brief: raise ValueError("Шаг 6.2 не удался.");  # driver_brief уже словарь
-                if not all(k in driver_brief for k in
-                           ["chosen_driver_type", "chosen_driver_value", "justification"]): raise ValueError(
-                    f"Шаг 6.2: неверный JSON {driver_brief}.")
+                            except Exception as format_err:
+                                self.logger.error(f"❌ Ошибка во время программного форматирования: {format_err}",
+                                                  exc_info=True)
+                                raise ValueError("Programmatic formatting failed.") from format_err
+                            # +++ КОНЕЦ НОВОГО ШАГА +++
 
-                # Шаг 6.3: Эстетика
-                self.logger.info("--- Шаг 6.3: Эстетика ---");
-                prompt_key3 = "multi_step.step3_aesthetic";
-                tmpl3 = self._get_prompt_template(prompt_key3);
-                if not tmpl3: raise ValueError(f"{prompt_key3} не найден.")
-                prompt3 = tmpl3.format(input_text=topic,
-                                       chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False, indent=2),
-                                       chosen_driver_json=json.dumps(driver_brief, ensure_ascii=False, indent=2),
-                                       directors_list_str=directors_list_str, artists_list_str=artists_list_str)
-                aesthetic_brief = call_openai(prompt3, prompt_config_key=prompt_key3, use_json_mode=True,
-                                              config_manager_instance=self.config,
-                                              prompts_config_data_instance=self.prompts_config_data)
-                if not aesthetic_brief: raise ValueError("Шаг 6.3 не удался.");  # aesthetic_brief уже словарь
-                valid_step3 = False
-                if isinstance(aesthetic_brief, dict):
-                    style_needed = aesthetic_brief.get("style_needed", False);
-                    base_keys_exist = all(k in aesthetic_brief for k in
-                                          ["style_needed", "chosen_style_type", "chosen_style_value", "style_keywords",
-                                           "justification"])
-                    if base_keys_exist:
-                        if not style_needed:
-                            if all(aesthetic_brief.get(k) is None for k in
-                                   ["chosen_style_type", "chosen_style_value", "style_keywords", "justification"]):
-                                valid_step3 = True
-                            else:
-                                self.logger.warning(
-                                    f"Шаг 6.3: style_needed=false, но ключи не null. Исправляем."); aesthetic_brief.update(
-                                    {k: None for k in ["chosen_style_type", "chosen_style_value", "style_keywords",
-                                                       "justification"]}); valid_step3 = True
                         else:
-                            if all([aesthetic_brief.get("chosen_style_type"), aesthetic_brief.get("chosen_style_value"),
-                                    isinstance(aesthetic_brief.get("style_keywords"), list),
-                                    aesthetic_brief.get("justification")]):
-                                valid_step3 = True
-                            else:
-                                logger.error(f"Шаг 6.3: style_needed=true, но значения некорректны.")
+                            # Ошибка: Первый шаг генерации вернул пустой текст
+                            self.logger.error(
+                                f"❌ Генерация сырого текста ({prompt_config_key_generate}) не удалась или вернула пустой результат.")
+                            text_initial_raw = ""
+                            raise ValueError("Initial text generation failed or returned empty.")
                     else:
-                        logger.error(f"Шаг 6.3: Отсутствуют базовые ключи.")
+                        self.logger.warning(f"Промпт генерации {prompt_config_key_generate} не найден.")
+                        text_initial_raw = ""
+                        raise ValueError(f"Generation prompt '{prompt_config_key_generate}' not found.")
                 else:
-                    logger.error(f"Шаг 6.3: Ответ не словарь.")
-                if not valid_step3: raise ValueError("Шаг 6.3: неверный JSON.")
+                    self.logger.info(f"Генерация текста (тема: {content_data.get('theme')}) отключена.")
+                    text_initial_raw = ""
+                    # Создаем пустой JSON, чтобы избежать ошибки при валидации, если генерация отключена
+                    content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
 
-                # Сборка Брифа
-                creative_brief = {"core": core_brief, "driver": driver_brief, "aesthetic": aesthetic_brief};
-                self.logger.info("--- Шаг 6.4: Бриф Собран ---");
-                self.logger.debug(f"Бриф: {json.dumps(creative_brief, ensure_ascii=False, indent=2)}");
-                self.save_to_generated_content("creative_brief", creative_brief)
+                # Шаг 4: Критика (используем сырой текст, если он есть)
+                critique_result = self.critique_content(text_initial_raw, topic)
+                self.save_to_generated_content("critique", {"critique": critique_result})
 
-                # Шаг 6.5: Сценарий и Описание (EN)
-                self.logger.info("--- Шаг 6.5: Сценарий и Описание (EN) ---");
-                prompt_key5 = "multi_step.step5_script_frame";
-                tmpl5 = self._get_prompt_template(prompt_key5);
-                if not tmpl5: raise ValueError(f"{prompt_key5} не найден.")
-                prompt5 = tmpl5.format(input_text=topic,
-                                       creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2))
-                script_frame_data = call_openai(prompt5, prompt_config_key=prompt_key5, use_json_mode=True,
-                                                config_manager_instance=self.config,
-                                                prompts_config_data_instance=self.prompts_config_data)
-                if not script_frame_data: raise ValueError("Шаг 6.5 не удался.");  # script_frame_data уже словарь
-                if not all(k in script_frame_data for k in ["script", "first_frame_description"]): raise ValueError(
-                    f"Шаг 6.5: неверный JSON {script_frame_data}.")
-                script_en = script_frame_data["script"];
-                frame_description_en = script_frame_data["first_frame_description"]
-                self.logger.info(f"Сценарий (EN): {script_en[:100]}...");
-                self.logger.info(f"Описание (EN): {frame_description_en[:100]}...");
-                self.save_to_generated_content("script_frame_en",
-                                               {"script": script_en, "first_frame_description": frame_description_en})
+                # Шаг 5: Генерация Сарказма (RU)
+                # <<< ИЗМЕНЕНИЕ: generate_sarcasm теперь возвращает ТЕКСТ или None >>>
+                sarcastic_comment_text = None  # Храним текст комментария
+                sarcastic_poll = {}
+                if text_initial_raw:  # Используем сырой текст для генерации сарказма
+                    sarcastic_comment_text = self.generate_sarcasm(text_initial_raw, content_data)
+                    sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_data)
 
-                # Шаг 6.6a: MJ Промпт (EN)
-                self.logger.info("--- Шаг 6.6a: MJ Промпт (EN) ---");
-                mj_params_cfg = self.config.get("IMAGE_GENERATION", {});
-                aspect_ratio_str = mj_params_cfg.get("output_size", "16:9").replace('x', ':').replace('×', ':');
-                version_str = str(mj_params_cfg.get("midjourney_version", "7.0"));
-                style_str = mj_params_cfg.get("midjourney_style", None)
-                mj_parameters_json_for_prompt = json.dumps(
-                    {"aspect_ratio": aspect_ratio_str, "version": version_str, "style": style_str}, ensure_ascii=False);
-                style_parameter_str_for_prompt = f" --style {style_str}" if style_str else ""
-                prompt_key6a = "multi_step.step6a_mj_adapt";
-                tmpl6a = self._get_prompt_template(prompt_key6a);
-                if not tmpl6a: raise ValueError(f"{prompt_key6a} не найден.")
-                prompt6a = tmpl6a.format(first_frame_description=frame_description_en,
-                                         creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2),
-                                         script=script_en, input_text=topic,
-                                         mj_parameters_json=mj_parameters_json_for_prompt,
-                                         aspect_ratio=aspect_ratio_str, version=version_str,
-                                         style_parameter_str=style_parameter_str_for_prompt)
-                mj_prompt_data = call_openai(prompt6a, prompt_config_key=prompt_key6a, use_json_mode=True,
+                # <<< ИЗМЕНЕНИЕ: Формируем JSON-строку для сарказма ПЕРЕД сохранением >>>
+                sarcastic_comment_json_str_for_save = None
+                if sarcastic_comment_text:
+                    try:
+                        sarcasm_comment_dict = {"комментарий": sarcastic_comment_text}
+                        sarcastic_comment_json_str_for_save = json.dumps(sarcasm_comment_dict, ensure_ascii=False,
+                                                                         indent=2)
+                    except Exception as json_err:
+                        self.logger.error(f"Ошибка кодирования текста сарказма в JSON для сохранения: {json_err}")
+                        sarcastic_comment_json_str_for_save = None  # Оставляем None при ошибке
+                # Сохраняем JSON-строку или None для комментария
+                self.save_to_generated_content("sarcasm",
+                                               {"comment": sarcastic_comment_json_str_for_save, "poll": sarcastic_poll})
+                # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
+                # Шаг 6: Многошаговая Генерация Брифа и Промптов (EN) + Перевод (RU)
+                # ... (этот блок остается без изменений) ...
+                self.logger.info("--- Запуск многошаговой генерации ---")
+                creative_brief, script_en, frame_description_en, final_mj_prompt_en, final_runway_prompt_en = None, None, None, None, None
+                script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru = None, None, None, None
+                enable_russian_translation = self.config.get("WORKFLOW.enable_russian_translation", False)
+                self.logger.info(f"Перевод {'ВКЛЮЧЕН' if enable_russian_translation else 'ОТКЛЮЧЕН'}.")
+                try:
+                    # ... (весь код шагов 6.1 - 6.6c остается здесь без изменений) ...
+                    # Подготовка списков
+                    moods_list_str = self.format_list_for_prompt(self.creative_config_data.get("moods", []),
+                                                                 use_weights=True)
+                    arcs_list_str = self.format_list_for_prompt(self.creative_config_data.get("emotional_arcs", []))
+                    main_prompts_list = self.creative_config_data.get("creative_prompts", {}).get("main", [])
+                    prompts_list_str = self.format_list_for_prompt(main_prompts_list, use_weights=True)
+                    perspectives_list_str = self.format_list_for_prompt(
+                        self.creative_config_data.get("perspective_types", []))
+                    metaphors_list_str = self.format_list_for_prompt(
+                        self.creative_config_data.get("visual_metaphor_types", []))
+                    directors_list_str = self.format_list_for_prompt(
+                        self.creative_config_data.get("director_styles", []))
+                    artists_list_str = self.format_list_for_prompt(self.creative_config_data.get("artist_styles", []))
+
+                    # Шаг 6.1: Ядро
+                    self.logger.info("--- Шаг 6.1: Ядро ---");
+                    prompt_key1 = "multi_step.step1_core";
+                    tmpl1 = self._get_prompt_template(prompt_key1);
+                    if not tmpl1: raise ValueError(f"{prompt_key1} не найден.")
+                    prompt1 = tmpl1.format(input_text=topic, moods_list_str=moods_list_str, arcs_list_str=arcs_list_str)
+                    core_brief = call_openai(prompt1, prompt_config_key=prompt_key1, use_json_mode=True,
                                              config_manager_instance=self.config,
                                              prompts_config_data_instance=self.prompts_config_data)
-                if not mj_prompt_data: raise ValueError("Шаг 6.6a не удался.");  # mj_prompt_data уже словарь
-                if "final_mj_prompt" not in mj_prompt_data: raise ValueError(
-                    f"Шаг 6.6a: неверный JSON {mj_prompt_data}.")
-                final_mj_prompt_en = mj_prompt_data["final_mj_prompt"];
-                self.logger.info(f"MJ промпт (EN, V{version_str}): {final_mj_prompt_en}");
-                self.save_to_generated_content("final_mj_prompt_en", {"final_mj_prompt": final_mj_prompt_en})
+                    if not core_brief: raise ValueError("Шаг 6.1 не удался.");  # core_brief уже словарь
+                    if not all(
+                        k in core_brief for k in ["chosen_type", "chosen_value", "justification"]): raise ValueError(
+                        f"Шаг 6.1: неверный JSON {core_brief}.")
 
-                # Шаг 6.6b: Runway Промпт (EN)
-                self.logger.info("--- Шаг 6.6b: Runway Промпт (EN) ---");
-                prompt_key6b = "multi_step.step6b_runway_adapt";
-                tmpl6b = self._get_prompt_template(prompt_key6b);
-                if not tmpl6b: raise ValueError(f"{prompt_key6b} не найден.")
-                prompt6b = tmpl6b.format(script=script_en,
-                                         creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2),
-                                         input_text=topic)
-                runway_prompt_data = call_openai(prompt6b, prompt_config_key=prompt_key6b, use_json_mode=True,
+                    # Шаг 6.2: Драйвер
+                    self.logger.info("--- Шаг 6.2: Драйвер ---");
+                    prompt_key2 = "multi_step.step2_driver";
+                    tmpl2 = self._get_prompt_template(prompt_key2);
+                    if not tmpl2: raise ValueError(f"{prompt_key2} не найден.")
+                    prompt2 = tmpl2.format(input_text=topic,
+                                           chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False,
+                                                                                 indent=2),
+                                           prompts_list_str=prompts_list_str,
+                                           perspectives_list_str=perspectives_list_str,
+                                           metaphors_list_str=metaphors_list_str)
+                    driver_brief = call_openai(prompt2, prompt_config_key=prompt_key2, use_json_mode=True,
+                                               config_manager_instance=self.config,
+                                               prompts_config_data_instance=self.prompts_config_data)
+                    if not driver_brief: raise ValueError("Шаг 6.2 не удался.");  # driver_brief уже словарь
+                    if not all(k in driver_brief for k in
+                               ["chosen_driver_type", "chosen_driver_value", "justification"]): raise ValueError(
+                        f"Шаг 6.2: неверный JSON {driver_brief}.")
+
+                    # Шаг 6.3: Эстетика
+                    self.logger.info("--- Шаг 6.3: Эстетика ---");
+                    prompt_key3 = "multi_step.step3_aesthetic";
+                    tmpl3 = self._get_prompt_template(prompt_key3);
+                    if not tmpl3: raise ValueError(f"{prompt_key3} не найден.")
+                    prompt3 = tmpl3.format(input_text=topic,
+                                           chosen_emotional_core_json=json.dumps(core_brief, ensure_ascii=False,
+                                                                                 indent=2),
+                                           chosen_driver_json=json.dumps(driver_brief, ensure_ascii=False, indent=2),
+                                           directors_list_str=directors_list_str, artists_list_str=artists_list_str)
+                    aesthetic_brief = call_openai(prompt3, prompt_config_key=prompt_key3, use_json_mode=True,
+                                                  config_manager_instance=self.config,
+                                                  prompts_config_data_instance=self.prompts_config_data)
+                    if not aesthetic_brief: raise ValueError("Шаг 6.3 не удался.");  # aesthetic_brief уже словарь
+                    valid_step3 = False
+                    if isinstance(aesthetic_brief, dict):
+                        style_needed = aesthetic_brief.get("style_needed", False);
+                        base_keys_exist = all(k in aesthetic_brief for k in
+                                              ["style_needed", "chosen_style_type", "chosen_style_value",
+                                               "style_keywords", "justification"])
+                        if base_keys_exist:
+                            if not style_needed:
+                                if all(aesthetic_brief.get(k) is None for k in
+                                       ["chosen_style_type", "chosen_style_value", "style_keywords", "justification"]):
+                                    valid_step3 = True
+                                else:
+                                    self.logger.warning(
+                                        f"Шаг 6.3: style_needed=false, но ключи не null. Исправляем."); aesthetic_brief.update(
+                                        {k: None for k in ["chosen_style_type", "chosen_style_value", "style_keywords",
+                                                           "justification"]}); valid_step3 = True
+                            else:
+                                if all([aesthetic_brief.get("chosen_style_type"),
+                                        aesthetic_brief.get("chosen_style_value"),
+                                        isinstance(aesthetic_brief.get("style_keywords"), list),
+                                        aesthetic_brief.get("justification")]):
+                                    valid_step3 = True
+                                else:
+                                    logger.error(f"Шаг 6.3: style_needed=true, но значения некорректны.")
+                        else:
+                            logger.error(f"Шаг 6.3: Отсутствуют базовые ключи.")
+                    else:
+                        logger.error(f"Шаг 6.3: Ответ не словарь.")
+                    if not valid_step3: raise ValueError("Шаг 6.3: неверный JSON.")
+
+                    # Сборка Брифа
+                    creative_brief = {"core": core_brief, "driver": driver_brief, "aesthetic": aesthetic_brief};
+                    self.logger.info("--- Шаг 6.4: Бриф Собран ---");
+                    self.logger.debug(f"Бриф: {json.dumps(creative_brief, ensure_ascii=False, indent=2)}");
+                    self.save_to_generated_content("creative_brief", creative_brief)
+
+                    # Шаг 6.5: Сценарий и Описание (EN)
+                    self.logger.info("--- Шаг 6.5: Сценарий и Описание (EN) ---");
+                    prompt_key5 = "multi_step.step5_script_frame";
+                    tmpl5 = self._get_prompt_template(prompt_key5);
+                    if not tmpl5: raise ValueError(f"{prompt_key5} не найден.")
+                    prompt5 = tmpl5.format(input_text=topic,
+                                           creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2))
+                    script_frame_data = call_openai(prompt5, prompt_config_key=prompt_key5, use_json_mode=True,
+                                                    config_manager_instance=self.config,
+                                                    prompts_config_data_instance=self.prompts_config_data)
+                    if not script_frame_data: raise ValueError("Шаг 6.5 не удался.");  # script_frame_data уже словарь
+                    if not all(k in script_frame_data for k in ["script", "first_frame_description"]): raise ValueError(
+                        f"Шаг 6.5: неверный JSON {script_frame_data}.")
+                    script_en = script_frame_data["script"];
+                    frame_description_en = script_frame_data["first_frame_description"]
+                    self.logger.info(f"Сценарий (EN): {script_en[:100]}...");
+                    self.logger.info(f"Описание (EN): {frame_description_en[:100]}...");
+                    self.save_to_generated_content("script_frame_en", {"script": script_en,
+                                                                       "first_frame_description": frame_description_en})
+
+                    # Шаг 6.6a: MJ Промпт (EN)
+                    self.logger.info("--- Шаг 6.6a: MJ Промпт (EN) ---");
+                    mj_params_cfg = self.config.get("IMAGE_GENERATION", {});
+                    aspect_ratio_str = mj_params_cfg.get("output_size", "16:9").replace('x', ':').replace('×', ':');
+                    version_str = str(mj_params_cfg.get("midjourney_version", "7.0"));
+                    style_str = mj_params_cfg.get("midjourney_style", None)
+                    mj_parameters_json_for_prompt = json.dumps(
+                        {"aspect_ratio": aspect_ratio_str, "version": version_str, "style": style_str},
+                        ensure_ascii=False);
+                    style_parameter_str_for_prompt = f" --style {style_str}" if style_str else ""
+                    prompt_key6a = "multi_step.step6a_mj_adapt";
+                    tmpl6a = self._get_prompt_template(prompt_key6a);
+                    if not tmpl6a: raise ValueError(f"{prompt_key6a} не найден.")
+                    prompt6a = tmpl6a.format(first_frame_description=frame_description_en,
+                                             creative_brief_json=json.dumps(creative_brief, ensure_ascii=False,
+                                                                            indent=2), script=script_en,
+                                             input_text=topic, mj_parameters_json=mj_parameters_json_for_prompt,
+                                             aspect_ratio=aspect_ratio_str, version=version_str,
+                                             style_parameter_str=style_parameter_str_for_prompt)
+                    mj_prompt_data = call_openai(prompt6a, prompt_config_key=prompt_key6a, use_json_mode=True,
                                                  config_manager_instance=self.config,
                                                  prompts_config_data_instance=self.prompts_config_data)
-                if not runway_prompt_data: raise ValueError("Шаг 6.6b не удался.");  # runway_prompt_data уже словарь
-                if "final_runway_prompt" not in runway_prompt_data: raise ValueError(
-                    f"Шаг 6.6b: неверный JSON {runway_prompt_data}.")
-                final_runway_prompt_en = runway_prompt_data["final_runway_prompt"];
-                self.logger.info(f"Runway промпт (EN): {final_runway_prompt_en}");
-                self.save_to_generated_content("final_runway_prompt_en",
-                                               {"final_runway_prompt": final_runway_prompt_en})
+                    if not mj_prompt_data: raise ValueError("Шаг 6.6a не удался.");  # mj_prompt_data уже словарь
+                    if "final_mj_prompt" not in mj_prompt_data: raise ValueError(
+                        f"Шаг 6.6a: неверный JSON {mj_prompt_data}.")
+                    final_mj_prompt_en = mj_prompt_data["final_mj_prompt"];
+                    self.logger.info(f"MJ промпт (EN, V{version_str}): {final_mj_prompt_en}");
+                    self.save_to_generated_content("final_mj_prompt_en", {"final_mj_prompt": final_mj_prompt_en})
 
-                # Шаг 6.6c: Перевод (RU)
-                if enable_russian_translation:
-                    self.logger.info("--- Шаг 6.6c: Перевод (RU) ---")
-                    if all([script_en, frame_description_en, final_mj_prompt_en, final_runway_prompt_en]):
-                        prompt_key6c = "multi_step.step6c_translate";
-                        tmpl6c = self._get_prompt_template(prompt_key6c);
-                        if not tmpl6c: raise ValueError(f"{prompt_key6c} не найден.")
-                        prompt6c = tmpl6c.format(script_en=script_en, frame_description_en=frame_description_en,
-                                                 mj_prompt_en=final_mj_prompt_en,
-                                                 runway_prompt_en=final_runway_prompt_en)
-                        translations = call_openai(prompt6c, prompt_config_key=prompt_key6c, use_json_mode=True,
-                                                   config_manager_instance=self.config,
-                                                   prompts_config_data_instance=self.prompts_config_data)
-                        if translations:  # translations уже словарь
-                            script_ru = translations.get("script_ru");
-                            frame_description_ru = translations.get("first_frame_description_ru");
-                            final_mj_prompt_ru = translations.get("final_mj_prompt_ru");
-                            final_runway_prompt_ru = translations.get("final_runway_prompt_ru")
-                            if all([script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru]):
-                                self.logger.info("✅ Перевод выполнен."); self.save_to_generated_content(
-                                    "translations_ru", translations)
+                    # Шаг 6.6b: Runway Промпт (EN)
+                    self.logger.info("--- Шаг 6.6b: Runway Промпт (EN) ---");
+                    prompt_key6b = "multi_step.step6b_runway_adapt";
+                    tmpl6b = self._get_prompt_template(prompt_key6b);
+                    if not tmpl6b: raise ValueError(f"{prompt_key6b} не найден.")
+                    prompt6b = tmpl6b.format(script=script_en,
+                                             creative_brief_json=json.dumps(creative_brief, ensure_ascii=False,
+                                                                            indent=2), input_text=topic)
+                    runway_prompt_data = call_openai(prompt6b, prompt_config_key=prompt_key6b, use_json_mode=True,
+                                                     config_manager_instance=self.config,
+                                                     prompts_config_data_instance=self.prompts_config_data)
+                    if not runway_prompt_data: raise ValueError(
+                        "Шаг 6.6b не удался.");  # runway_prompt_data уже словарь
+                    if "final_runway_prompt" not in runway_prompt_data: raise ValueError(
+                        f"Шаг 6.6b: неверный JSON {runway_prompt_data}.")
+                    final_runway_prompt_en = runway_prompt_data["final_runway_prompt"];
+                    self.logger.info(f"Runway промпт (EN): {final_runway_prompt_en}");
+                    self.save_to_generated_content("final_runway_prompt_en",
+                                                   {"final_runway_prompt": final_runway_prompt_en})
+
+                    # Шаг 6.6c: Перевод (RU)
+                    if enable_russian_translation:
+                        self.logger.info("--- Шаг 6.6c: Перевод (RU) ---")
+                        if all([script_en, frame_description_en, final_mj_prompt_en, final_runway_prompt_en]):
+                            prompt_key6c = "multi_step.step6c_translate";
+                            tmpl6c = self._get_prompt_template(prompt_key6c);
+                            if not tmpl6c: raise ValueError(f"{prompt_key6c} не найден.")
+                            prompt6c = tmpl6c.format(script_en=script_en, frame_description_en=frame_description_en,
+                                                     mj_prompt_en=final_mj_prompt_en,
+                                                     runway_prompt_en=final_runway_prompt_en)
+                            translations = call_openai(prompt6c, prompt_config_key=prompt_key6c, use_json_mode=True,
+                                                       config_manager_instance=self.config,
+                                                       prompts_config_data_instance=self.prompts_config_data)
+                            if translations:  # translations уже словарь
+                                script_ru = translations.get("script_ru");
+                                frame_description_ru = translations.get("first_frame_description_ru");
+                                final_mj_prompt_ru = translations.get("final_mj_prompt_ru");
+                                final_runway_prompt_ru = translations.get("final_runway_prompt_ru")
+                                if all([script_ru, frame_description_ru, final_mj_prompt_ru, final_runway_prompt_ru]):
+                                    self.logger.info("✅ Перевод выполнен."); self.save_to_generated_content(
+                                        "translations_ru", translations)
+                                else:
+                                    self.logger.error(
+                                        f"Шаг 6.6c: Не все поля переведены. {translations}"); translations = None
                             else:
-                                self.logger.error(
-                                    f"Шаг 6.6c: Не все поля переведены. {translations}"); translations = None
+                                self.logger.error("Шаг 6.6c не удался."); translations = None
                         else:
-                            self.logger.error("Шаг 6.6c не удался."); translations = None
+                            self.logger.error("Недостаточно данных для перевода."); translations = None
                     else:
-                        self.logger.error("Недостаточно данных для перевода."); translations = None
-                else:
-                    self.logger.info("Перевод пропущен.")
+                        self.logger.info("Перевод пропущен.")
 
-            except (json.JSONDecodeError, ValueError, RuntimeError) as step6_err:  # Добавил RuntimeError
-                self.logger.error(f"❌ Ошибка шага 6: {step6_err}.")
-                if isinstance(step6_err, RuntimeError) and "OpenAI client" in str(step6_err):
-                    raise
-            except Exception as script_err:
-                self.logger.error(f"❌ Ошибка шага 6: {script_err}", exc_info=True)
+                except (json.JSONDecodeError, ValueError, RuntimeError) as step6_err:  # Добавил RuntimeError
+                    self.logger.error(f"❌ Ошибка шага 6: {step6_err}.")
+                    if isinstance(step6_err, RuntimeError) and "OpenAI client" in str(step6_err):
+                        raise
+                except Exception as script_err:
+                    self.logger.error(f"❌ Ошибка шага 6: {script_err}", exc_info=True)
 
             # Шаг 7: Формирование итогового словаря
             self.logger.info("Формирование итогового словаря для сохранения...")
