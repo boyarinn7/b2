@@ -715,43 +715,60 @@ class ContentGenerator:
                             config_manager_instance=self.config,
                             prompts_config_data_instance=self.prompts_config_data
                         )
-                        if text_initial_raw and text_initial_raw.strip():
-                            self.logger.info(f"Сырой текст получен: {text_initial_raw[:100]}...")
-                            self.save_to_generated_content("text_raw", {"text_raw": text_initial_raw})
+                        # --- ИЗМЕНЕНИЕ: Добавлено подробное логирование text_initial_raw ---
+                        if text_initial_raw is not None:  # Проверяем, что не None
+                            self.logger.info(
+                                f"Сырой текст получен (тип: {type(text_initial_raw)}). Проверка на пустоту...")
+                            if text_initial_raw.strip():  # Проверяем, что после strip не пустой
+                                self.logger.info(
+                                    f"Сырой текст НЕ ПУСТОЙ. Содержимое (первые/последние 100 символов):\n<<<<<\n{text_initial_raw[:100]}\n...\n{text_initial_raw[-100:]}\n>>>>>")
+                                self.save_to_generated_content("text_raw", {"text_raw": text_initial_raw})
 
-                            # +++ НОВЫЙ ШАГ: Программное форматирование текста +++
-                            self.logger.info("Выполнение программного форматирования текста...")
-                            try:
-                                # 1. Разделяем текст на строки, учитывая разные виды переносов
-                                lines = re.split(r'\n\s*\n*', text_initial_raw.strip())
-                                # 2. Удаляем пустые строки или строки, состоящие только из пробелов
-                                paragraphs = [line.strip() for line in lines if line.strip()]
-                                # 3. Соединяем непустые абзацы двойным переносом
-                                formatted_text_value = "\n\n".join(paragraphs)
+                                # +++ НОВЫЙ ШАГ: Программное форматирование текста +++
+                                self.logger.info("Выполнение программного форматирования текста...")
+                                try:
+                                    # 1. Разделяем текст на строки, учитывая разные виды переносов
+                                    lines = re.split(r'\n\s*\n*', text_initial_raw.strip())
+                                    # --- Логирование после split ---
+                                    self.logger.debug(f"Результат re.split (первые 5 строк): {lines[:5]}")
+                                    # 2. Удаляем пустые строки или строки, состоящие только из пробелов
+                                    paragraphs = [line.strip() for line in lines if line.strip()]
+                                    # --- Логирование после фильтрации ---
+                                    self.logger.debug(f"Результат фильтрации (paragraphs, первые 5): {paragraphs[:5]}")
+                                    # 3. Соединяем непустые абзацы двойным переносом
+                                    formatted_text_value = "\n\n".join(paragraphs)
+                                    # --- Логирование перед проверкой formatted_text_value ---
+                                    self.logger.debug(
+                                        f"Результат join (formatted_text_value, первые/последние 100): \n<<<<<\n{formatted_text_value[:100]}\n...\n{formatted_text_value[-100:]}\n>>>>>")
 
-                                if formatted_text_value:
-                                    # 4. Создаем финальный JSON-объект и кодируем его в строку
-                                    formatted_data = {"текст": formatted_text_value}
-                                    content_json_str = json.dumps(formatted_data, ensure_ascii=False, indent=2)
-                                    self.logger.info(
-                                        f"Текст успешно отформатирован программно: {content_json_str[:100]}...")
-                                else:
-                                    # Это маловероятно, если text_initial_raw был непустым, но на всякий случай
-                                    self.logger.error("❌ Ошибка форматирования: после обработки текст стал пустым.")
-                                    raise ValueError("Programmatic formatting resulted in empty text.")
+                                    if formatted_text_value:  # Проверка, что результат join не пустой
+                                        # 4. Создаем финальный JSON-объект и кодируем его в строку
+                                        formatted_data = {"текст": formatted_text_value}
+                                        content_json_str = json.dumps(formatted_data, ensure_ascii=False, indent=2)
+                                        self.logger.info(
+                                            f"Текст успешно отформатирован программно: {content_json_str[:100]}...")
+                                    else:
+                                        # Это маловероятно, если text_initial_raw был непустым, но на всякий случай
+                                        self.logger.error("❌ Ошибка форматирования: после обработки текст стал пустым.")
+                                        raise ValueError("Programmatic formatting resulted in empty text.")
 
-                            except Exception as format_err:
-                                self.logger.error(f"❌ Ошибка во время программного форматирования: {format_err}",
-                                                  exc_info=True)
-                                raise ValueError("Programmatic formatting failed.") from format_err
-                            # +++ КОНЕЦ НОВОГО ШАГА +++
+                                except Exception as format_err:
+                                    self.logger.error(f"❌ Ошибка во время программного форматирования: {format_err}",
+                                                      exc_info=True)
+                                    raise ValueError("Programmatic formatting failed.") from format_err
+                                # +++ КОНЕЦ НОВОГО ШАГА +++
 
-                        else:
-                            # Ошибка: Первый шаг генерации вернул пустой текст
+                            else:  # Если text_initial_raw.strip() пустой
+                                self.logger.error(
+                                    "❌ Генерация сырого текста вернула пустую строку или строку из пробелов.")
+                                text_initial_raw = ""
+                                raise ValueError("Initial text generation returned empty or whitespace.")
+                        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                        else:  # Если text_initial_raw is None
                             self.logger.error(
-                                f"❌ Генерация сырого текста ({prompt_config_key_generate}) не удалась или вернула пустой результат.")
+                                f"❌ Генерация сырого текста ({prompt_config_key_generate}) не удалась (вернула None).")
                             text_initial_raw = ""
-                            raise ValueError("Initial text generation failed or returned empty.")
+                            raise ValueError("Initial text generation failed (returned None).")
                     else:
                         self.logger.warning(f"Промпт генерации {prompt_config_key_generate} не найден.")
                         text_initial_raw = ""
@@ -762,19 +779,23 @@ class ContentGenerator:
                     # Создаем пустой JSON, чтобы избежать ошибки при валидации, если генерация отключена
                     content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
 
+                # --- Если content_json_str все еще None после всех шагов ---
+                if content_json_str is None:  # Эта проверка теперь менее вероятна, т.к. ошибки должны прерывать раньше
+                    self.logger.warning(
+                        "Поле 'content' будет отсутствовать или иметь некорректное значение, так как генерация/форматирование текста не дали результата.")
+                    content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
+
                 # Шаг 4: Критика (используем сырой текст, если он есть)
                 critique_result = self.critique_content(text_initial_raw, topic)
                 self.save_to_generated_content("critique", {"critique": critique_result})
 
                 # Шаг 5: Генерация Сарказма (RU)
-                # <<< ИЗМЕНЕНИЕ: generate_sarcasm теперь возвращает ТЕКСТ или None >>>
                 sarcastic_comment_text = None  # Храним текст комментария
                 sarcastic_poll = {}
                 if text_initial_raw:  # Используем сырой текст для генерации сарказма
                     sarcastic_comment_text = self.generate_sarcasm(text_initial_raw, content_data)
                     sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_data)
 
-                # <<< ИЗМЕНЕНИЕ: Формируем JSON-строку для сарказма ПЕРЕД сохранением >>>
                 sarcastic_comment_json_str_for_save = None
                 if sarcastic_comment_text:
                     try:
@@ -783,11 +804,9 @@ class ContentGenerator:
                                                                          indent=2)
                     except Exception as json_err:
                         self.logger.error(f"Ошибка кодирования текста сарказма в JSON для сохранения: {json_err}")
-                        sarcastic_comment_json_str_for_save = None  # Оставляем None при ошибке
-                # Сохраняем JSON-строку или None для комментария
+                        sarcastic_comment_json_str_for_save = None
                 self.save_to_generated_content("sarcasm",
                                                {"comment": sarcastic_comment_json_str_for_save, "poll": sarcastic_poll})
-                # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
                 # Шаг 6: Многошаговая Генерация Брифа и Промптов (EN) + Перевод (RU)
                 # ... (этот блок остается без изменений) ...
