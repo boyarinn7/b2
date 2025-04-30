@@ -219,7 +219,6 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
     Использует GPT-4o Vision для получения рекомендаций по размещению текста на изображении,
     загружая промпт и параметры из prompts_config.json.
     Возвращает темно-серый цвет по умолчанию при ошибке.
-    Добавлено логирование возвращаемого цвета.
 
     Args:
         image_url: URL изображения для анализа.
@@ -228,177 +227,185 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
         image_height: Высота изображения.
 
     Returns:
-        Словарь с предложенными параметрами или значениями по умолчанию.
+        Словарь с предложенными параметрами:
+        {
+            "position": tuple, # ('center', 'center') - фиксировано
+            "font_size": int,
+            "formatted_text": str, # Текст с переносами строк '\n'
+            "text_color": str # Цвет текста в HEX
+        }
+        Или словарь со значениями по умолчанию при ошибке.
     """
     # Используем глобальные переменные, определенные в основном скрипте
-    # Добавляем проверку их наличия для надежности
-    required_globals = ['openai_client_instance', 'config', 'logger', 'BASE_DIR', 'OPENAI_VISION_MODEL',
-                        '_initialize_openai_client', 'load_json_config']
-    for var_name in required_globals:
-        if var_name not in globals():
-            # Логируем критическую ошибку, если логгер доступен
-            temp_logger = logging.getLogger("generate_media_init_check")  # Временный логгер
-            if not temp_logger.hasHandlers(): logging.basicConfig(level=logging.ERROR)
-            temp_logger.critical(
-                f"Критическая ошибка: Глобальная переменная/функция '{var_name}' не определена в generate_media.py перед вызовом get_text_placement_suggestions!")
-            # Возвращаем дефолтное значение, так как продолжение невозможно
-            default_suggestions_critical = {
-                "position": ('center', 'center'), "font_size": 70,
-                "formatted_text": text.split('\n')[0] if text else "Текст отсутствует",
-                "text_color": "#333333"  # Темно-серый
-            }
-            actual_text_for_default_critical = text.split('\n')[0] if text else "Текст отсутствует"
-            default_suggestions_critical["formatted_text"] = actual_text_for_default_critical
-            return default_suggestions_critical
+    global openai_client_instance, config, logger, BASE_DIR, OPENAI_VISION_MODEL
 
     logger.info(f"Получение рекомендаций по размещению текста для URL: {image_url[:60]}...")
 
-    # Цвет по умолчанию теперь ТЕМНО-СЕРЫЙ
+    # --- ИЗМЕНЕНИЕ: Цвет по умолчанию теперь ТЕМНО-СЕРЫЙ ---
     default_suggestions = {
-        "position": ('center', 'center'),
-        "font_size": 70,
-        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует",
-        "text_color": "#333333"  # Темно-серый по умолчанию
+        "position": ('center', 'center'), # Фиксировано
+        "font_size": 70, # Начальный размер по умолчанию
+        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", # Берем первую строку или дефолт
+        "text_color": "#333333" # Темно-серый по умолчанию
     }
+    # Извлекаем только сам текст заголовка для дефолта
     actual_text_for_default = text.split('\n')[0] if text else "Текст отсутствует"
     default_suggestions["formatted_text"] = actual_text_for_default
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     if not image_url or not text:
         logger.warning("URL изображения или текст отсутствуют. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
 
-    # Инициализация клиента OpenAI, если нужно
+    # Инициализация клиента OpenAI, если нужно (используем функцию из основного скрипта)
+    # Предполагается, что _initialize_openai_client() существует и работает
     if not openai_client_instance:
-        if not _initialize_openai_client():
-            logger.error(
-                "Клиент OpenAI недоступен для получения рекомендаций. Возврат стандартных параметров (темно-серый текст).")
-            return default_suggestions
+        # Вызываем функцию инициализации, определенную глобально в generate_media.py
+        # Она должна вернуть True при успехе или False при ошибке
+        if '_initialize_openai_client' not in globals() or not _initialize_openai_client():
+             logger.error("Клиент OpenAI недоступен для получения рекомендаций. Возврат стандартных параметров (темно-серый текст).")
+             return default_suggestions
 
-    # Загрузка промпта и параметров
+    # --- Загрузка промпта и параметров из prompts_config.json ---
     prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
     prompts_config_data = {}
     if prompts_config_path_str:
+        # Убедимся, что путь абсолютный
         prompts_config_path = Path(prompts_config_path_str)
         if not prompts_config_path.is_absolute():
+            # Предполагаем, что BASE_DIR определен глобально
+            if 'BASE_DIR' not in globals():
+                 logger.error("Глобальная переменная BASE_DIR не найдена! Невозможно определить абсолютный путь к prompts_config.")
+                 return default_suggestions
             prompts_config_path = BASE_DIR / prompts_config_path
+
+        # Предполагаем, что load_json_config импортирована и доступна
+        if 'load_json_config' not in globals():
+            logger.error("Функция load_json_config не найдена! Невозможно загрузить промпт.")
+            return default_suggestions
         prompts_config_data = load_json_config(str(prompts_config_path)) or {}
     else:
-        logger.error("Путь к prompts_config не найден! Возврат стандартных параметров (темно-серый текст).")
+        logger.error("Путь к prompts_config не найден! Невозможно загрузить промпт. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
 
+    # Получаем настройки промпта (используем обновленный промпт из prompts_config_color_fix_v2)
     prompt_settings = prompts_config_data.get("text_placement", {}).get("suggestions", {})
     prompt_template = prompt_settings.get("template")
     max_tokens = int(prompt_settings.get("max_tokens", 300))
-    temperature = float(prompt_settings.get("temperature", 0.5))
+    temperature = float(prompt_settings.get("temperature", 0.5)) # Используем температуру из обновленного промпта
 
     if not prompt_template:
-        logger.error(
-            "Промпт 'text_placement.suggestions.template' не найден. Возврат стандартных параметров (темно-серый текст).")
+        logger.error("Промпт 'text_placement.suggestions.template' не найден. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
+    # --- Конец загрузки промпта ---
 
-    prompt = prompt_template.format(image_width=image_width, image_height=image_height, text=text)
+    # Формируем промпт с актуальными данными
+    prompt = prompt_template.format(image_width=image_width, image_height=image_height, text=text) # Передаем весь текст с контекстом
 
+    # Формируем контент для запроса к Vision API
     messages_content = [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": image_url}}
     ]
 
     try:
-        logger.info(
-            f"Запрос к OpenAI Vision ({OPENAI_VISION_MODEL}) для рекомендаций по тексту (t={temperature}, max_tokens={max_tokens})...")
+        # Предполагаем, что OPENAI_VISION_MODEL определена глобально
+        if 'OPENAI_VISION_MODEL' not in globals():
+             logger.error("Глобальная переменная OPENAI_VISION_MODEL не найдена!")
+             return default_suggestions
+
+        logger.info(f"Запрос к OpenAI Vision ({OPENAI_VISION_MODEL}) для рекомендаций по тексту (t={temperature}, max_tokens={max_tokens})...")
         response = openai_client_instance.chat.completions.create(
-            model=OPENAI_VISION_MODEL,
+            model=OPENAI_VISION_MODEL, # Используем модель Vision
             messages=[{"role": "user", "content": messages_content}],
             max_tokens=max_tokens,
             temperature=temperature,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"} # Просим JSON ответ
         )
 
         if response.choices and response.choices[0].message and response.choices[0].message.content:
             response_text = response.choices[0].message.content.strip()
             logger.debug(f"Сырой ответ от Vision (ожидается JSON): {response_text}")
 
+            # Парсим JSON ответ
             try:
                 suggestions = json.loads(response_text)
+                # Валидация полученных данных
                 pos_list = suggestions.get("position")
                 size = suggestions.get("font_size")
                 fmt_text = suggestions.get("formatted_text")
                 color_hex = suggestions.get("text_color")
 
-                valid_pos = default_suggestions["position"]
+                # Проверка и корректировка позиции (должна быть ['center', 'center'])
+                valid_pos = default_suggestions["position"] # По умолчанию
                 if isinstance(pos_list, list) and pos_list == ['center', 'center']:
                     valid_pos = tuple(pos_list)
                 else:
                     logger.warning(f"Получена некорректная позиция: {pos_list}. Используется {valid_pos}.")
 
-                valid_size = default_suggestions["font_size"]
+                # Проверка и корректировка размера шрифта
+                valid_size = default_suggestions["font_size"] # По умолчанию
                 if isinstance(size, int) and 10 < size < 200:
                     valid_size = size
                 else:
                     logger.warning(f"Получен некорректный размер шрифта: {size}. Используется {valid_size}.")
 
-                valid_text = default_suggestions["formatted_text"]
+
+                # Проверка текста
+                valid_text = default_suggestions["formatted_text"] # По умолчанию
                 if isinstance(fmt_text, str) and fmt_text.strip():
-                    valid_text = fmt_text.replace('\\n', '\n')
+                    valid_text = fmt_text
+                    # Заменяем литерал \n на реальный символ переноса строки
+                    valid_text = valid_text.replace('\\n', '\n')
                 else:
                     logger.warning(f"Получен некорректный форматированный текст: {fmt_text}. Используется исходный.")
 
-                # Fallback на темно-серый цвет
-                valid_color = default_suggestions["text_color"]  # Темно-серый по умолчанию
+                # --- ИЗМЕНЕНИЕ: Fallback на темно-серый цвет ---
+                valid_color = default_suggestions["text_color"] # Темно-серый по умолчанию
                 if isinstance(color_hex, str) and re.match(r'^#[0-9a-fA-F]{6}$', color_hex):
                     valid_color = color_hex
                     logger.info(f"ИИ предложил цвет: {valid_color}")
                 else:
-                    logger.warning(
-                        f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color} (темно-серый по умолчанию).")
+                    logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color} (темно-серый по умолчанию).")
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+                # Формируем превью текста для лога
                 log_text_preview = valid_text[:50].replace('\n', '\\n')
-
-                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ПЕРЕД RETURN ---
-                logger.info(
-                    f"Возвращаемые параметры размещения: Цвет={valid_color}, Размер={valid_size}, Текст='{log_text_preview}...'")
-                # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+                logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{log_text_preview}...'")
 
                 # Возвращаем валидированный результат
                 return {
                     "position": valid_pos,
                     "font_size": valid_size,
                     "formatted_text": valid_text,
-                    "text_color": valid_color  # <--- Логируем это значение
+                    "text_color": valid_color
                 }
 
             except json.JSONDecodeError as json_e:
-                logger.error(
-                    f"Ошибка декодирования JSON из ответа Vision: {json_e}. Ответ: {response_text}. Возврат стандартных параметров (темно-серый текст).")
+                logger.error(f"Ошибка декодирования JSON из ответа Vision: {json_e}. Ответ: {response_text}. Возврат стандартных параметров (темно-серый текст).")
                 return default_suggestions
             except Exception as parse_err:
                 logger.error(f"Ошибка парсинга или валидации рекомендаций: {parse_err}", exc_info=True)
                 return default_suggestions
 
         else:
-            logger.error(
-                "OpenAI Vision вернул пустой или некорректный ответ. Возврат стандартных параметров (темно-серый текст).")
+            logger.error("OpenAI Vision вернул пустой или некорректный ответ. Возврат стандартных параметров (темно-серый текст).")
             return default_suggestions
 
-    # Обработка ошибок OpenAI API
-    except openai.AuthenticationError as e:
-        logger.exception(f"Ошибка аутентификации OpenAI Vision: {e}"); return default_suggestions
-    except openai.RateLimitError as e:
-        logger.exception(f"Превышен лимит запросов OpenAI Vision: {e}"); return default_suggestions
-    except openai.APIConnectionError as e:
-        logger.exception(f"Ошибка соединения с API OpenAI Vision: {e}"); return default_suggestions
-    except openai.APIStatusError as e:
-        logger.exception(
-            f"Ошибка статуса API OpenAI Vision: {e.status_code} - {e.response}"); return default_suggestions
+    # Обработка специфичных ошибок OpenAI
+    except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI Vision: {e}"); return default_suggestions
+    except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI Vision: {e}"); return default_suggestions
+    except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI Vision: {e}"); return default_suggestions
+    except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI Vision: {e.status_code} - {e.response}"); return default_suggestions
     except openai.BadRequestError as e:
+        # Особо логируем ошибку, если она связана с форматом JSON
         if "response_format" in str(e):
-            logger.error(
-                f"Ошибка OpenAI Vision: Модель {OPENAI_VISION_MODEL}, возможно, не поддерживает response_format=json_object. {e}")
+             logger.error(f"Ошибка OpenAI Vision: Модель {OPENAI_VISION_MODEL}, возможно, не поддерживает response_format=json_object. {e}")
         else:
-            logger.exception(f"Ошибка неверного запроса OpenAI Vision: {e}");
+             logger.exception(f"Ошибка неверного запроса OpenAI Vision: {e}");
         return default_suggestions
-    except openai.OpenAIError as e:
-        logger.exception(f"Произошла ошибка API OpenAI Vision: {e}"); return default_suggestions
+    except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI Vision: {e}"); return default_suggestions
+    # Обработка других исключений
     except Exception as e:
         logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True)
         return default_suggestions

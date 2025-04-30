@@ -430,32 +430,31 @@ def hex_to_rgba(hex_color, alpha=255):
 
 # Основная функция с логированием параметра цвета
 def add_text_to_image(
-        image_path_str: str,
-        text: str,  # Текст с переносами \n от ИИ
-        font_path_str: str,
-        output_path_str: str,
-        text_color_hex: str = "#000000",  # Цвет по умолчанию черный (или ваш темно-серый, если меняли)
-        position: tuple = ('center', 'center'),  # Позиция текста (ожидаем ('center','center'))
-        padding: int = 50,  # Отступы (меньше используются при center)
-        haze_opacity: int = 100,  # Прозрачность белой дымки (0-255)
-        bg_blur_radius: float = 0,
-        bg_opacity: int = 0,
-        logger_instance=None,
-        stroke_width: int = 2,
-        stroke_color_hex: str = "#404040",
-        target_width_fraction: float = 0.92,
-        initial_font_size: int = 140,
-        min_font_size: int = 50,
-        min_font_size_multiline: int = 60
-):
+    image_path_str: str,
+    text: str, # Текст с переносами \n от ИИ
+    font_path_str: str,
+    output_path_str: str,
+    text_color_hex: str = "#000000", # Цвет по умолчанию черный (или ваш темно-серый, если меняли)
+    position: tuple = ('center', 'center'), # Позиция текста (ожидаем ('center','center'))
+    padding: int = 50, # Отступы (меньше используются при center)
+    haze_opacity: int = 100, # Прозрачность белой дымки (0-255)
+    bg_blur_radius: float = 0,
+    bg_opacity: int = 0,
+    logger_instance=None,
+    stroke_width: int = 2,
+    stroke_color_hex: str = "#404040",
+    target_width_fraction: float = 0.92,
+    initial_font_size: int = 140,
+    min_font_size: int = 50,
+    min_font_size_multiline: int = 60
+    ):
     """
     Наносит текст на изображение с автоподбором размера шрифта,
     добавляя белую "дымку" и обводку текста.
     Добавлено логирование получаемого цвета.
     """
     # Получаем логгер
-    log = logger_instance if logger_instance else logging.getLogger(
-        "utils_add_text")  # Используем стандартный, если logger не передан
+    log = logger_instance if logger_instance else logging.getLogger("utils_add_text") # Используем стандартный, если logger не передан
     if not log.hasHandlers(): logging.basicConfig(level=logging.INFO)
     # Установим DEBUG уровень, если нужно больше деталей
     if log.level > logging.DEBUG: log.setLevel(logging.DEBUG)
@@ -512,12 +511,10 @@ def add_text_to_image(
         font_bytes = None
         try:
             log.debug(f"Чтение файла шрифта в память: {font_path.name}")
-            with open(font_path, 'rb') as f_font:
-                font_bytes = f_font.read()
+            with open(font_path, 'rb') as f_font: font_bytes = f_font.read()
             log.debug(f"Файл шрифта прочитан, размер: {len(font_bytes)} байт.")
         except Exception as read_font_err:
-            log.error(f"Ошибка чтения файла шрифта '{font_path}': {read_font_err}", exc_info=True);
-            return False
+             log.error(f"Ошибка чтения файла шрифта '{font_path}': {read_font_err}", exc_info=True); return False
 
         while current_font_size >= current_min_font_size:
             try:
@@ -536,12 +533,10 @@ def add_text_to_image(
                 log.error(f"Ошибка при расчете размера для шрифта {current_font_size}: {size_calc_err}", exc_info=True)
                 current_font_size -= 2
                 if current_font_size < current_min_font_size:
-                    log.error("Не удалось подобрать размер шрифта.");
-                    return False
+                    log.error("Не удалось подобрать размер шрифта."); return False
 
         else:
-            log.warning(
-                f"Не удалось вместить текст в {target_width_fraction * 100:.0f}% ширины. Используется минимальный размер {current_min_font_size}.")
+            log.warning(f"Не удалось вместить текст в {target_width_fraction*100:.0f}% ширины. Используется минимальный размер {current_min_font_size}.")
             try:
                 font = ImageFont.truetype(io.BytesIO(font_bytes), current_min_font_size)
                 bbox_multiline = draw.textbbox((0, 0), text, font=font)
@@ -549,9 +544,7 @@ def add_text_to_image(
                 text_height = bbox_multiline[3] - bbox_multiline[1]
                 current_font_size = current_min_font_size
             except Exception as min_font_err:
-                log.error(f"Ошибка при загрузке/расчете минимального шрифта {current_min_font_size}: {min_font_err}",
-                          exc_info=True);
-                return False
+                log.error(f"Ошибка при загрузке/расчете минимального шрифта {current_min_font_size}: {min_font_err}", exc_info=True); return False
 
         final_font_size = current_font_size
         log.debug(f"Финальный размер шрифта: {final_font_size}")
@@ -564,11 +557,9 @@ def add_text_to_image(
             text_height = bbox_multiline[3] - bbox_multiline[1]
             log.debug(f"Финальные размеры текста: Ширина={text_width:.0f}, Высота={text_height:.0f}")
         except Exception as final_size_err:
-            log.error(f"Ошибка при расчете финального размера текста: {final_size_err}", exc_info=True);
-            return False
+             log.error(f"Ошибка при расчете финального размера текста: {final_size_err}", exc_info=True); return False
         if text_width <= 0 or text_height <= 0:
-            log.error(f"Рассчитаны некорректные финальные размеры текста: {text_width}x{text_height}");
-            return False
+            log.error(f"Рассчитаны некорректные финальные размеры текста: {text_width}x{text_height}"); return False
 
         log.debug("Расчет X координаты...")
         x = (img_width - text_width) / 2
@@ -593,15 +584,13 @@ def add_text_to_image(
             try:
                 bbox_multiline_at_pos = draw.textbbox(text_position, text, font=font)
                 log.debug(f"bbox_multiline_at_pos: {bbox_multiline_at_pos}")
-                bg_right = min(img_width,
-                               text_position[0] + (bbox_multiline_at_pos[2] - bbox_multiline_at_pos[0]) + bg_padding)
-                bg_bottom = min(img_height,
-                                text_position[1] + (bbox_multiline_at_pos[3] - bbox_multiline_at_pos[1]) + bg_padding)
+                bg_right = min(img_width, text_position[0] + (bbox_multiline_at_pos[2] - bbox_multiline_at_pos[0]) + bg_padding)
+                bg_bottom = min(img_height, text_position[1] + (bbox_multiline_at_pos[3] - bbox_multiline_at_pos[1]) + bg_padding)
             except Exception as bbox_bg_err:
-                log.error(f"Ошибка расчета bbox для фона: {bbox_bg_err}", exc_info=True)
-                bg_right = min(img_width, text_position[0] + text_width + bg_padding)
-                bg_bottom = min(img_height, text_position[1] + text_height + bg_padding)
-                log.warning("Используются приблизительные размеры для фона.")
+                 log.error(f"Ошибка расчета bbox для фона: {bbox_bg_err}", exc_info=True)
+                 bg_right = min(img_width, text_position[0] + text_width + bg_padding)
+                 bg_bottom = min(img_height, text_position[1] + text_height + bg_padding)
+                 log.warning("Используются приблизительные размеры для фона.")
             bg_rect_coords = [(int(bg_left), int(bg_top)), (int(bg_right), int(bg_bottom))]
             bg_crop_box = (int(bg_left), int(bg_top), int(bg_right), int(bg_bottom))
             log.debug(f"Координаты фона: rect={bg_rect_coords}, crop={bg_crop_box}")
@@ -618,15 +607,14 @@ def add_text_to_image(
                 except Exception as blur_err:
                     log.warning(f"Не удалось применить размытие под текстом: {blur_err}")
             if bg_opacity > 0:
-                log.info(
-                    f"Создание полупрозрачной подложки под текстом (opacity: {bg_opacity}) в области {bg_rect_coords}")
-                overlay_color = (0, 0, 0, bg_opacity)  # Черный с заданной прозрачностью
-                log.debug(f"Рисование прямоугольника подложки цветом {overlay_color}...")
-                draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
-                log.debug("Подложка нарисована.")
+                 log.info(f"Создание полупрозрачной подложки под текстом (opacity: {bg_opacity}) в области {bg_rect_coords}")
+                 overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
+                 log.debug(f"Рисование прямоугольника подложки цветом {overlay_color}...")
+                 draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
+                 log.debug("Подложка нарисована.")
             log.debug("Наложение слоя фона на основное изображение...")
             img = Image.alpha_composite(img, background_layer)
-            draw = ImageDraw.Draw(img)  # Обновляем draw для финального изображения
+            draw = ImageDraw.Draw(img) # Обновляем draw для финального изображения
             log.debug("Слой фона наложен, ImageDraw обновлен.")
         else:
             log.debug("Эффекты фона под текстом отключены.")
@@ -640,22 +628,20 @@ def add_text_to_image(
 
         log_text_preview = text[:50].replace('\n', '\\n')
         # --- ИЗМЕНЕНИЕ: Логируем цвет, который БУДЕТ использоваться ---
-        log.info(
-            f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (из HEX: {text_color_hex}) с обводкой (размер: {final_font_size})")
+        log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (из HEX: {text_color_hex}) с обводкой (размер: {final_font_size})")
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         align_option = 'center' if position[0] == 'center' else 'left'
         log.debug(f"Выравнивание текста: {align_option}")
         try:
-            log.debug(f"Вызов draw.text с позицией {text_position}...")
-            draw.text(
-                text_position, text, font=font, fill=final_text_color,
-                align=align_option, stroke_width=stroke_width, stroke_fill=final_stroke_color
-            )
-            log.debug("draw.text выполнен (с обводкой).")
+             log.debug(f"Вызов draw.text с позицией {text_position}...")
+             draw.text(
+                 text_position, text, font=font, fill=final_text_color,
+                 align=align_option, stroke_width=stroke_width, stroke_fill=final_stroke_color
+             )
+             log.debug("draw.text выполнен (с обводкой).")
         except Exception as draw_err:
-            log.error(f"Ошибка при вызове draw.text: {draw_err}", exc_info=True);
-            return False
+             log.error(f"Ошибка при вызове draw.text: {draw_err}", exc_info=True); return False
 
         # Сохранение результата
         log.debug("Подготовка к сохранению...")
@@ -667,14 +653,14 @@ def add_text_to_image(
         return True
 
     except FileNotFoundError as fnf_err:
-        log.error(f"Ошибка FileNotFoundError при обработке изображения: {fnf_err}")
-        log.debug("<<< Выход из add_text_to_image (Ошибка FileNotFoundError)")
-        return False
+         log.error(f"Ошибка FileNotFoundError при обработке изображения: {fnf_err}")
+         log.debug("<<< Выход из add_text_to_image (Ошибка FileNotFoundError)")
+         return False
     except Exception as e:
         log.error(f"Ошибка при добавлении текста на изображение: {e}", exc_info=True)
         log.debug(f"<<< Выход из add_text_to_image (Ошибка Exception: {e})")
         return False
-
+    
 # +++ КОНЕЦ ФУНКЦИИ add_text_to_image +++
 
 # Пример использования (можно закомментировать или удалить в финальной версии)
