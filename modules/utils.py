@@ -660,7 +660,7 @@ def add_text_to_image(
         log.error(f"Ошибка при добавлении текста на изображение: {e}", exc_info=True)
         log.debug(f"<<< Выход из add_text_to_image (Ошибка Exception: {e})")
         return False
-    
+
 # +++ КОНЕЦ ФУНКЦИИ add_text_to_image +++
 
 # Пример использования (можно закомментировать или удалить в финальной версии)
