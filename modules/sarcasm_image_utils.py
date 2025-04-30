@@ -6,6 +6,7 @@
 import logging
 from pathlib import Path
 import io
+import textwrap # Импортируем textwrap
 
 # --- Pillow ---
 try:
@@ -19,7 +20,6 @@ except ImportError:
     ImageFilter = None
 
 # --- Логгер ---
-# Используем стандартный logging, если get_logger не доступен
 try:
     from modules.logger import get_logger
     logger = get_logger("sarcasm_image_utils")
@@ -28,7 +28,6 @@ except ImportError:
     if not logger.hasHandlers():
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
         logger.warning("Кастомный логгер не найден, используется стандартный logging.")
-    # Установим уровень DEBUG для отладки этой функции, если нужно
     if logger.level > logging.DEBUG:
          logger.setLevel(logging.DEBUG)
 
@@ -47,7 +46,7 @@ def hex_to_rgba(hex_color, alpha=255):
         logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется черный.")
         return default_color
 
-# Основная функция (исправленная версия)
+# --- ИСПРАВЛЕННАЯ ВЕРСИЯ ФУНКЦИИ ---
 def add_text_to_image_sarcasm(
     image_path_str: str,
     text: str,
@@ -56,21 +55,21 @@ def add_text_to_image_sarcasm(
     text_color_hex: str = "#FFFFFF",
     align: str = 'right', # Выравнивание текста внутри блока
     vertical_align: str = 'center', # Используется для расчета смещения
-    padding: int = 25, # Уменьшенный отступ
+    padding_fraction: float = 0.05, # Отступ как доля от ширины/высоты
     stroke_width: int = 2,
     stroke_color_hex: str = "#404040", # Обводка для белого текста
     initial_font_size: int = 100, # Стартовый размер шрифта
-    min_font_size: int = 40,      # Увеличенный минимальный размер шрифта
+    min_font_size: int = 24,      # Минимальный размер шрифта
     logger_instance=None # Возможность передать логгер извне
     ):
     """
     Наносит текст на ПРАВУЮ ПОЛОВИНУ изображения с автоподбором размера,
-    выравниванием по правому краю и смещением вверх относительно центра.
-    Позиционирование по левому верхнему углу блока. Добавлено логирование.
+    выравниванием по правому краю и вертикальным центрированием.
+    Использует textwrap для корректной разбивки на строки.
     """
     log = logger_instance if logger_instance else logger
-    if log.level > logging.DEBUG: log.setLevel(logging.DEBUG) # Убедимся, что DEBUG включен
-    log.info(">>> Запуск add_text_to_image_sarcasm (исправление позиции v2 + логи)")
+    if log.level > logging.DEBUG: log.setLevel(logging.DEBUG)
+    log.info(">>> Запуск add_text_to_image_sarcasm (v3 - textwrap, fix position)")
 
     if not PIL_AVAILABLE:
         log.error("Pillow недоступна. Невозможно добавить текст.")
@@ -91,17 +90,19 @@ def add_text_to_image_sarcasm(
 
         draw = ImageDraw.Draw(img)
 
-        # 1. Определить область для текста
-        text_area_x_start = img_width // 2 + padding
-        text_area_y_start = padding
-        text_area_width = img_width // 2 - 2 * padding
-        text_area_height = img_height - 2 * padding
+        # 1. Определить область для текста (правая половина с отступами)
+        padding_x = int(img_width * padding_fraction)
+        padding_y = int(img_height * padding_fraction)
+        text_area_x_start = img_width // 2 + padding_x
+        text_area_y_start = padding_y
+        text_area_width = img_width // 2 - 2 * padding_x
+        text_area_height = img_height - 2 * padding_y
         log.info(f"Область текста: X={text_area_x_start}, Y={text_area_y_start}, W={text_area_width}, H={text_area_height}")
 
         if text_area_width <= 0 or text_area_height <= 0:
-            log.error("Некорректная область текста."); return False
+            log.error("Некорректная область текста (слишком маленькая или отрицательная)."); return False
 
-        # 2. Автоподбор размера шрифта
+        # 2. Автоподбор размера шрифта с использованием textwrap
         font = None
         font_bytes = None
         try:
@@ -112,7 +113,7 @@ def add_text_to_image_sarcasm(
 
         current_font_size = initial_font_size
         best_font_size = -1
-        best_wrapped_lines = []
+        best_wrapped_text = ""
 
         log.info(f"Подбор размера шрифта (старт: {initial_font_size}, мин: {min_font_size}) для текста: '{text[:50]}...'")
         # --- НАЧАЛО ЦИКЛА ПОДБОРА ---
@@ -120,112 +121,87 @@ def add_text_to_image_sarcasm(
             log.debug(f"--- Итерация цикла: Пробуем размер = {current_font_size} ---")
             try:
                 font = ImageFont.truetype(io.BytesIO(font_bytes), current_font_size)
-                max_line_width_calc = 0
-                current_lines = []
-                words = text.split()
-                if not words: log.warning("Текст пуст."); current_lines = []; break
-                current_line = words[0]
-                # --- Цикл разбивки на строки ---
-                for word_idx, word in enumerate(words[1:], 1):
-                    test_line = current_line + " " + word
-                    line_width = font.getlength(test_line)
-                    log.debug(f"  Проверка строки (слово {word_idx+1}): '{test_line[:40]}...' -> Ширина: {line_width:.1f} (лимит: {text_area_width})")
-                    if line_width <= text_area_width:
-                        current_line = test_line
-                    else:
-                        log.debug(f"  -> Перенос строки. Завершаем строку: '{current_line[:40]}...'")
-                        current_lines.append(current_line)
-                        current_line_width = font.getlength(current_line)
-                        if current_line_width > max_line_width_calc: max_line_width_calc = current_line_width
-                        current_line = word
-                        single_word_width = font.getlength(current_line)
-                        if single_word_width > text_area_width:
-                             log.debug(f"  !!! Слово '{current_line}' [{single_word_width:.0f}px] шире области [{text_area_width}px] при размере {current_font_size} !!!")
-                             max_line_width_calc = single_word_width; break
-                # --- Конец цикла разбивки на строки ---
-                if current_line: # Добавляем последнюю строку
-                    log.debug(f"  Добавляем последнюю строку: '{current_line[:40]}...'")
-                    current_lines.append(current_line)
-                    current_line_width = font.getlength(current_line)
-                    if current_line_width > max_line_width_calc: max_line_width_calc = current_line_width
-                # --- Проверка ширины ---
-                if max_line_width_calc > text_area_width:
-                     log.debug(f"Размер {current_font_size} НЕ подходит по ШИРИНЕ (из-за слова). Уменьшаем...")
-                     current_font_size -= 2; continue
-                width_fits = max_line_width_calc <= text_area_width
-                log.debug(f"Расчетная макс. ширина строки: {max_line_width_calc:.1f}. Ширина помещается? {width_fits}")
-                if not width_fits:
-                    log.debug(f"Размер {current_font_size} НЕ подходит по ШИРИНЕ. Уменьшаем...")
-                    current_font_size -= 2; continue
-                # --- Проверка высоты ---
-                text_height_calc = 0
-                if current_lines:
-                    multiline_text_check = "\n".join(current_lines)
-                    try: text_height_calc = font.getmask(multiline_text_check).size[1]
-                    except AttributeError:
-                        log.warning("font.getmask недоступен. Используем bbox для высоты.")
-                        bbox_check = font.getbbox(multiline_text_check); text_height_calc = bbox_check[3] - bbox_check[1]
-                    except Exception as mask_err:
-                        log.warning(f"Ошибка font.getmask: {mask_err}. Используем bbox.")
-                        bbox_check = font.getbbox(multiline_text_check); text_height_calc = bbox_check[3] - bbox_check[1]
-                height_fits = text_height_calc <= text_area_height
-                log.debug(f"Расчетная высота текста: {text_height_calc:.1f}, Доступная высота: {text_area_height}. Высота помещается? {height_fits}")
-                # --- Проверка обоих условий ---
-                if width_fits and height_fits:
-                    log.info(f"Найден ПОДХОДЯЩИЙ размер шрифта: {current_font_size}")
-                    best_font_size = current_font_size; best_wrapped_lines = current_lines; break
-                else:
-                    log.debug(f"Размер {current_font_size} НЕ подходит по ВЫСОТЕ. Уменьшаем...")
+
+                # Оценка максимальной ширины символа для textwrap
+                # Можно взять среднюю ширину или ширину самого широкого символа (например, 'W' или 'Ш')
+                avg_char_width = font.getlength("W") # Или другая широкая буква
+                if avg_char_width <= 0: avg_char_width = current_font_size * 0.6 # Примерный fallback
+                # Рассчитываем примерное количество символов в строке
+                approx_chars_per_line = max(1, int(text_area_width / avg_char_width))
+                log.debug(f"  Примерная ширина символа: {avg_char_width:.1f}, символов в строке: {approx_chars_per_line}")
+
+                # Используем textwrap для разбивки
+                wrapped_lines = textwrap.wrap(text, width=approx_chars_per_line, replace_whitespace=False)
+                wrapped_text = "\n".join(wrapped_lines)
+                log.debug(f"  Результат textwrap:\n{wrapped_text}")
+
+                # Получаем реальные размеры блока текста с переносами
+                try:
+                    # Используем textbbox для получения габаритов
+                    bbox = draw.textbbox((0, 0), wrapped_text, font=font, align=align)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    log.debug(f"  Размер {current_font_size}: Ширина={text_width:.0f}, Высота={text_height:.0f}")
+                except Exception as bbox_err:
+                    log.warning(f"  Ошибка расчета bbox для размера {current_font_size}: {bbox_err}. Пропускаем размер.")
                     current_font_size -= 2
+                    continue
+
+                # Проверяем, помещается ли текст в область
+                if text_width <= text_area_width and text_height <= text_area_height:
+                    log.info(f"Найден ПОДХОДЯЩИЙ размер шрифта: {current_font_size}")
+                    best_font_size = current_font_size
+                    best_wrapped_text = wrapped_text
+                    break # Найден оптимальный размер
+                else:
+                    log.debug(f"  Размер {current_font_size} НЕ подходит (Ширина: {text_width > text_area_width}, Высота: {text_height > text_area_height}). Уменьшаем...")
+                    current_font_size -= 2
+
             except Exception as size_err:
                  log.error(f"Ошибка при расчете размера {current_font_size}: {size_err}", exc_info=True)
                  current_font_size -= 2
         # --- КОНЕЦ ЦИКЛА ПОДБОРА ---
+
         if best_font_size == -1:
             log.warning(f"Цикл завершен БЕЗ НАХОЖДЕНИЯ подходящего размера. Используем минимальный {min_font_size}.")
             best_font_size = min_font_size
             try:
                 font = ImageFont.truetype(io.BytesIO(font_bytes), best_font_size)
                 # Финальная разбивка с минимальным размером
-                max_line_width_calc = 0; current_lines = []; words = text.split(); current_line = words[0] if words else ""
-                for word in words[1:]:
-                    test_line = current_line + " " + word; line_width = font.getlength(test_line)
-                    if line_width <= text_area_width: current_line = test_line
-                    else:
-                        current_lines.append(current_line); current_line_width = font.getlength(current_line)
-                        if current_line_width > max_line_width_calc: max_line_width_calc = current_line_width
-                        current_line = word
-                if current_line: current_lines.append(current_line)
-                best_wrapped_lines = current_lines
-                log.debug(f"Разбивка на строки с минимальным шрифтом ({min_font_size}):\n" + "\n".join(best_wrapped_lines))
+                avg_char_width = font.getlength("W")
+                if avg_char_width <= 0: avg_char_width = best_font_size * 0.6
+                approx_chars_per_line = max(1, int(text_area_width / avg_char_width))
+                wrapped_lines = textwrap.wrap(text, width=approx_chars_per_line, replace_whitespace=False)
+                best_wrapped_text = "\n".join(wrapped_lines)
+                log.debug(f"Разбивка на строки с минимальным шрифтом ({min_font_size}):\n" + best_wrapped_text)
             except Exception as min_font_err:
                  log.error(f"Критическая ошибка при работе с минимальным шрифтом: {min_font_err}"); return False
-        if not best_wrapped_lines:
-            log.error("Не удалось подготовить текст для нанесения."); return False
 
-        final_text_string = "\n".join(best_wrapped_lines)
+        if not best_wrapped_text:
+            log.error("Не удалось подготовить текст для нанесения (best_wrapped_text пуст)."); return False
+
+        final_text_string = best_wrapped_text
         font = ImageFont.truetype(io.BytesIO(font_bytes), best_font_size)
         log.info(f"Финальный размер шрифта: {best_font_size}")
 
         # 3. Расчет финальных координат X, Y
         try:
-            bbox_final = font.getbbox(final_text_string)
+            # Получаем точные размеры финального текстового блока
+            bbox_final = draw.textbbox((0, 0), final_text_string, font=font, align=align)
             final_text_width = bbox_final[2] - bbox_final[0]
-            final_text_height = font.getmask(final_text_string).size[1]
-            top_offset = bbox_final[1]
-            log.debug(f"Финальные размеры блока: Ширина={final_text_width:.1f}, Высота={final_text_height:.1f}, Смещение верха={top_offset}")
+            final_text_height = bbox_final[3] - bbox_final[1]
+            log.debug(f"Финальные размеры блока текста: Ширина={final_text_width:.1f}, Высота={final_text_height:.1f}")
         except Exception as final_bbox_err:
-             log.error(f"Ошибка финального расчета bbox/mask: {final_bbox_err}"); return False
+             log.error(f"Ошибка финального расчета bbox: {final_bbox_err}"); return False
 
-        # Расчет X для выравнивания по правому краю (координата ЛЕВОГО края блока)
+        # Расчет X для выравнивания по правому краю
+        # Координата X - это правый край области минус ширина текста
         x = text_area_x_start + text_area_width - final_text_width
         log.debug(f"Расчетная X (левый край блока): {x}")
 
-        # Расчет Y с вертикальным смещением вверх
-        base_y_center = text_area_y_start + (text_area_height - final_text_height) / 2
-        vertical_offset = best_font_size // 2 # Смещение вверх на половину размера шрифта
-        y = max(text_area_y_start, base_y_center - vertical_offset) # Y - верхняя граница блока
-        log.debug(f"Расчетная Y (верхний край блока): {y}, Смещение: {vertical_offset}")
+        # Расчет Y для вертикального центрирования
+        y = text_area_y_start + (text_area_height - final_text_height) / 2
+        log.debug(f"Расчетная Y (верхний край блока): {y}")
 
         text_position = (int(x), int(y))
         log.info(f"Финальная позиция текста (левый верх блока): {text_position}")
@@ -244,7 +220,7 @@ def add_text_to_image_sarcasm(
                  final_text_string,
                  font=font,
                  fill=final_text_color,
-                 align='right', # Выравнивание строк по правому краю
+                 align=align, # Используем переданное выравнивание ('right')
                  stroke_width=stroke_width,
                  stroke_fill=final_stroke_color
              )
@@ -264,4 +240,5 @@ def add_text_to_image_sarcasm(
     except Exception as e:
         log.error(f"Критическая ошибка в add_text_to_image_sarcasm: {e}", exc_info=True)
         return False
+# --- КОНЕЦ ИСПРАВЛЕННОЙ ВЕРСИИ ---
 
