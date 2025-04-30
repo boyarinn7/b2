@@ -699,7 +699,9 @@ class ContentGenerator:
 
                 generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
                 generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
-                theme = content_data.get("theme", "normal")  # Получаем тему или ставим 'normal' по умолчанию
+                # <<< ИЗМЕНЕНИЕ: Используем content_metadata, возвращенное из generate_topic >>>
+                # theme = content_data.get("theme", "normal") # Старая строка
+                theme = content_metadata.get("theme", "normal")  # Используем content_metadata
                 # +++ Добавлено логирование +++
                 self.logger.info(
                     f"Проверка генерации текста: theme='{theme}', generate_text_enabled={generate_text_enabled}, generate_tragic_text_enabled={generate_tragic_text_enabled}")
@@ -707,19 +709,23 @@ class ContentGenerator:
                 # Определяем, какой промпт использовать и включена ли генерация
                 should_generate = False
                 prompt_key_suffix = None
-                if theme == "tragic" and generate_tragic_text_enabled:
-                    prompt_key_suffix = "tragic_text"
-                    should_generate = True
-                    # +++ Добавлено логирование +++
-                    self.logger.info("Условие генерации: Трагическая тема, генерация трагического текста включена.")
-                elif theme != "tragic" and generate_text_enabled:
-                    prompt_key_suffix = "text"
-                    should_generate = True
-                    # +++ Добавлено логирование +++
-                    self.logger.info("Условие генерации: Обычная тема, генерация обычного текста включена.")
-                else:
-                    # +++ Добавлено логирование +++
-                    self.logger.info("Условие генерации: Генерация текста не требуется/отключена для этой темы.")
+                # --- Упрощенная и более явная логика ---
+                if theme == "tragic":
+                    if generate_tragic_text_enabled:
+                        prompt_key_suffix = "tragic_text"
+                        should_generate = True
+                        self.logger.info("Условие генерации: Трагическая тема, генерация трагического текста включена.")
+                    else:
+                        self.logger.info(
+                            "Условие генерации: Трагическая тема, но генерация трагического текста ОТКЛЮЧЕНА.")
+                else:  # theme is normal or anything else
+                    if generate_text_enabled:
+                        prompt_key_suffix = "text"
+                        should_generate = True
+                        self.logger.info("Условие генерации: Обычная тема, генерация обычного текста включена.")
+                    else:
+                        self.logger.info("Условие генерации: Обычная тема, но генерация обычного текста ОТКЛЮЧЕНА.")
+                # --- Конец упрощенной логики ---
 
                 # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ПЕРЕД ГЛАВНЫМ IF ---
                 self.logger.info(
@@ -809,8 +815,10 @@ class ContentGenerator:
                 sarcastic_comment_text = None  # Храним текст комментария
                 sarcastic_poll = {}
                 if text_initial_raw:  # Генерируем сарказм, только если был сырой текст
-                    sarcastic_comment_text = self.generate_sarcasm(text_initial_raw, content_data)
-                    sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_data)
+                    sarcastic_comment_text = self.generate_sarcasm(text_initial_raw,
+                                                                   content_metadata)  # Передаем content_metadata
+                    sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw,
+                                                                content_metadata)  # Передаем content_metadata
 
                 sarcastic_comment_json_str_for_save = None
                 if sarcastic_comment_text:
