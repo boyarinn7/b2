@@ -699,10 +699,19 @@ class ContentGenerator:
 
                 generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
                 generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
+                theme = content_data.get("theme", "normal")  # Получаем тему или ставим 'normal' по умолчанию
 
-                if (content_data.get("theme") == "tragic" and generate_tragic_text_enabled) or \
-                        (content_data.get("theme") != "tragic" and generate_text_enabled):
-                    prompt_key_suffix = "tragic_text" if content_data.get("theme") == "tragic" else "text"
+                # Определяем, какой промпт использовать и включена ли генерация
+                should_generate = False
+                prompt_key_suffix = None
+                if theme == "tragic" and generate_tragic_text_enabled:
+                    prompt_key_suffix = "tragic_text"
+                    should_generate = True
+                elif theme != "tragic" and generate_text_enabled:
+                    prompt_key_suffix = "text"
+                    should_generate = True
+
+                if should_generate and prompt_key_suffix:
                     prompt_config_key_generate = f"content.{prompt_key_suffix}"
                     prompt_template_generate = self._get_prompt_template(prompt_config_key_generate)
                     if prompt_template_generate:
@@ -715,84 +724,75 @@ class ContentGenerator:
                             config_manager_instance=self.config,
                             prompts_config_data_instance=self.prompts_config_data
                         )
-                        # --- ИЗМЕНЕНИЕ: Добавлено подробное логирование text_initial_raw ---
-                        if text_initial_raw is not None:  # Проверяем, что не None
+                        if text_initial_raw is not None:
                             self.logger.info(
                                 f"Сырой текст получен (тип: {type(text_initial_raw)}). Проверка на пустоту...")
-                            if text_initial_raw.strip():  # Проверяем, что после strip не пустой
+                            if text_initial_raw.strip():
                                 self.logger.info(
                                     f"Сырой текст НЕ ПУСТОЙ. Содержимое (первые/последние 100 символов):\n<<<<<\n{text_initial_raw[:100]}\n...\n{text_initial_raw[-100:]}\n>>>>>")
                                 self.save_to_generated_content("text_raw", {"text_raw": text_initial_raw})
 
-                                # +++ НОВЫЙ ШАГ: Программное форматирование текста +++
+                                # +++ Программное форматирование текста +++
                                 self.logger.info("Выполнение программного форматирования текста...")
                                 try:
-                                    # 1. Разделяем текст на строки, учитывая разные виды переносов
                                     lines = re.split(r'\n\s*\n*', text_initial_raw.strip())
-                                    # --- Логирование после split ---
                                     self.logger.debug(f"Результат re.split (первые 5 строк): {lines[:5]}")
-                                    # 2. Удаляем пустые строки или строки, состоящие только из пробелов
                                     paragraphs = [line.strip() for line in lines if line.strip()]
-                                    # --- Логирование после фильтрации ---
                                     self.logger.debug(f"Результат фильтрации (paragraphs, первые 5): {paragraphs[:5]}")
-                                    # 3. Соединяем непустые абзацы двойным переносом
                                     formatted_text_value = "\n\n".join(paragraphs)
-                                    # --- Логирование перед проверкой formatted_text_value ---
                                     self.logger.debug(
                                         f"Результат join (formatted_text_value, первые/последние 100): \n<<<<<\n{formatted_text_value[:100]}\n...\n{formatted_text_value[-100:]}\n>>>>>")
 
-                                    if formatted_text_value:  # Проверка, что результат join не пустой
-                                        # 4. Создаем финальный JSON-объект и кодируем его в строку
+                                    if formatted_text_value:
                                         formatted_data = {"текст": formatted_text_value}
                                         content_json_str = json.dumps(formatted_data, ensure_ascii=False, indent=2)
                                         self.logger.info(
                                             f"Текст успешно отформатирован программно: {content_json_str[:100]}...")
                                     else:
-                                        # Это маловероятно, если text_initial_raw был непустым, но на всякий случай
                                         self.logger.error("❌ Ошибка форматирования: после обработки текст стал пустым.")
                                         raise ValueError("Programmatic formatting resulted in empty text.")
-
                                 except Exception as format_err:
                                     self.logger.error(f"❌ Ошибка во время программного форматирования: {format_err}",
                                                       exc_info=True)
                                     raise ValueError("Programmatic formatting failed.") from format_err
-                                # +++ КОНЕЦ НОВОГО ШАГА +++
+                                # +++ КОНЕЦ Программного форматирования +++
 
                             else:  # Если text_initial_raw.strip() пустой
                                 self.logger.error(
                                     "❌ Генерация сырого текста вернула пустую строку или строку из пробелов.")
-                                text_initial_raw = ""
+                                text_initial_raw = ""  # Устанавливаем пустую строку
                                 raise ValueError("Initial text generation returned empty or whitespace.")
-                        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         else:  # Если text_initial_raw is None
                             self.logger.error(
                                 f"❌ Генерация сырого текста ({prompt_config_key_generate}) не удалась (вернула None).")
-                            text_initial_raw = ""
+                            text_initial_raw = ""  # Устанавливаем пустую строку
                             raise ValueError("Initial text generation failed (returned None).")
                     else:
-                        self.logger.warning(f"Промпт генерации {prompt_config_key_generate} не найден.")
-                        text_initial_raw = ""
+                        self.logger.error(f"Промпт генерации {prompt_config_key_generate} не найден.")
+                        text_initial_raw = ""  # Устанавливаем пустую строку
                         raise ValueError(f"Generation prompt '{prompt_config_key_generate}' not found.")
                 else:
-                    self.logger.info(f"Генерация текста (тема: {content_data.get('theme')}) отключена.")
-                    text_initial_raw = ""
+                    # Генерация текста отключена или не соответствует теме
+                    self.logger.info(f"Генерация текста (тема: {theme}) отключена или не требуется.")
+                    text_initial_raw = ""  # Устанавливаем пустую строку
                     # Создаем пустой JSON, чтобы избежать ошибки при валидации, если генерация отключена
                     content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
 
-                # --- Если content_json_str все еще None после всех шагов ---
-                if content_json_str is None:  # Эта проверка теперь менее вероятна, т.к. ошибки должны прерывать раньше
+                # --- Если content_json_str все еще None после всех шагов (маловероятно) ---
+                if content_json_str is None:
                     self.logger.warning(
-                        "Поле 'content' будет отсутствовать или иметь некорректное значение, так как генерация/форматирование текста не дали результата.")
+                        "Переменная content_json_str осталась None после шага генерации/форматирования. Создание пустого JSON.")
                     content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
 
                 # Шаг 4: Критика (используем сырой текст, если он есть)
-                critique_result = self.critique_content(text_initial_raw, topic)
+                critique_result = self.critique_content(text_initial_raw,
+                                                        topic)  # text_initial_raw может быть пустым, если генерация отключена/не удалась
                 self.save_to_generated_content("critique", {"critique": critique_result})
 
                 # Шаг 5: Генерация Сарказма (RU)
                 sarcastic_comment_text = None  # Храним текст комментария
                 sarcastic_poll = {}
-                if text_initial_raw:  # Используем сырой текст для генерации сарказма
+                if text_initial_raw:  # Генерируем сарказм, только если был сырой текст
                     sarcastic_comment_text = self.generate_sarcasm(text_initial_raw, content_data)
                     sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_data)
 
