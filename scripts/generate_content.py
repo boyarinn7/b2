@@ -700,6 +700,9 @@ class ContentGenerator:
                 generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
                 generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
                 theme = content_data.get("theme", "normal")  # Получаем тему или ставим 'normal' по умолчанию
+                # +++ Добавлено логирование +++
+                self.logger.info(
+                    f"Проверка генерации текста: theme='{theme}', generate_text_enabled={generate_text_enabled}, generate_tragic_text_enabled={generate_tragic_text_enabled}")
 
                 # Определяем, какой промпт использовать и включена ли генерация
                 should_generate = False
@@ -707,9 +710,21 @@ class ContentGenerator:
                 if theme == "tragic" and generate_tragic_text_enabled:
                     prompt_key_suffix = "tragic_text"
                     should_generate = True
+                    # +++ Добавлено логирование +++
+                    self.logger.info("Условие генерации: Трагическая тема, генерация трагического текста включена.")
                 elif theme != "tragic" and generate_text_enabled:
                     prompt_key_suffix = "text"
                     should_generate = True
+                    # +++ Добавлено логирование +++
+                    self.logger.info("Условие генерации: Обычная тема, генерация обычного текста включена.")
+                else:
+                    # +++ Добавлено логирование +++
+                    self.logger.info("Условие генерации: Генерация текста не требуется/отключена для этой темы.")
+
+                # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ПЕРЕД ГЛАВНЫМ IF ---
+                self.logger.info(
+                    f"Перед главным if: should_generate={should_generate}, prompt_key_suffix='{prompt_key_suffix}'")
+                # --- КОНЕЦ ЛОГИРОВАНИЯ ---
 
                 if should_generate and prompt_key_suffix:
                     prompt_config_key_generate = f"content.{prompt_key_suffix}"
@@ -773,7 +788,8 @@ class ContentGenerator:
                         raise ValueError(f"Generation prompt '{prompt_config_key_generate}' not found.")
                 else:
                     # Генерация текста отключена или не соответствует теме
-                    self.logger.info(f"Генерация текста (тема: {theme}) отключена или не требуется.")
+                    # +++ Изменено логирование +++
+                    self.logger.info(f"Генерация текста (тема: {theme}) отключена или не требуется (блок else).")
                     text_initial_raw = ""  # Устанавливаем пустую строку
                     # Создаем пустой JSON, чтобы избежать ошибки при валидации, если генерация отключена
                     content_json_str = json.dumps({"текст": ""}, ensure_ascii=False, indent=2)
