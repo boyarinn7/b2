@@ -694,14 +694,25 @@ class ContentGenerator:
                 raise RuntimeError("Ошибка генерации темы")
 
                 # Шаг 3: Генерация Текста (RU)
+                tracker = self.load_tracker()
+                topic, content_metadata, selected_focus = self.generate_topic(tracker)
+                if topic is None or selected_focus is None:
+                    self.logger.error("Не удалось сгенерировать тему или получить фокус. Прерывание.")
+                    raise RuntimeError("Ошибка генерации темы")
+
+                # +++ ДОБАВЛЕНО ЛОГИРОВАНИЕ СРАЗУ ПОСЛЕ generate_topic +++
+                self.logger.info(
+                    f"Результат generate_topic: topic='{topic[:50]}...', content_metadata={content_metadata}, selected_focus='{selected_focus}'")
+                # --- КОНЕЦ ЛОГИРОВАНИЯ ---
+
+                # Шаг 3: Генерация Текста (RU)
                 text_initial_raw = ""
                 content_json_str = None  # Инициализируем как None
 
                 generate_text_enabled = self.config.get('CONTENT.text.enabled', True)
                 generate_tragic_text_enabled = self.config.get('CONTENT.tragic_text.enabled', True)
-                # <<< ИЗМЕНЕНИЕ: Используем content_metadata, возвращенное из generate_topic >>>
-                # theme = content_data.get("theme", "normal") # Старая строка
-                theme = content_metadata.get("theme", "normal")  # Используем content_metadata
+                # Используем content_metadata, которое ТОЛЬКО ЧТО получили
+                theme = content_metadata.get("theme", "normal")  # Получаем тему или ставим 'normal' по умолчанию
                 # +++ Добавлено логирование +++
                 self.logger.info(
                     f"Проверка генерации текста: theme='{theme}', generate_text_enabled={generate_text_enabled}, generate_tragic_text_enabled={generate_tragic_text_enabled}")
@@ -815,10 +826,10 @@ class ContentGenerator:
                 sarcastic_comment_text = None  # Храним текст комментария
                 sarcastic_poll = {}
                 if text_initial_raw:  # Генерируем сарказм, только если был сырой текст
-                    sarcastic_comment_text = self.generate_sarcasm(text_initial_raw,
-                                                                   content_metadata)  # Передаем content_metadata
-                    sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw,
-                                                                content_metadata)  # Передаем content_metadata
+                    # <<< ИЗМЕНЕНИЕ: Передаем content_metadata для определения темы >>>
+                    sarcastic_comment_text = self.generate_sarcasm(text_initial_raw, content_metadata)
+                    sarcastic_poll = self.generate_sarcasm_poll(text_initial_raw, content_metadata)
+                    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
                 sarcastic_comment_json_str_for_save = None
                 if sarcastic_comment_text:
