@@ -17,6 +17,7 @@ try:
     if str(BASE_DIR) not in sys.path:
         sys.path.append(str(BASE_DIR))
 
+    from modules.sarcasm_image_utils import add_text_to_image_sarcasm_openai_ready
     from modules.config_manager import ConfigManager
     from modules.logger import get_logger
     from modules.utils import (
@@ -870,6 +871,34 @@ def main():
     ensure_directory_exists(config_mj_local_path) # Убедимся, что папка для temp файла есть
     # ----------------------------------------------------------------------------------------
 
+    # +++ ИСПРАВЛЕНИЕ: Получение констант из конфига ВНУТРИ main +++
+    try:
+        # Убедимся, что config доступен
+        if 'config' not in globals() or config is None:
+            raise RuntimeError("Глобальный объект 'config' не инициализирован.")
+        if 'BASE_DIR' not in globals() or BASE_DIR is None:
+             raise RuntimeError("Глобальная переменная BASE_DIR не определена.")
+
+        # Получаем нужные константы для сарказма и другие, если нужно
+        SARCASM_IMAGE_SUFFIX = config.get("FILE_PATHS.sarcasm_image_suffix", "_sarcasm.png")
+        SARCASM_BASE_IMAGE_REL_PATH = config.get("FILE_PATHS.sarcasm_baron_image", "assets/Барон.png")
+        SARCASM_FONT_REL_PATH = config.get("FILE_PATHS.sarcasm_font", "assets/fonts/Kurale-Regular.ttf")
+        # Другие константы, которые нужны только в main, можно получить здесь же
+        # Например:
+        # PLACEHOLDER_WIDTH = int(config.get("IMAGE_GENERATION.output_size", "1280x720").split('x')[0])
+        # PLACEHOLDER_HEIGHT = int(config.get("IMAGE_GENERATION.output_size", "1280x720").split('x')[1])
+        # ... и т.д.
+
+        # Проверка, что значения получены (опционально, но полезно)
+        if not SARCASM_IMAGE_SUFFIX: logger.warning("FILE_PATHS.sarcasm_image_suffix не найден в конфиге, используется '_sarcasm.png'.")
+        if not SARCASM_BASE_IMAGE_REL_PATH: logger.error("FILE_PATHS.sarcasm_baron_image не найден в конфиге!")
+        if not SARCASM_FONT_REL_PATH: logger.error("FILE_PATHS.sarcasm_font не найден в конфиге!")
+
+    except Exception as config_err:
+        logger.critical(f"Критическая ошибка при получении констант из конфига внутри main: {config_err}", exc_info=True)
+        sys.exit(1)
+    # +++ КОНЕЦ ПОЛУЧЕНИЯ КОНСТАНТ +++
+
     try:
         # --- Загрузка content_data ---
         logger.info("Загрузка данных контента...")
@@ -970,7 +999,7 @@ def main():
                          prompts_config_path = Path(prompts_config_path_str)
                          if not prompts_config_path.is_absolute():
                              # Предполагаем, что BASE_DIR определена глобально
-                             if 'BASE_DIR' not in globals():
+                             if 'BASE_DIR' not in globals() or BASE_DIR is None:
                                  logger.error("Глобальная переменная BASE_DIR не найдена!")
                                  # Обработка ошибки или выход
                              else:
@@ -1028,10 +1057,14 @@ def main():
                                 else:
                                     logger.warning(f"OpenAI вернул некорректный 'font_size': {fnt_size}.")
 
+                                # --- ИСПРАВЛЕНИЕ ОШИБКИ В ЛОГЕ ---
                                 if formatted_sarcasm_text and suggested_sarcasm_font_size:
-                                     logger.info(f"Получены рекомендации от OpenAI: Размер={suggested_sarcasm_font_size}, Текст='{formatted_sarcasm_text[:50].replace('\n','\\n')}...'")
+                                     # Создаем безопасную для f-строки версию текста
+                                     log_text_preview = formatted_sarcasm_text[:50].replace('\n', '\\n')
+                                     logger.info(f"Получены рекомендации от OpenAI: Размер={suggested_sarcasm_font_size}, Текст='{log_text_preview}...'")
                                 else:
                                      logger.warning("Не удалось получить валидные данные форматирования от OpenAI.")
+                                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
                             except json.JSONDecodeError:
                                 logger.error(f"Ошибка декодирования JSON ответа OpenAI: {response_json_str}")
@@ -1149,19 +1182,18 @@ def main():
 
                 video_path_str = None
                 # Проверяем наличие ImageClip и функции create_mock_video
-                if ImageClip and callable(create_mock_video) and local_image_path and local_image_path.is_file():
-                     video_path_str = create_mock_video(str(local_image_path)) # Вызываем локальную функцию
-                     if not video_path_str: logger.warning("Не удалось создать mock видео.")
-                     else: video_path = Path(video_path_str)
-                elif not ImageClip:
-                     logger.warning("MoviePy не найден, mock видео не создано.")
-                elif not local_image_path or not local_image_path.is_file():
-                     logger.warning("Базовое изображение для mock не найдено, mock видео не создано.")
+                # Убедимся, что create_mock_video доступна
+                if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                    if ImageClip and local_image_path and local_image_path.is_file():
+                         video_path_str = create_mock_video(str(local_image_path)) # Вызываем локальную функцию
+                         if not video_path_str: logger.warning("Не удалось создать mock видео.")
+                         else: video_path = Path(video_path_str)
+                    elif not ImageClip:
+                         logger.warning("MoviePy не найден, mock видео не создано.")
+                    elif not local_image_path or not local_image_path.is_file():
+                         logger.warning("Базовое изображение для mock не найдено, mock видео не создано.")
                 else:
-                     if not callable(create_mock_video):
-                         logger.error("Функция create_mock_video не найдена!")
-                     else:
-                         logger.error("Неизвестная ошибка при вызове create_mock_video.")
+                     logger.error("Функция create_mock_video не найдена!")
 
 
                 logger.info("Сброс состояния MJ...");
@@ -1177,33 +1209,40 @@ def main():
                     raise Exception(f"Не скачать апскейл {final_upscaled_image_url}")
                 logger.info(f"Апскейл для Runway сохранен: {runway_base_image_path}")
 
-                if PIL_AVAILABLE and callable(resize_existing_image): # Используем флаг PIL_AVAILABLE
-                    if not resize_existing_image(str(runway_base_image_path)):
-                        logger.warning(f"Не удалось выполнить ресайз для {runway_base_image_path}, но продолжаем.")
-                elif not PIL_AVAILABLE:
-                     logger.warning("Pillow не найден, ресайз не выполнен.")
+                # Убедимся, что resize_existing_image доступна
+                if 'resize_existing_image' in globals() and callable(globals()['resize_existing_image']):
+                    if PIL_AVAILABLE:
+                        if not resize_existing_image(str(runway_base_image_path)):
+                            logger.warning(f"Не удалось выполнить ресайз для {runway_base_image_path}, но продолжаем.")
+                    else:
+                         logger.warning("Pillow не найден, ресайз не выполнен.")
                 else:
-                     if not callable(resize_existing_image):
-                         logger.error("Функция resize_existing_image не найдена!")
-                     else:
-                         logger.error("Неизвестная ошибка при вызове resize_existing_image.")
+                     logger.error("Функция resize_existing_image не найдена!")
+
 
                 video_path_str = None
                 if not final_runway_prompt:
                     logger.error("❌ Промпт Runway отсутствует! Создание mock видео.")
-                    if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                    else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                    if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                        if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                        else: logger.warning("MoviePy не найден, mock видео не создано.")
+                    else: logger.error("Функция create_mock_video не найдена!")
                 else:
                      if not RUNWAY_SDK_AVAILABLE:
                          logger.error("SDK RunwayML недоступен. Создание mock видео.")
-                         if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                         else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                         if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                             if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                             else: logger.warning("MoviePy не найден, mock видео не создано.")
+                         else: logger.error("Функция create_mock_video не найдена!")
                      elif not RUNWAY_API_KEY:
                           logger.error("RUNWAY_API_KEY не найден. Создание mock видео.")
-                          if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                          else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                          if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                              if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                              else: logger.warning("MoviePy не найден, mock видео не создано.")
+                          else: logger.error("Функция create_mock_video не найдена!")
                      else:
-                         if callable(generate_runway_video):
+                         # Убедимся, что generate_runway_video доступна
+                         if 'generate_runway_video' in globals() and callable(globals()['generate_runway_video']):
                              video_url_or_path = generate_runway_video(
                                  image_path=str(runway_base_image_path),
                                  script=final_runway_prompt,
@@ -1218,19 +1257,25 @@ def main():
                                          logger.info(f"Видео Runway скачано: {video_path}")
                                      else:
                                          logger.error(f"Не удалось скачать видео Runway {video_url_or_path}. Создание mock.")
-                                         if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                                         else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                                         if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                                             if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                                             else: logger.warning("MoviePy не найден, mock видео не создано.")
+                                         else: logger.error("Функция create_mock_video не найдена!")
                                  else:
                                      video_path = Path(video_url_or_path)
                                      logger.info(f"Получен локальный путь к видео Runway: {video_path}")
                              else:
                                  logger.error("Генерация видео Runway не удалась. Создание mock.")
-                                 if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                                 else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                                 if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                                     if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                                     else: logger.warning("MoviePy не найден, mock видео не создано.")
+                                 else: logger.error("Функция create_mock_video не найдена!")
                          else:
                               logger.error("Функция generate_runway_video не найдена! Создание mock видео.")
-                              if ImageClip and callable(create_mock_video): video_path_str = create_mock_video(str(runway_base_image_path))
-                              else: logger.warning("MoviePy или create_mock_video не найдены, mock видео не создано.")
+                              if 'create_mock_video' in globals() and callable(globals()['create_mock_video']):
+                                  if ImageClip: video_path_str = create_mock_video(str(runway_base_image_path))
+                                  else: logger.warning("MoviePy не найден, mock видео не создано.")
+                              else: logger.error("Функция create_mock_video не найдена!")
 
                      if not video_path and video_path_str:
                          video_path = Path(video_path_str)
@@ -1274,7 +1319,8 @@ def main():
 
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
                 best_index_runway = 0
-                if callable(select_best_image):
+                # Убедимся, что select_best_image доступна
+                if 'select_best_image' in globals() and callable(globals()['select_best_image']):
                     if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
                     if openai_client_instance:
                         best_index_runway = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
@@ -1354,41 +1400,55 @@ def main():
                     # Получаем рекомендации от Vision, передаем ТОЛЬКО тему
                     logger.info(f"Запрос рекомендаций по размещению для текста (тема): '{text_for_title[:100]}...'")
                     if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
-                    placement_suggestions = get_text_placement_suggestions(
-                        image_url=image_for_title_url,
-                        text=text_for_title, # <<< Передаем только тему
-                        image_width=PLACEHOLDER_WIDTH,
-                        image_height=PLACEHOLDER_HEIGHT
-                    )
+                    # Убедимся, что get_text_placement_suggestions доступна
+                    if 'get_text_placement_suggestions' in globals() and callable(globals()['get_text_placement_suggestions']):
+                        placement_suggestions = get_text_placement_suggestions(
+                            image_url=image_for_title_url,
+                            text=text_for_title, # <<< Передаем только тему
+                            image_width=PLACEHOLDER_WIDTH,
+                            image_height=PLACEHOLDER_HEIGHT
+                        )
+                    else:
+                        logger.error("Функция get_text_placement_suggestions не найдена!")
+                        # Устанавливаем дефолтные значения
+                        placement_suggestions = {
+                            "position": ('center', 'center'),
+                            "font_size": 70,
+                            "formatted_text": text_for_title.split('\n')[0] if text_for_title else "Текст отсутствует",
+                            "text_color": "#333333"
+                        }
+
 
                     title_padding = 60; title_bg_blur_radius = 0; title_bg_opacity = 0
 
-                    if PIL_AVAILABLE and callable(add_text_to_image):
-                        log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
-                        logger.info(f"Параметры для add_text_to_image: text='{log_text_preview}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
+                    # Убедимся, что add_text_to_image доступна
+                    if 'add_text_to_image' in globals() and callable(globals()['add_text_to_image']):
+                        if PIL_AVAILABLE:
+                            log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
+                            logger.info(f"Параметры для add_text_to_image: text='{log_text_preview}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
 
-                        if add_text_to_image(
-                            image_path_str=str(title_base_path),
-                            text=placement_suggestions["formatted_text"], # Текст с переносами
-                            font_path_str=final_font_path, # <<< Используем определенный путь
-                            output_path_str=str(final_title_image_path),
-                            text_color_hex=placement_suggestions["text_color"], # Передаем HEX цвет
-                            position=placement_suggestions["position"], # Рекомендуемая позиция
-                            padding=title_padding,
-                            haze_opacity=HAZE_OPACITY_DEFAULT, # Добавляем дымку
-                            bg_blur_radius=title_bg_blur_radius,
-                            bg_opacity=title_bg_opacity,
-                            logger_instance=logger
-                        ):
-                            logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
-                            local_image_path = final_title_image_path # Это финальный PNG для загрузки
+                            if add_text_to_image(
+                                image_path_str=str(title_base_path),
+                                text=placement_suggestions["formatted_text"], # Текст с переносами
+                                font_path_str=final_font_path, # <<< Используем определенный путь
+                                output_path_str=str(final_title_image_path),
+                                text_color_hex=placement_suggestions["text_color"], # Передаем HEX цвет
+                                position=placement_suggestions["position"], # Рекомендуемая позиция
+                                padding=title_padding,
+                                haze_opacity=HAZE_OPACITY_DEFAULT, # Добавляем дымку
+                                bg_blur_radius=title_bg_blur_radius,
+                                bg_opacity=title_bg_opacity,
+                                logger_instance=logger
+                            ):
+                                logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
+                                local_image_path = final_title_image_path # Это финальный PNG для загрузки
+                            else:
+                                logger.error("Не удалось создать изображение-заголовок.")
+                                local_image_path = title_base_path # Используем базовое изображение
+                                logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
                         else:
-                            logger.error("Не удалось создать изображение-заголовок.")
-                            local_image_path = title_base_path # Используем базовое изображение
-                            logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
-                    elif not PIL_AVAILABLE:
-                         logger.warning("Pillow недоступен, текст на заголовок не добавлен.")
-                         local_image_path = title_base_path
+                             logger.warning("Pillow недоступен, текст на заголовок не добавлен.")
+                             local_image_path = title_base_path
                     else:
                          logger.error("Функция add_text_to_image не найдена/импортирована!")
                          local_image_path = title_base_path
@@ -1409,16 +1469,18 @@ def main():
                     else: logger.error("Не найдено доступных upscale действий!")
 
                 upscale_task_info = None
-                if action_to_trigger and callable(trigger_piapi_action):
-                    if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для trigger_piapi_action.")
-                    elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для trigger_piapi_action.")
+                # Убедимся, что trigger_piapi_action доступна
+                if 'trigger_piapi_action' in globals() and callable(globals()['trigger_piapi_action']):
+                    if action_to_trigger:
+                        if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для trigger_piapi_action.")
+                        elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для trigger_piapi_action.")
+                        else:
+                             upscale_task_info = trigger_piapi_action(
+                                 original_task_id=imagine_task_id, action=action_to_trigger,
+                                 api_key=MIDJOURNEY_API_KEY, endpoint=MJ_IMAGINE_ENDPOINT
+                             )
                     else:
-                         upscale_task_info = trigger_piapi_action(
-                             original_task_id=imagine_task_id, action=action_to_trigger,
-                             api_key=MIDJOURNEY_API_KEY, endpoint=MJ_IMAGINE_ENDPOINT
-                         )
-                elif not action_to_trigger:
-                     logger.warning("Нет действия upscale для запуска.")
+                         logger.warning("Нет действия upscale для запуска.")
                 else:
                      logger.error("Функция trigger_piapi_action не найдена!")
 
@@ -1444,7 +1506,8 @@ def main():
                 if not final_mj_prompt:
                     logger.error("❌ Промпт MJ отсутствует!"); config_mj['generation'] = False
                 else:
-                    if callable(initiate_midjourney_task):
+                    # Убедимся, что initiate_midjourney_task доступна
+                    if 'initiate_midjourney_task' in globals() and callable(globals()['initiate_midjourney_task']):
                         if not MIDJOURNEY_API_KEY: logger.error("MIDJOURNEY_API_KEY не найден для initiate_midjourney_task.")
                         elif not MJ_IMAGINE_ENDPOINT: logger.error("MJ_IMAGINE_ENDPOINT не найден для initiate_midjourney_task.")
                         else:
@@ -1482,8 +1545,8 @@ def main():
                     logger.info("Генерация изображения с сарказмом (с форматированием OpenAI)...")
                     # Пути к ресурсам (как и раньше)
                     # Убедимся, что SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX доступны
-                    if 'SARCASM_BASE_IMAGE_REL_PATH' not in globals() or 'SARCASM_FONT_REL_PATH' not in globals() or 'SARCASM_IMAGE_SUFFIX' not in globals():
-                         logger.error("Константы для сарказма не определены!")
+                    if 'SARCASM_BASE_IMAGE_REL_PATH' not in locals() or 'SARCASM_FONT_REL_PATH' not in locals() or 'SARCASM_IMAGE_SUFFIX' not in locals():
+                         logger.error("Константы для сарказма не определены в области видимости main!")
                     else:
                         sarcasm_base_image_path_abs = BASE_DIR / SARCASM_BASE_IMAGE_REL_PATH
                         sarcasm_font_path_abs = BASE_DIR / SARCASM_FONT_REL_PATH
@@ -1534,31 +1597,38 @@ def main():
             upload_success_sarcasm = False # Инициализируем флаг загрузки сарказма
 
             # Загрузка основного изображения (заголовка)
-            if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
-                 b2_image_filename = f"{generation_id}.png" # Всегда PNG
-                 upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
-                 if not upload_success_img: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ИЗОБРАЖЕНИЯ {b2_image_filename} !!!")
-            elif local_image_path:
-                 logger.warning(f"Финальное изображение {local_image_path} не найдено для загрузки.")
+            # Убедимся, что upload_to_b2 доступна
+            if 'upload_to_b2' in globals() and callable(globals()['upload_to_b2']):
+                if local_image_path and isinstance(local_image_path, Path) and local_image_path.is_file():
+                     b2_image_filename = f"{generation_id}.png" # Всегда PNG
+                     upload_success_img = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(local_image_path), b2_image_filename)
+                     if not upload_success_img: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ИЗОБРАЖЕНИЯ {b2_image_filename} !!!")
+                elif local_image_path:
+                     logger.warning(f"Финальное изображение {local_image_path} не найдено для загрузки.")
 
-            # Загрузка видео
-            if video_path and isinstance(video_path, Path) and video_path.is_file():
-                 b2_video_filename = f"{generation_id}.mp4" # Всегда MP4
-                 upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
-                 if not upload_success_vid: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ВИДЕО {b2_video_filename} !!!")
-            elif video_path:
-                 logger.error(f"Видео {video_path} не найдено для загрузки!")
+                # Загрузка видео
+                if video_path and isinstance(video_path, Path) and video_path.is_file():
+                     b2_video_filename = f"{generation_id}.mp4" # Всегда MP4
+                     upload_success_vid = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(video_path), b2_video_filename)
+                     if not upload_success_vid: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ ВИДЕО {b2_video_filename} !!!")
+                elif video_path:
+                     logger.error(f"Видео {video_path} не найдено для загрузки!")
 
-            # +++ ЗАГРУЗКА КАРТИНКИ С САРКАЗМОМ +++
-            if sarcasm_image_path and isinstance(sarcasm_image_path, Path) and sarcasm_image_path.is_file():
-                 # Убедимся, что SARCASM_IMAGE_SUFFIX доступен
-                 if 'SARCASM_IMAGE_SUFFIX' not in globals(): SARCASM_IMAGE_SUFFIX = "_sarcasm.png" # Fallback
-                 b2_sarcasm_filename = f"{generation_id}{SARCASM_IMAGE_SUFFIX}" # Используем суффикс из конфига
-                 upload_success_sarcasm = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(sarcasm_image_path), b2_sarcasm_filename)
-                 if not upload_success_sarcasm: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ КАРТИНКИ С САРКАЗМОМ {b2_sarcasm_filename} !!!")
-            elif sarcasm_image_path: # Если путь был, но файла нет
-                 logger.warning(f"Картинка с сарказмом {sarcasm_image_path} не найдена для загрузки.")
-            # ++++++++++++++++++++++++++++++++++++++
+                # +++ ЗАГРУЗКА КАРТИНКИ С САРКАЗМОМ +++
+                if sarcasm_image_path and isinstance(sarcasm_image_path, Path) and sarcasm_image_path.is_file():
+                     # Убедимся, что SARCASM_IMAGE_SUFFIX доступен
+                     if 'SARCASM_IMAGE_SUFFIX' not in locals():
+                         logger.error("Переменная SARCASM_IMAGE_SUFFIX не определена в области видимости main!")
+                     else:
+                         b2_sarcasm_filename = f"{generation_id}{SARCASM_IMAGE_SUFFIX}" # Используем суффикс из конфига
+                         upload_success_sarcasm = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(sarcasm_image_path), b2_sarcasm_filename)
+                         if not upload_success_sarcasm: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ КАРТИНКИ С САРКАЗМОМ {b2_sarcasm_filename} !!!")
+                elif sarcasm_image_path: # Если путь был, но файла нет
+                     logger.warning(f"Картинка с сарказмом {sarcasm_image_path} не найдена для загрузки.")
+                # ++++++++++++++++++++++++++++++++++++++
+            else:
+                logger.error("Функция upload_to_b2 не найдена! Загрузка в B2 невозможна.")
+
 
             # Логирование результатов загрузки
             uploaded_items = []
@@ -1602,15 +1672,20 @@ def main():
             try: os.remove(config_mj_local_path); logger.debug(f"Удален старый temp конфиг MJ: {config_mj_local_path}")
             except OSError as e: logger.warning(f"Не удалить старый temp конфиг MJ {config_mj_local_path}: {e}")
 
-        if not isinstance(config_mj, dict):
-            logger.error("config_mj не словарь! Невозможно сохранить.")
-        elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj):
-            logger.error("!!! Не удалось сохранить config_midjourney.json в B2!")
+        # Убедимся, что save_b2_json доступна
+        if 'save_b2_json' in globals() and callable(globals()['save_b2_json']):
+            if not isinstance(config_mj, dict):
+                logger.error("config_mj не словарь! Невозможно сохранить.")
+            elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj):
+                logger.error("!!! Не удалось сохранить config_midjourney.json в B2!")
+            else:
+                logger.info("✅ config_midjourney.json сохранен в B2.")
+                if config_mj_local_path and Path(config_mj_local_path).exists():
+                    try: os.remove(config_mj_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_local_path}")
+                    except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_local_path} после сохранения: {e}")
         else:
-            logger.info("✅ config_midjourney.json сохранен в B2.")
-            if config_mj_local_path and Path(config_mj_local_path).exists():
-                try: os.remove(config_mj_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_local_path}")
-                except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_local_path} после сохранения: {e}")
+            logger.error("Функция save_b2_json не найдена! Невозможно сохранить config_mj.")
+
 
         logger.info(f"✅ Работа generate_media.py успешно завершена для ID {generation_id}.")
 
