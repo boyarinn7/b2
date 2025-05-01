@@ -810,6 +810,7 @@ def main():
     Основная функция скрипта generate_media.py.
     Обрабатывает разные состояния задачи, генерирует заголовок с текстом,
     запускает апскейл и генерацию видео.
+    Включает вызов OpenAI для форматирования текста сарказма.
     """
     # --- Инициализация переменных перед try блоком ---
     # config и logger уже должны быть инициализированы ГЛОБАЛЬНО выше
@@ -858,6 +859,8 @@ def main():
     config_mj = None
     local_image_path = None # Путь к финальному PNG для загрузки
     video_path = None # Путь к финальному MP4 для загрузки
+    # --- Добавляем переменные для данных от OpenAI ---
+    prompts_config_data = {} # Инициализируем здесь, чтобы была доступна позже
 
     # --- ИСПРАВЛЕНИЕ: Определяем timestamp_suffix и пути здесь, чтобы они были доступны в finally ---
     timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -888,19 +891,15 @@ def main():
         # --- Извлечение полей из content_data ---
         topic = content_data.get("topic", "Нет темы")
         text_for_title = topic
-        # <<< ИЗМЕНЕНИЕ: Получаем selected_focus, но не падаем, если его нет >>>
         selected_focus = content_data.get("selected_focus") # Может быть None
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
         final_runway_prompt = content_data.get("final_runway_prompt", "")
         logger.info(f"Тема: '{topic[:100]}...'")
-        # <<< ИЗМЕНЕНИЕ: Логируем фокус, если он есть >>>
         if selected_focus:
             logger.info(f"Выбранный фокус: {selected_focus}")
         else:
             logger.warning("⚠️ Ключ 'selected_focus' отсутствует в данных контента.")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         # ------------------------------------
 
         # +++ ИЗВЛЕЧЕНИЕ ТЕКСТА САРКАЗМА +++
@@ -943,6 +942,132 @@ def main():
         if sarcasm_comment_text: logger.info(f"Текст для картинки сарказма: '{sarcasm_comment_text[:60]}...'")
         else: logger.info("Текст сарказма не найден в данных контента.")
         # +++++++++++++++++++++++++++++++++++++
+
+        # +++ НОВЫЙ БЛОК: Получение форматирования от OpenAI +++
+        formatted_sarcasm_text = None
+        suggested_sarcasm_font_size = None
+        default_sarcasm_font_size = 60 # Размер по умолчанию, если OpenAI не ответит
+
+        if sarcasm_comment_text:
+            logger.info("Запрос форматирования текста сарказма у OpenAI...")
+            # Убедимся, что клиент OpenAI инициализирован
+            if not openai_client_instance:
+                # Предполагаем, что функция _initialize_openai_client() определена где-то выше
+                if '_initialize_openai_client' in globals() and callable(globals()['_initialize_openai_client']):
+                    if not _initialize_openai_client():
+                        logger.error("Клиент OpenAI недоступен для форматирования сарказма.")
+                    # Если инициализация не удалась, openai_client_instance останется None
+                else:
+                    logger.error("Функция _initialize_openai_client не найдена!")
+
+
+            if openai_client_instance:
+                # Загрузка конфигурации промптов (если еще не загружена)
+                # Убедитесь, что переменная prompts_config_data доступна в этой области видимости
+                if not prompts_config_data: # Проверяем, пуст ли словарь
+                     prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
+                     if prompts_config_path_str:
+                         prompts_config_path = Path(prompts_config_path_str)
+                         if not prompts_config_path.is_absolute():
+                             # Предполагаем, что BASE_DIR определена глобально
+                             if 'BASE_DIR' not in globals():
+                                 logger.error("Глобальная переменная BASE_DIR не найдена!")
+                                 # Обработка ошибки или выход
+                             else:
+                                 prompts_config_path = BASE_DIR / prompts_config_path
+
+                         # Предполагаем, что load_json_config импортирована
+                         if 'load_json_config' in globals() and callable(globals()['load_json_config']):
+                             prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+                         else:
+                              logger.error("Функция load_json_config не найдена!")
+                              prompts_config_data = {}
+                     else:
+                         logger.error("Путь к prompts_config не найден!")
+                         prompts_config_data = {} # Предотвращаем ошибку ниже
+
+                # Получаем настройки промпта форматирования
+                formatting_prompt_settings = prompts_config_data.get("sarcasm", {}).get("image_formatting", {})
+                formatting_prompt_template = formatting_prompt_settings.get("template")
+                formatting_max_tokens = int(formatting_prompt_settings.get("max_tokens", 300))
+                formatting_temperature = float(formatting_prompt_settings.get("temperature", 0.5))
+
+                if formatting_prompt_template:
+                    prompt_text_for_formatting = formatting_prompt_template.format(
+                        sarcasm_text_input=sarcasm_comment_text
+                    )
+                    try:
+                        # Используем модель из конфига (например, gpt-4o)
+                        # Убедитесь, что OPENAI_MODEL определена глобально или доступна
+                        if 'OPENAI_MODEL' not in globals(): OPENAI_MODEL = "gpt-4o" # Fallback
+
+                        response = openai_client_instance.chat.completions.create(
+                            model=OPENAI_MODEL,
+                            messages=[{"role": "user", "content": prompt_text_for_formatting}],
+                            max_tokens=formatting_max_tokens,
+                            temperature=formatting_temperature,
+                            response_format={"type": "json_object"} # Ожидаем JSON
+                        )
+
+                        if response.choices and response.choices[0].message and response.choices[0].message.content:
+                            response_json_str = response.choices[0].message.content.strip()
+                            logger.debug(f"Ответ OpenAI (форматирование сарказма): {response_json_str}")
+                            try:
+                                formatting_result = json.loads(response_json_str)
+                                fmt_text = formatting_result.get("formatted_text")
+                                fnt_size = formatting_result.get("font_size")
+
+                                # Валидация ответа
+                                if isinstance(fmt_text, str) and fmt_text.strip():
+                                    formatted_sarcasm_text = fmt_text
+                                else:
+                                    logger.warning("OpenAI вернул некорректный 'formatted_text'.")
+
+                                if isinstance(fnt_size, int) and 10 < fnt_size < 200:
+                                    suggested_sarcasm_font_size = fnt_size
+                                else:
+                                    logger.warning(f"OpenAI вернул некорректный 'font_size': {fnt_size}.")
+
+                                if formatted_sarcasm_text and suggested_sarcasm_font_size:
+                                     logger.info(f"Получены рекомендации от OpenAI: Размер={suggested_sarcasm_font_size}, Текст='{formatted_sarcasm_text[:50].replace('\n','\\n')}...'")
+                                else:
+                                     logger.warning("Не удалось получить валидные данные форматирования от OpenAI.")
+
+                            except json.JSONDecodeError:
+                                logger.error(f"Ошибка декодирования JSON ответа OpenAI: {response_json_str}")
+                            except Exception as parse_err:
+                                logger.error(f"Ошибка парсинга ответа OpenAI: {parse_err}", exc_info=True)
+                        else:
+                            logger.error("OpenAI вернул пустой ответ на запрос форматирования.")
+
+                    # Обработка ошибок OpenAI API
+                    except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI: {e}")
+                    except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI: {e}")
+                    except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI: {e}")
+                    except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI: {e.status_code} - {e.response}")
+                    except openai.BadRequestError as e: logger.exception(f"Ошибка неверного запроса OpenAI: {e}")
+                    except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI: {e}")
+                    except Exception as e:
+                        logger.error(f"Неизвестная ошибка при запросе форматирования к OpenAI: {e}", exc_info=True)
+                else:
+                    logger.error("Промпт 'sarcasm.image_formatting.template' не найден в prompts_config.json.")
+            else:
+                 logger.error("Клиент OpenAI не инициализирован, форматирование невозможно.")
+        else:
+            logger.info("Текст сарказма отсутствует, форматирование не требуется.")
+
+        # Fallback, если OpenAI не сработал
+        if not formatted_sarcasm_text:
+            logger.warning("Используется исходный текст сарказма для отрисовки (без форматирования OpenAI).")
+            formatted_sarcasm_text = sarcasm_comment_text # Используем исходный текст
+            # Можно добавить логику для удаления переносов, если они есть в исходном
+            if formatted_sarcasm_text: formatted_sarcasm_text = formatted_sarcasm_text.replace('\n', ' ')
+
+        if not suggested_sarcasm_font_size:
+            logger.warning(f"Используется размер шрифта по умолчанию: {default_sarcasm_font_size}")
+            suggested_sarcasm_font_size = default_sarcasm_font_size
+
+        # +++ КОНЕЦ НОВОГО БЛОКА +++
 
         # --- Загрузка config_mj ---
         logger.info(f"Загрузка состояния: {CONFIG_MJ_REMOTE_PATH}...")
@@ -1001,6 +1126,13 @@ def main():
             logger.info(f"Создана временная папка: {temp_dir_path}")
             # ------------------------------------
 
+            # ==================================================================
+            # ||                                                              ||
+            # ||   БЛОК ОБРАБОТКИ СЦЕНАРИЕВ (use-mock, upscale, imagine)      ||
+            # ||   ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ                                     ||
+            # ||   ... (весь ваш существующий код для этих сценариев) ...     ||
+            # ||                                                              ||
+            # ==================================================================
             if use_mock_flag:
                 # --- Сценарий 0: Принудительный Mock ---
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
@@ -1129,20 +1261,22 @@ def main():
 
                 # --- Выбор картинки для Runway ---
                 logger.info("Выбор лучшего изображения для Runway...")
-                prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
-                prompts_config_data = {}
-                if prompts_config_path_str:
-                    # <<< ИЗМЕНЕНИЕ: Убедимся, что путь абсолютный >>>
-                    prompts_config_path = Path(prompts_config_path_str)
-                    if not prompts_config_path.is_absolute():
-                        prompts_config_path = BASE_DIR / prompts_config_path
-                    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-                    prompts_config_data = load_json_config(str(prompts_config_path)) or {}
-                else: logger.error("Путь к prompts_config не найден!")
+                # Загрузка prompts_config_data, если еще не загружен
+                if not prompts_config_data:
+                     prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
+                     if prompts_config_path_str:
+                         prompts_config_path = Path(prompts_config_path_str)
+                         if not prompts_config_path.is_absolute(): prompts_config_path = BASE_DIR / prompts_config_path
+                         if 'load_json_config' in globals() and callable(globals()['load_json_config']):
+                             prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+                         else: logger.error("Функция load_json_config не найдена!")
+                     else: logger.error("Путь к prompts_config не найден!")
+
                 visual_analysis_settings = prompts_config_data.get("visual_analysis", {}).get("image_selection", {})
                 best_index_runway = 0
                 if callable(select_best_image):
-                    if _initialize_openai_client():
+                    if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
+                    if openai_client_instance:
                         best_index_runway = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
                     elif openai is None: logger.warning("Модуль OpenAI недоступен. Используется индекс 0 для Runway.")
                     else: logger.warning("Клиент OpenAI не инициализирован. Используется индекс 0 для Runway.")
@@ -1159,60 +1293,45 @@ def main():
                 logger.info(f"Индекс для заголовка: {title_index}, URL: {image_for_title_url[:60]}...")
 
                 # --- Определение шрифта ---
-                # <<< ИЗМЕНЕНИЕ: Логика определения шрифта с fallback на default >>>
                 final_font_path = None
                 logger.info("Определение шрифта для заголовка...")
                 creative_config_path_str = config.get('FILE_PATHS.creative_config')
                 creative_config_data = {}
                 if creative_config_path_str:
-                    # <<< ИЗМЕНЕНИЕ: Убедимся, что путь абсолютный >>>
                     creative_config_path = Path(creative_config_path_str)
-                    if not creative_config_path.is_absolute():
-                        creative_config_path = BASE_DIR / creative_config_path
-                    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-                    creative_config_data = load_json_config(str(creative_config_path)) or {}
-                else:
-                    logger.error("Путь к creative_config не найден!")
+                    if not creative_config_path.is_absolute(): creative_config_path = BASE_DIR / creative_config_path
+                    if 'load_json_config' in globals() and callable(globals()['load_json_config']):
+                         creative_config_data = load_json_config(str(creative_config_path)) or {}
+                    else: logger.error("Функция load_json_config не найдена!")
+                else: logger.error("Путь к creative_config не найден!")
 
                 fonts_mapping = creative_config_data.get("FOCUS_FONT_MAPPING", {})
-                fonts_folder_rel = config.get("FILE_PATHS.fonts_folder", "fonts/") # Не используется напрямую здесь, но может быть полезен
                 default_font_rel_path = fonts_mapping.get("__default__")
 
                 if not default_font_rel_path:
-                    logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан в FOCUS_FONT_MAPPING!")
-                    # Можно установить жестко заданный путь или прервать выполнение
-                    # Пока прерываем, чтобы обратить внимание на проблему конфигурации
-                    raise ValueError("Шрифт по умолчанию не настроен в creative_config.json")
+                    logger.error("Критическая ошибка: Шрифт по умолчанию '__default__' не задан!")
+                    raise ValueError("Шрифт по умолчанию не настроен")
 
                 font_rel_path = None
-                if selected_focus and isinstance(selected_focus, str): # Проверяем, что фокус есть и это строка
+                if selected_focus and isinstance(selected_focus, str):
                     font_rel_path = fonts_mapping.get(selected_focus)
-                    if font_rel_path:
-                        logger.info(f"Найден шрифт для фокуса '{selected_focus}': {font_rel_path}")
-                    else:
-                        logger.warning(f"Шрифт для фокуса '{selected_focus}' не найден в FOCUS_FONT_MAPPING. Будет использован шрифт по умолчанию.")
-                else:
-                    # selected_focus отсутствует или имеет неверный тип
-                    logger.warning(f"Ключ 'selected_focus' отсутствует или некорректен в данных контента ({selected_focus}). Будет использован шрифт по умолчанию.")
-                    # font_rel_path остается None
+                    if font_rel_path: logger.info(f"Найден шрифт для фокуса '{selected_focus}': {font_rel_path}")
+                    else: logger.warning(f"Шрифт для фокуса '{selected_focus}' не найден. Используется дефолтный.")
+                else: logger.warning(f"Ключ 'selected_focus' отсутствует/некорректен. Используется дефолтный.")
 
-                # Выбираем финальный относительный путь
                 final_rel_path = font_rel_path if font_rel_path else default_font_rel_path
                 logger.info(f"Используемый относительный путь к шрифту: {final_rel_path}")
 
-                # Формируем абсолютный путь и проверяем файл
                 font_path_abs = BASE_DIR / final_rel_path
                 if font_path_abs.is_file():
                     final_font_path = str(font_path_abs)
                     logger.info(f"Финальный абсолютный путь к шрифту: {final_font_path}")
                 else:
-                    logger.error(f"Файл шрифта не найден по пути: {font_path_abs}")
-                    # Если не нашли даже шрифт по умолчанию (что странно, т.к. проверили default_font_rel_path)
+                    logger.error(f"Файл шрифта не найден: {font_path_abs}")
                     if final_rel_path == default_font_rel_path:
-                         logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не найден даже файл шрифта по умолчанию: {font_path_abs}")
+                         logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не найден файл шрифта по умолчанию: {font_path_abs}")
                          raise FileNotFoundError(f"Не найден файл шрифта по умолчанию: {font_path_abs}")
                     else:
-                         # Если не нашли шрифт для фокуса, пытаемся использовать дефолтный
                          logger.warning(f"Попытка использовать шрифт по умолчанию: {default_font_rel_path}")
                          font_path_abs_default = BASE_DIR / default_font_rel_path
                          if font_path_abs_default.is_file():
@@ -1222,11 +1341,7 @@ def main():
                              logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Файл шрифта по умолчанию также не найден: {font_path_abs_default}")
                              raise FileNotFoundError(f"Не найден файл шрифта по умолчанию: {font_path_abs_default}")
 
-                if not final_font_path:
-                     # Эта ветка не должна достигаться при правильной логике выше, но на всякий случай
-                     logger.critical("Не удалось определить финальный путь к шрифту!")
-                     raise RuntimeError("Не удалось определить финальный путь к шрифту")
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                if not final_font_path: raise RuntimeError("Не удалось определить финальный путь к шрифту")
 
                 # --- Создание картинки-заголовка ---
                 logger.info("Создание изображения-заголовка...")
@@ -1237,7 +1352,8 @@ def main():
                     logger.info(f"Базовое изображение для заголовка скачано: {title_base_path.name}")
 
                     # Получаем рекомендации от Vision, передаем ТОЛЬКО тему
-                    logger.info(f"Запрос рекомендаций по размещению для текста (тема): '{text_for_title[:100]}...'") # Используем text_for_title
+                    logger.info(f"Запрос рекомендаций по размещению для текста (тема): '{text_for_title[:100]}...'")
+                    if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
                     placement_suggestions = get_text_placement_suggestions(
                         image_url=image_for_title_url,
                         text=text_for_title, # <<< Передаем только тему
@@ -1245,15 +1361,10 @@ def main():
                         image_height=PLACEHOLDER_HEIGHT
                     )
 
-                    # Параметры по умолчанию для фона
-                    title_padding = 60
-                    title_bg_blur_radius = 0
-                    title_bg_opacity = 0
+                    title_padding = 60; title_bg_blur_radius = 0; title_bg_opacity = 0
 
-                    if PIL_AVAILABLE and callable(add_text_to_image): # Используем флаг PIL_AVAILABLE
-                        # Создаем переменную для лога ПЕРЕД f-строкой
+                    if PIL_AVAILABLE and callable(add_text_to_image):
                         log_text_preview = placement_suggestions['formatted_text'].replace('\n', '\\n')
-                        # Используем переменную в f-строке
                         logger.info(f"Параметры для add_text_to_image: text='{log_text_preview}', color={placement_suggestions['text_color']}, pos={placement_suggestions['position']}")
 
                         if add_text_to_image(
@@ -1262,13 +1373,12 @@ def main():
                             font_path_str=final_font_path, # <<< Используем определенный путь
                             output_path_str=str(final_title_image_path),
                             text_color_hex=placement_suggestions["text_color"], # Передаем HEX цвет
-                            position=placement_suggestions["position"], # Рекомендуемая позиция (должна быть center, center)
+                            position=placement_suggestions["position"], # Рекомендуемая позиция
                             padding=title_padding,
                             haze_opacity=HAZE_OPACITY_DEFAULT, # Добавляем дымку
-                            bg_blur_radius=title_bg_blur_radius, # Передаем 0
-                            bg_opacity=title_bg_opacity, # Передаем 0
+                            bg_blur_radius=title_bg_blur_radius,
+                            bg_opacity=title_bg_opacity,
                             logger_instance=logger
-                            # Параметры обводки и автоподбора размера передаются по умолчанию в саму функцию
                         ):
                             logger.info(f"✅ Изображение-заголовок с текстом создано: {final_title_image_path.name}")
                             local_image_path = final_title_image_path # Это финальный PNG для загрузки
@@ -1278,10 +1388,10 @@ def main():
                             logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
                     elif not PIL_AVAILABLE:
                          logger.warning("Pillow недоступен, текст на заголовок не добавлен.")
-                         local_image_path = title_base_path # Используем базовое изображение
+                         local_image_path = title_base_path
                     else:
                          logger.error("Функция add_text_to_image не найдена/импортирована!")
-                         local_image_path = title_base_path # Используем базовое изображение
+                         local_image_path = title_base_path
                          logger.warning("В качестве финального PNG будет использовано базовое изображение без текста.")
                 else:
                     logger.error(f"Не удалось скачать базовое изображение для заголовка: {image_for_title_url}")
@@ -1362,50 +1472,60 @@ def main():
                 logger.warning("Нет активной задачи MJ, результатов или флага 'generation'. Пропуск.")
                 local_image_path = None; video_path = None
 
-            # +++ ГЕНЕРАЦИЯ КАРТИНКИ С САРКАЗМОМ +++
+            # +++ ОБНОВЛЕННЫЙ БЛОК: Генерация картинки с сарказмом (используя данные OpenAI) +++
             sarcasm_image_path = None # Инициализируем здесь
-            # Проверяем наличие текста, Pillow и функции add_text_to_image_sarcasm
-            if sarcasm_comment_text and PIL_AVAILABLE and callable(add_text_to_image_sarcasm):
-                logger.info("Генерация изображения с сарказмом...")
-                # Предполагаем наличие BASE_DIR, SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX
-                sarcasm_base_image_path_abs = BASE_DIR / SARCASM_BASE_IMAGE_REL_PATH
-                sarcasm_font_path_abs = BASE_DIR / SARCASM_FONT_REL_PATH
-                # Создаем путь для временного файла картинки с сарказмом
-                sarcasm_output_path_temp = temp_dir_path / f"{generation_id}{SARCASM_IMAGE_SUFFIX}"
 
-                # Проверяем наличие базового изображения и шрифта
-                if not sarcasm_base_image_path_abs.is_file():
-                    logger.error(f"Базовое изображение Барона не найдено: {sarcasm_base_image_path_abs}")
-                elif not sarcasm_font_path_abs.is_file():
-                    logger.error(f"Шрифт для сарказма не найден: {sarcasm_font_path_abs}")
-                else:
-                    # Вызываем новую функцию из sarcasm_image_utils
-                    sarcasm_success = add_text_to_image_sarcasm(
-                        image_path_str=str(sarcasm_base_image_path_abs),
-                        text=sarcasm_comment_text,
-                        font_path_str=str(sarcasm_font_path_abs),
-                        output_path_str=str(sarcasm_output_path_temp),
-                        text_color_hex="#FFFFFF", # Белый
-                        align='right',
-                 #      vertical_align='center',
-                        padding_fraction=0.05, # Отступы (можно настроить)
-                        initial_font_size=80, # Можно вынести в конфиг
-                        min_font_size=24,     # Можно вынести в конфиг
-                        logger_instance=logger # Передаем логгер
-                    )
-                    if sarcasm_success:
-                        sarcasm_image_path = sarcasm_output_path_temp # Запоминаем путь для загрузки
-                        logger.info(f"✅ Изображение с сарказмом создано: {sarcasm_image_path.name}")
+            # Проверяем наличие ТЕПЕРЬ УЖЕ ОТФОРМАТИРОВАННОГО текста, размера и Pillow
+            # Убедимся, что функция add_text_to_image_sarcasm_openai_ready импортирована и доступна
+            if 'add_text_to_image_sarcasm_openai_ready' in globals() and callable(globals()['add_text_to_image_sarcasm_openai_ready']):
+                if formatted_sarcasm_text and suggested_sarcasm_font_size and PIL_AVAILABLE:
+                    logger.info("Генерация изображения с сарказмом (с форматированием OpenAI)...")
+                    # Пути к ресурсам (как и раньше)
+                    # Убедимся, что SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX доступны
+                    if 'SARCASM_BASE_IMAGE_REL_PATH' not in globals() or 'SARCASM_FONT_REL_PATH' not in globals() or 'SARCASM_IMAGE_SUFFIX' not in globals():
+                         logger.error("Константы для сарказма не определены!")
                     else:
-                        logger.error("Не удалось создать изображение с сарказмом.")
-            # Логируем причины пропуска генерации картинки с сарказмом
-            elif not sarcasm_comment_text:
-                logger.info("Пропуск генерации картинки с сарказмом (нет текста).")
-            elif not PIL_AVAILABLE:
-                logger.warning("Pillow недоступен, пропуск генерации картинки с сарказмом.")
-            else: # Если callable(add_text_to_image_sarcasm) == False
-                logger.error("Функция add_text_to_image_sarcasm не найдена!")
-            # ++++++++++++++++++++++++++++++++++++++++++++++
+                        sarcasm_base_image_path_abs = BASE_DIR / SARCASM_BASE_IMAGE_REL_PATH
+                        sarcasm_font_path_abs = BASE_DIR / SARCASM_FONT_REL_PATH
+                        sarcasm_output_path_temp = temp_dir_path / f"{generation_id}{SARCASM_IMAGE_SUFFIX}"
+
+                        # Проверка наличия базового изображения и шрифта
+                        if not sarcasm_base_image_path_abs.is_file():
+                            logger.error(f"Базовое изображение Барона не найдено: {sarcasm_base_image_path_abs}")
+                        elif not sarcasm_font_path_abs.is_file():
+                            logger.error(f"Шрифт для сарказма не найден: {sarcasm_font_path_abs}")
+                        else:
+                            # Вызываем НОВУЮ функцию отрисовки
+                            sarcasm_success = add_text_to_image_sarcasm_openai_ready(
+                                image_path_str=str(sarcasm_base_image_path_abs),
+                                formatted_text=formatted_sarcasm_text, # <-- Текст от OpenAI
+                                suggested_font_size=suggested_sarcasm_font_size, # <-- Размер от OpenAI
+                                font_path_str=str(sarcasm_font_path_abs),
+                                output_path_str=str(sarcasm_output_path_temp),
+                                # Остальные параметры можно оставить по умолчанию или настроить
+                                text_color_hex="#FFFFFF",
+                                align='right',
+                                padding_fraction=0.05,
+                                stroke_width=2,
+                                stroke_color_hex="#404040",
+                                logger_instance=logger
+                            )
+                            if sarcasm_success:
+                                sarcasm_image_path = sarcasm_output_path_temp # Запоминаем путь для загрузки
+                                logger.info(f"✅ Изображение с сарказмом создано (OpenAI формат): {sarcasm_image_path.name}")
+                            else:
+                                logger.error("Не удалось создать изображение с сарказмом (OpenAI формат).")
+                # Логирование причин пропуска (если что-то пошло не так ДО вызова отрисовки)
+                elif not formatted_sarcasm_text:
+                    logger.info("Пропуск генерации картинки с сарказмом (нет форматированного текста).")
+                elif not suggested_sarcasm_font_size:
+                     logger.info("Пропуск генерации картинки с сарказмом (нет предложенного размера шрифта).")
+                elif not PIL_AVAILABLE:
+                    logger.warning("Pillow недоступен, пропуск генерации картинки с сарказмом.")
+            else:
+                 logger.error("Функция add_text_to_image_sarcasm_openai_ready не найдена!")
+            # +++ КОНЕЦ ОБНОВЛЕННОГО БЛОКА +++
+
 
             # --- Загрузка файлов в B2 ---
             target_folder_b2 = "666/"
@@ -1431,6 +1551,8 @@ def main():
 
             # +++ ЗАГРУЗКА КАРТИНКИ С САРКАЗМОМ +++
             if sarcasm_image_path and isinstance(sarcasm_image_path, Path) and sarcasm_image_path.is_file():
+                 # Убедимся, что SARCASM_IMAGE_SUFFIX доступен
+                 if 'SARCASM_IMAGE_SUFFIX' not in globals(): SARCASM_IMAGE_SUFFIX = "_sarcasm.png" # Fallback
                  b2_sarcasm_filename = f"{generation_id}{SARCASM_IMAGE_SUFFIX}" # Используем суффикс из конфига
                  upload_success_sarcasm = upload_to_b2(b2_client, B2_BUCKET_NAME, target_folder_b2, str(sarcasm_image_path), b2_sarcasm_filename)
                  if not upload_success_sarcasm: logger.error(f"!!! ОШИБКА ЗАГРУЗКИ КАРТИНКИ С САРКАЗМОМ {b2_sarcasm_filename} !!!")
@@ -1446,8 +1568,22 @@ def main():
             if uploaded_items: logger.info(f"✅ Успешно загружены: {', '.join(uploaded_items)}.")
 
             # Проверяем все три флага
-            if not all([upload_success_img, upload_success_vid, upload_success_sarcasm]) and (local_image_path or video_path or sarcasm_image_path):
+            # Убедимся, что local_image_path, video_path, sarcasm_image_path определены перед проверкой
+            img_exists = local_image_path and local_image_path.is_file()
+            vid_exists = video_path and video_path.is_file()
+            sarc_exists = sarcasm_image_path and sarcasm_image_path.is_file()
+
+            # Проверяем, были ли попытки создать файлы (пути не None)
+            attempted_img = local_image_path is not None
+            attempted_vid = video_path is not None
+            attempted_sarc = sarcasm_image_path is not None
+
+            # Логируем предупреждение, если хотя бы один файл пытались создать, но не загрузили
+            if (attempted_img and not upload_success_img) or \
+               (attempted_vid and not upload_success_vid) or \
+               (attempted_sarc and not upload_success_sarcasm):
                  logger.warning("⚠️ Не все созданные медиа файлы были успешно загружены.")
+
 
         # --- finally для очистки temp_dir_path ---
         finally:
@@ -1497,6 +1633,7 @@ def main():
         sys.exit(1)
     # --- Внешний finally для очистки временных файлов конфигов ---
     finally:
+        # Используем .locals() для безопасной проверки наличия переменных
         if 'generation_id' in locals() and generation_id and \
            'timestamp_suffix' in locals() and timestamp_suffix:
             if 'content_local_temp_path' in locals() and content_local_temp_path:
@@ -1504,18 +1641,18 @@ def main():
                 if content_temp_path_obj.exists():
                     try:
                         os.remove(content_temp_path_obj)
-                        if 'logger' in globals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path_obj}")
+                        if 'logger' in locals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path_obj}")
                     except OSError as e:
-                         if 'logger' in globals() and logger: logger.warning(f"Не удалить {content_temp_path_obj} (в finally): {e}")
+                         if 'logger' in locals() and logger: logger.warning(f"Не удалить {content_temp_path_obj} (в finally): {e}")
 
         if 'config_mj_local_path' in locals() and config_mj_local_path:
             config_mj_temp_path = Path(config_mj_local_path)
             if config_mj_temp_path.exists():
                 try:
                     os.remove(config_mj_temp_path)
-                    if 'logger' in globals() and logger: logger.debug(f"Удален temp конфиг MJ (в finally): {config_mj_temp_path}")
+                    if 'logger' in locals() and logger: logger.debug(f"Удален temp конфиг MJ (в finally): {config_mj_temp_path}")
                 except OSError as e:
-                     if 'logger' in globals() and logger: logger.warning(f"Не удалить {config_mj_temp_path} (в finally): {e}")
+                     if 'logger' in locals() and logger: logger.warning(f"Не удалить {config_mj_temp_path} (в finally): {e}")
 
 # === Точка входа ===
 if __name__ == "__main__":

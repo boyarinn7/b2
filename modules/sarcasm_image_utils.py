@@ -32,19 +32,19 @@ except ImportError:
          logger.setLevel(logging.DEBUG)
 
 # Вспомогательная функция
-def hex_to_rgba(hex_color, alpha=255):
-    """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
-    hex_color = hex_color.lstrip('#')
-    default_color = (0, 0, 0, alpha) # Черный по умолчанию
-    if len(hex_color) != 6:
-        logger.warning(f"Некорректный HEX цвет '{hex_color}'. Используется черный.")
-        return default_color
-    try:
-        rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        return rgb + (alpha,)
-    except ValueError:
-        logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется черный.")
-        return default_color
+#def hex_to_rgba(hex_color, alpha=255):
+#    """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
+#    hex_color = hex_color.lstrip('#')
+#    default_color = (0, 0, 0, alpha) # Черный по умолчанию
+#    if len(hex_color) != 6:
+#        logger.warning(f"Некорректный HEX цвет '{hex_color}'. Используется черный.")
+#        return default_color
+#    try:
+#        rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+#        return rgb + (alpha,)
+#    except ValueError:
+#        logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется черный.")
+#        return default_color
 
 # --- ИСПРАВЛЕННАЯ ВЕРСИЯ ФУНКЦИИ ---
 def add_text_to_image_sarcasm(
@@ -241,4 +241,164 @@ def add_text_to_image_sarcasm(
         log.error(f"Критическая ошибка в add_text_to_image_sarcasm: {e}", exc_info=True)
         return False
 # --- КОНЕЦ ИСПРАВЛЕННОЙ ВЕРСИИ ---
+
+# Вспомогательная функция
+def hex_to_rgba(hex_color, alpha=255):
+    """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
+    hex_color = hex_color.lstrip('#')
+    default_color = (0, 0, 0, alpha) # Черный по умолчанию
+    if len(hex_color) != 6:
+        logger.warning(f"Некорректный HEX цвет '{hex_color}'. Используется черный.")
+        return default_color
+    try:
+        rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return rgb + (alpha,)
+    except ValueError:
+        logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется черный.")
+        return default_color
+
+# --- ОБНОВЛЕННАЯ ФУНКЦИЯ ---
+def add_text_to_image_sarcasm_openai_ready(
+    image_path_str: str,
+    formatted_text: str, # Текст УЖЕ с переносами строк '\n' (от OpenAI)
+    suggested_font_size: int, # Размер шрифта, предложенный OpenAI
+    font_path_str: str,
+    output_path_str: str,
+    text_color_hex: str = "#FFFFFF",
+    align: str = 'right', # Выравнивание текста внутри блока
+    vertical_align: str = 'center', # Используется для расчета смещения Y
+    padding_fraction: float = 0.05, # Отступ как доля от ширины/высоты
+    stroke_width: int = 2,
+    stroke_color_hex: str = "#404040", # Обводка для белого текста
+    logger_instance=None # Возможность передать логгер извне
+    ):
+    """
+    Наносит ПРЕДВАРИТЕЛЬНО ОТФОРМАТИРОВАННЫЙ текст (с переносами \n)
+    на ПРАВУЮ ПОЛОВИНУ изображения с ЗАДАННЫМ размером шрифта.
+    Выравнивание по правому краю и вертикальное центрирование.
+    """
+    log = logger_instance if logger_instance else logger
+    if log.level > logging.DEBUG: log.setLevel(logging.DEBUG)
+    log.info(">>> Запуск add_text_to_image_sarcasm_openai_ready (v4)")
+    log.info(f"Получен текст:\n{formatted_text}")
+    log.info(f"Предложенный размер шрифта: {suggested_font_size}")
+
+    if not PIL_AVAILABLE:
+        log.error("Pillow недоступна. Невозможно добавить текст.")
+        return False
+    if not formatted_text or not formatted_text.strip():
+        log.error("Получен пустой текст для нанесения.")
+        return False
+    if suggested_font_size <= 0:
+        log.error(f"Получен некорректный размер шрифта: {suggested_font_size}")
+        return False
+
+    try:
+        base_image_path = Path(image_path_str)
+        font_path = Path(font_path_str)
+        output_path = Path(output_path_str)
+
+        if not base_image_path.is_file(): log.error(f"Изображение не найдено: {base_image_path}"); return False
+        if not font_path.is_file(): log.error(f"Шрифт не найден: {font_path}"); return False
+
+        log.info(f"Открытие базового изображения: {base_image_path.name}")
+        img = Image.open(base_image_path).convert("RGBA")
+        img_width, img_height = img.size
+        log.debug(f"Размеры изображения: {img_width}x{img_height}")
+
+        draw = ImageDraw.Draw(img)
+
+        # 1. Определить область для текста (правая половина с отступами) - БЕЗ ИЗМЕНЕНИЙ
+        padding_x = int(img_width * padding_fraction)
+        padding_y = int(img_height * padding_fraction)
+        text_area_x_start = img_width // 2 + padding_x
+        text_area_y_start = padding_y
+        text_area_width = img_width // 2 - 2 * padding_x
+        text_area_height = img_height - 2 * padding_y
+        log.info(f"Область текста: X={text_area_x_start}, Y={text_area_y_start}, W={text_area_width}, H={text_area_height}")
+
+        if text_area_width <= 0 or text_area_height <= 0:
+            log.error("Некорректная область текста (слишком маленькая или отрицательная)."); return False
+
+        # 2. Загрузка шрифта с предложенным размером
+        font = None
+        font_bytes = None
+        try:
+            with open(font_path, 'rb') as f_font: font_bytes = f_font.read()
+            font = ImageFont.truetype(io.BytesIO(font_bytes), suggested_font_size)
+            log.info(f"Шрифт '{font_path.name}' загружен с размером {suggested_font_size}.")
+        except Exception as font_load_err:
+             log.error(f"Ошибка загрузки шрифта '{font_path}' с размером {suggested_font_size}: {font_load_err}"); return False
+
+        # 3. Расчет финальных координат X, Y на основе размеров блока с ЗАДАННЫМ шрифтом
+        try:
+            # Получаем точные размеры текстового блока с переносами
+            bbox_final = draw.textbbox((0, 0), formatted_text, font=font, align=align)
+            final_text_width = bbox_final[2] - bbox_final[0]
+            final_text_height = bbox_final[3] - bbox_final[1]
+            log.debug(f"Финальные размеры блока текста (шрифт {suggested_font_size}): Ширина={final_text_width:.1f}, Высота={final_text_height:.1f}")
+
+            # --- Проверка на выход за границы (дополнительно) ---
+            if final_text_width > text_area_width or final_text_height > text_area_height:
+                log.warning(f"Текст с предложенным размером {suggested_font_size} выходит за границы области! "
+                            f"W: {final_text_width:.0f}/{text_area_width}, H: {final_text_height:.0f}/{text_area_height}. "
+                            f"Текст может быть обрезан.")
+            # ----------------------------------------------------
+
+        except Exception as final_bbox_err:
+             log.error(f"Ошибка расчета bbox для шрифта {suggested_font_size}: {final_bbox_err}"); return False
+
+        # Расчет X для выравнивания по правому краю
+        x = text_area_x_start + text_area_width - final_text_width
+        log.debug(f"Расчетная X (левый край блока): {x}")
+
+        # Расчет Y для вертикального центрирования
+        y = text_area_y_start + (text_area_height - final_text_height) / 2
+        log.debug(f"Расчетная Y (верхний край блока): {y}")
+
+        # Корректируем координаты, чтобы текст не уходил за пределы картинки (на всякий случай)
+        final_x = max(0, int(x))
+        final_y = max(0, int(y))
+        text_position = (final_x, final_y)
+        log.info(f"Финальная позиция текста (левый верх блока): {text_position}")
+
+        # 4. Нанесение текста
+        final_text_color = hex_to_rgba(text_color_hex)
+        final_stroke_color = hex_to_rgba(stroke_color_hex)
+        log_text_preview = formatted_text[:50].replace('\n', '\\n')
+        log.info(f"Нанесение текста '{log_text_preview}...' цветом {text_color_hex} с обводкой (размер: {suggested_font_size})")
+
+        try:
+             # Используем align='right' для выравнивания строк внутри блока
+             # Позиция text_position задает левый верхний угол блока
+             draw.text(
+                 text_position,
+                 formatted_text, # Используем текст с переносами от AI
+                 font=font,      # Используем шрифт с размером от AI
+                 fill=final_text_color,
+                 align=align, # Используем переданное выравнивание ('right')
+                 stroke_width=stroke_width,
+                 stroke_fill=final_stroke_color
+             )
+             log.debug("draw.text выполнен.")
+        except Exception as draw_err:
+             log.error(f"Ошибка вызова draw.text: {draw_err}", exc_info=True); return False
+
+        # 5. Сохранение результата
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_path, format='PNG')
+            log.info(f"✅ Изображение с текстом сарказма сохранено: {output_path.name}")
+            return True
+        except Exception as save_err:
+             log.error(f"Ошибка сохранения изображения {output_path}: {save_err}"); return False
+
+    except Exception as e:
+        log.error(f"Критическая ошибка в add_text_to_image_sarcasm_openai_ready: {e}", exc_info=True)
+        return False
+# --- КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ ---
+
+# --- Старая функция (можно удалить или оставить для сравнения) ---
+# def add_text_to_image_sarcasm(...): ...
+
 
