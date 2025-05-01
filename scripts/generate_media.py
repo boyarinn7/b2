@@ -883,11 +883,19 @@ def main():
         SARCASM_IMAGE_SUFFIX = config.get("FILE_PATHS.sarcasm_image_suffix", "_sarcasm.png")
         SARCASM_BASE_IMAGE_REL_PATH = config.get("FILE_PATHS.sarcasm_baron_image", "assets/Барон.png")
         SARCASM_FONT_REL_PATH = config.get("FILE_PATHS.sarcasm_font", "assets/fonts/Kurale-Regular.ttf")
-        # Другие константы, которые нужны только в main, можно получить здесь же
-        # Например:
-        # PLACEHOLDER_WIDTH = int(config.get("IMAGE_GENERATION.output_size", "1280x720").split('x')[0])
-        # PLACEHOLDER_HEIGHT = int(config.get("IMAGE_GENERATION.output_size", "1280x720").split('x')[1])
-        # ... и т.д.
+        # Получаем размеры здесь, чтобы они были доступны в main
+        output_size_str_local = config.get("IMAGE_GENERATION.output_size", f"{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}")
+        delimiter_local = next((d for d in ['x', '×', ':'] if d in output_size_str_local), 'x')
+        try:
+            width_str_local, height_str_local = output_size_str_local.split(delimiter_local)
+            PLACEHOLDER_WIDTH_LOCAL = int(width_str_local.strip())
+            PLACEHOLDER_HEIGHT_LOCAL = int(height_str_local.strip())
+        except ValueError:
+            logger.error(f"Ошибка парсинга размеров '{output_size_str_local}' внутри main. Используем глобальные {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}.")
+            PLACEHOLDER_WIDTH_LOCAL = PLACEHOLDER_WIDTH # Fallback на глобальные
+            PLACEHOLDER_HEIGHT_LOCAL = PLACEHOLDER_HEIGHT
+        # Используем локальные переменные для размеров дальше в main
+        # ... и т.д. для других констант, нужных только в main
 
         # Проверка, что значения получены (опционально, но полезно)
         if not SARCASM_IMAGE_SUFFIX: logger.warning("FILE_PATHS.sarcasm_image_suffix не найден в конфиге, используется '_sarcasm.png'.")
@@ -1171,7 +1179,8 @@ def main():
                 logger.warning(f"⚠️ Принудительный mock для ID: {generation_id}")
                 placeholder_text = f"MJ Timeout\n{topic[:60]}"
                 encoded_text = urllib.parse.quote(placeholder_text)
-                placeholder_url = f"https://placehold.co/{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}/{PLACEHOLDER_BG_COLOR}/{PLACEHOLDER_TEXT_COLOR}?text={encoded_text}"
+                # Используем локальные переменные для размеров
+                placeholder_url = f"https://placehold.co/{PLACEHOLDER_WIDTH_LOCAL}x{PLACEHOLDER_HEIGHT_LOCAL}/{PLACEHOLDER_BG_COLOR}/{PLACEHOLDER_TEXT_COLOR}?text={encoded_text}"
                 local_image_path = temp_dir_path / f"{generation_id}.{IMAGE_FORMAT}"
                 logger.info(f"Создание плейсхолдера: {placeholder_url}")
                 if not download_image(placeholder_url, str(local_image_path)):
@@ -1405,8 +1414,8 @@ def main():
                         placement_suggestions = get_text_placement_suggestions(
                             image_url=image_for_title_url,
                             text=text_for_title, # <<< Передаем только тему
-                            image_width=PLACEHOLDER_WIDTH,
-                            image_height=PLACEHOLDER_HEIGHT
+                            image_width=PLACEHOLDER_WIDTH_LOCAL, # Используем локальные размеры
+                            image_height=PLACEHOLDER_HEIGHT_LOCAL
                         )
                     else:
                         logger.error("Функция get_text_placement_suggestions не найдена!")
@@ -1545,7 +1554,8 @@ def main():
                     logger.info("Генерация изображения с сарказмом (с форматированием OpenAI)...")
                     # Пути к ресурсам (как и раньше)
                     # Убедимся, что SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX доступны
-                    if 'SARCASM_BASE_IMAGE_REL_PATH' not in locals() or 'SARCASM_FONT_REL_PATH' not in locals() or 'SARCASM_IMAGE_SUFFIX' not in locals():
+                    # Эти переменные были получены из конфига в начале main()
+                    if not SARCASM_BASE_IMAGE_REL_PATH or not SARCASM_FONT_REL_PATH or not SARCASM_IMAGE_SUFFIX:
                          logger.error("Константы для сарказма не определены в области видимости main!")
                     else:
                         sarcasm_base_image_path_abs = BASE_DIR / SARCASM_BASE_IMAGE_REL_PATH
