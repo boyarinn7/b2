@@ -238,178 +238,157 @@ def get_text_placement_suggestions(image_url: str, text: str, image_width: int, 
         Или словарь со значениями по умолчанию при ошибке.
     """
     # Используем глобальные переменные, определенные в основном скрипте
+    # Убедитесь, что эти переменные действительно доступны в области видимости вызова!
     global openai_client_instance, config, logger, BASE_DIR, OPENAI_VISION_MODEL
+
+    # Проверка наличия необходимых глобальных переменных
+    if 'config' not in globals() or config is None:
+        logging.critical("Глобальный объект 'config' не инициализирован в get_text_placement_suggestions.")
+        # Возвращаем дефолт, так как логгер может быть недоступен
+        return { "position": ('center', 'center'), "font_size": 70, "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", "text_color": "#333333" }
+    if 'logger' not in globals() or logger is None:
+        logging.critical("Глобальный объект 'logger' не инициализирован в get_text_placement_suggestions.")
+        return { "position": ('center', 'center'), "font_size": 70, "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", "text_color": "#333333" }
+    if 'BASE_DIR' not in globals() or BASE_DIR is None:
+        logger.error("Глобальная переменная BASE_DIR не найдена в get_text_placement_suggestions!")
+        return { "position": ('center', 'center'), "font_size": 70, "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", "text_color": "#333333" }
+
 
     logger.info(f"Получение рекомендаций по размещению текста для URL: {image_url[:60]}...")
 
-    # --- ИЗМЕНЕНИЕ: Цвет по умолчанию теперь ТЕМНО-СЕРЫЙ ---
     default_suggestions = {
-        "position": ('center', 'center'), # Фиксировано
-        "font_size": 70, # Начальный размер по умолчанию
-        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует", # Берем первую строку или дефолт
-        "text_color": "#333333" # Темно-серый по умолчанию
+        "position": ('center', 'center'),
+        "font_size": 70,
+        "formatted_text": text.split('\n')[0] if text else "Текст отсутствует",
+        "text_color": "#333333"
     }
-    # Извлекаем только сам текст заголовка для дефолта
     actual_text_for_default = text.split('\n')[0] if text else "Текст отсутствует"
     default_suggestions["formatted_text"] = actual_text_for_default
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     if not image_url or not text:
         logger.warning("URL изображения или текст отсутствуют. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
 
-    # Инициализация клиента OpenAI, если нужно (используем функцию из основного скрипта)
-    # Предполагается, что _initialize_openai_client() существует и работает
+    # Инициализация клиента OpenAI, если нужно
     if not openai_client_instance:
-        # Вызываем функцию инициализации, определенную глобально в generate_media.py
-        # Она должна вернуть True при успехе или False при ошибке
-        if '_initialize_openai_client' not in globals() or not _initialize_openai_client():
-             logger.error("Клиент OpenAI недоступен для получения рекомендаций. Возврат стандартных параметров (темно-серый текст).")
+        # Предполагаем, что _initialize_openai_client определена глобально
+        if '_initialize_openai_client' in globals() and callable(globals()['_initialize_openai_client']):
+             if not _initialize_openai_client():
+                 logger.error("Клиент OpenAI недоступен для получения рекомендаций. Возврат стандартных параметров (темно-серый текст).")
+                 return default_suggestions
+        else:
+             logger.error("Функция _initialize_openai_client не найдена! Невозможно инициализировать OpenAI.")
              return default_suggestions
 
-    # --- Загрузка промпта и параметров из prompts_config.json ---
+
+    # Загрузка промпта
     prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
     prompts_config_data = {}
     if prompts_config_path_str:
-        # Убедимся, что путь абсолютный
         prompts_config_path = Path(prompts_config_path_str)
         if not prompts_config_path.is_absolute():
-            # Предполагаем, что BASE_DIR определен глобально
-            if 'BASE_DIR' not in globals():
-                 logger.error("Глобальная переменная BASE_DIR не найдена! Невозможно определить абсолютный путь к prompts_config.")
-                 return default_suggestions
             prompts_config_path = BASE_DIR / prompts_config_path
-
-        # Предполагаем, что load_json_config импортирована и доступна
-        if 'load_json_config' not in globals():
+        # Используем глобальную функцию load_json_config
+        if 'load_json_config' in globals() and callable(globals()['load_json_config']):
+            prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+        else:
             logger.error("Функция load_json_config не найдена! Невозможно загрузить промпт.")
             return default_suggestions
-        prompts_config_data = load_json_config(str(prompts_config_path)) or {}
     else:
         logger.error("Путь к prompts_config не найден! Невозможно загрузить промпт. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
 
-    # Получаем настройки промпта (используем обновленный промпт из prompts_config_color_fix_v2)
     prompt_settings = prompts_config_data.get("text_placement", {}).get("suggestions", {})
     prompt_template = prompt_settings.get("template")
     max_tokens = int(prompt_settings.get("max_tokens", 300))
-    temperature = float(prompt_settings.get("temperature", 0.5)) # Используем температуру из обновленного промпта
+    temperature = float(prompt_settings.get("temperature", 0.5))
 
     if not prompt_template:
         logger.error("Промпт 'text_placement.suggestions.template' не найден. Возврат стандартных параметров (темно-серый текст).")
         return default_suggestions
-    # --- Конец загрузки промпта ---
 
-    # Формируем промпт с актуальными данными
-    prompt = prompt_template.format(image_width=image_width, image_height=image_height, text=text) # Передаем весь текст с контекстом
-
-    # Формируем контент для запроса к Vision API
+    prompt = prompt_template.format(image_width=image_width, image_height=image_height, text=text)
     messages_content = [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": image_url}}
     ]
 
     try:
-        # Предполагаем, что OPENAI_VISION_MODEL определена глобально
-        if 'OPENAI_VISION_MODEL' not in globals():
-             logger.error("Глобальная переменная OPENAI_VISION_MODEL не найдена!")
-             return default_suggestions
+        # Проверка наличия OPENAI_VISION_MODEL
+        if 'OPENAI_VISION_MODEL' not in globals() or not OPENAI_VISION_MODEL:
+             logger.error("Глобальная переменная OPENAI_VISION_MODEL не найдена или пуста!")
+             # Пытаемся получить из конфига как fallback
+             global OPENAI_VISION_MODEL_MAIN # Предполагаем, что она есть в main
+             if 'OPENAI_VISION_MODEL_MAIN' in globals() and OPENAI_VISION_MODEL_MAIN:
+                 OPENAI_VISION_MODEL = OPENAI_VISION_MODEL_MAIN
+                 logger.warning(f"Используем OPENAI_VISION_MODEL_MAIN: {OPENAI_VISION_MODEL}")
+             else:
+                 logger.error("Не удалось определить модель Vision. Возврат стандартных параметров.")
+                 return default_suggestions
+
 
         logger.info(f"Запрос к OpenAI Vision ({OPENAI_VISION_MODEL}) для рекомендаций по тексту (t={temperature}, max_tokens={max_tokens})...")
         response = openai_client_instance.chat.completions.create(
-            model=OPENAI_VISION_MODEL, # Используем модель Vision
+            # --- ИСПРАВЛЕНИЕ: Используем OPENAI_VISION_MODEL ---
+            model=OPENAI_VISION_MODEL,
+            # ---------------------------------------------
             messages=[{"role": "user", "content": messages_content}],
             max_tokens=max_tokens,
             temperature=temperature,
-            response_format={"type": "json_object"} # Просим JSON ответ
+            response_format={"type": "json_object"}
         )
 
         if response.choices and response.choices[0].message and response.choices[0].message.content:
             response_text = response.choices[0].message.content.strip()
             logger.debug(f"Сырой ответ от Vision (ожидается JSON): {response_text}")
 
-            # Парсим JSON ответ
             try:
                 suggestions = json.loads(response_text)
-                # Валидация полученных данных
                 pos_list = suggestions.get("position")
                 size = suggestions.get("font_size")
                 fmt_text = suggestions.get("formatted_text")
                 color_hex = suggestions.get("text_color")
 
-                # Проверка и корректировка позиции (должна быть ['center', 'center'])
-                valid_pos = default_suggestions["position"] # По умолчанию
+                valid_pos = default_suggestions["position"]
                 if isinstance(pos_list, list) and pos_list == ['center', 'center']:
                     valid_pos = tuple(pos_list)
-                else:
-                    logger.warning(f"Получена некорректная позиция: {pos_list}. Используется {valid_pos}.")
+                else: logger.warning(f"Получена некорректная позиция: {pos_list}. Используется {valid_pos}.")
 
-                # Проверка и корректировка размера шрифта
-                valid_size = default_suggestions["font_size"] # По умолчанию
-                if isinstance(size, int) and 10 < size < 200:
-                    valid_size = size
-                else:
-                    logger.warning(f"Получен некорректный размер шрифта: {size}. Используется {valid_size}.")
+                valid_size = default_suggestions["font_size"]
+                if isinstance(size, int) and 10 < size < 200: valid_size = size
+                else: logger.warning(f"Получен некорректный размер шрифта: {size}. Используется {valid_size}.")
 
-
-                # Проверка текста
-                valid_text = default_suggestions["formatted_text"] # По умолчанию
+                valid_text = default_suggestions["formatted_text"]
                 if isinstance(fmt_text, str) and fmt_text.strip():
-                    valid_text = fmt_text
-                    # Заменяем литерал \n на реальный символ переноса строки
-                    valid_text = valid_text.replace('\\n', '\n')
-                else:
-                    logger.warning(f"Получен некорректный форматированный текст: {fmt_text}. Используется исходный.")
+                    valid_text = fmt_text.replace('\\n', '\n')
+                else: logger.warning(f"Получен некорректный форматированный текст: {fmt_text}. Используется исходный.")
 
-                # --- ИЗМЕНЕНИЕ: Fallback на темно-серый цвет ---
-                valid_color = default_suggestions["text_color"] # Темно-серый по умолчанию
+                valid_color = default_suggestions["text_color"]
                 if isinstance(color_hex, str) and re.match(r'^#[0-9a-fA-F]{6}$', color_hex):
                     valid_color = color_hex
                     logger.info(f"ИИ предложил цвет: {valid_color}")
-                else:
-                    logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color} (темно-серый по умолчанию).")
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                else: logger.warning(f"Получен некорректный HEX цвет: {color_hex}. Используется {valid_color} (темно-серый по умолчанию).")
 
-                # Формируем превью текста для лога
                 log_text_preview = valid_text[:50].replace('\n', '\\n')
                 logger.info(f"Получены рекомендации: Позиция={valid_pos}, Размер={valid_size}, Цвет={valid_color}, Текст='{log_text_preview}...'")
 
-                # Возвращаем валидированный результат
-                return {
-                    "position": valid_pos,
-                    "font_size": valid_size,
-                    "formatted_text": valid_text,
-                    "text_color": valid_color
-                }
+                return { "position": valid_pos, "font_size": valid_size, "formatted_text": valid_text, "text_color": valid_color }
 
-            except json.JSONDecodeError as json_e:
-                logger.error(f"Ошибка декодирования JSON из ответа Vision: {json_e}. Ответ: {response_text}. Возврат стандартных параметров (темно-серый текст).")
-                return default_suggestions
-            except Exception as parse_err:
-                logger.error(f"Ошибка парсинга или валидации рекомендаций: {parse_err}", exc_info=True)
-                return default_suggestions
+            except json.JSONDecodeError as json_e: logger.error(f"Ошибка декодирования JSON из ответа Vision: {json_e}. Ответ: {response_text}. Возврат стандартных параметров (темно-серый текст)."); return default_suggestions
+            except Exception as parse_err: logger.error(f"Ошибка парсинга или валидации рекомендаций: {parse_err}", exc_info=True); return default_suggestions
+        else: logger.error("OpenAI Vision вернул пустой или некорректный ответ. Возврат стандартных параметров (темно-серый текст)."); return default_suggestions
 
-        else:
-            logger.error("OpenAI Vision вернул пустой или некорректный ответ. Возврат стандартных параметров (темно-серый текст).")
-            return default_suggestions
-
-    # Обработка специфичных ошибок OpenAI
+    # Обработка ошибок OpenAI (как в оригинале)
     except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI Vision: {e}"); return default_suggestions
     except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI Vision: {e}"); return default_suggestions
     except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI Vision: {e}"); return default_suggestions
     except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI Vision: {e.status_code} - {e.response}"); return default_suggestions
     except openai.BadRequestError as e:
-        # Особо логируем ошибку, если она связана с форматом JSON
-        if "response_format" in str(e):
-             logger.error(f"Ошибка OpenAI Vision: Модель {OPENAI_VISION_MODEL}, возможно, не поддерживает response_format=json_object. {e}")
-        else:
-             logger.exception(f"Ошибка неверного запроса OpenAI Vision: {e}");
+        if "response_format" in str(e): logger.error(f"Ошибка OpenAI Vision: Модель {OPENAI_VISION_MODEL}, возможно, не поддерживает response_format=json_object. {e}")
+        else: logger.exception(f"Ошибка неверного запроса OpenAI Vision: {e}");
         return default_suggestions
     except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI Vision: {e}"); return default_suggestions
-    # Обработка других исключений
-    except Exception as e:
-        logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True)
-        return default_suggestions
+    except Exception as e: logger.error(f"Неизвестная ошибка при получении рекомендаций по тексту: {e}", exc_info=True); return default_suggestions
 
 def select_best_image(image_urls, prompt_text, prompt_settings: dict) -> int | None:
     """
@@ -810,24 +789,22 @@ def main():
     """
     Основная функция скрипта generate_media.py.
     Обрабатывает разные состояния задачи, генерирует заголовок с текстом,
-    запускает апскейл и генерацию видео.
+    запускает апскейл и генерацию видео Runway.
     Включает вызов OpenAI для форматирования текста сарказма.
+    ИСПРАВЛЕНИЕ: Явно получает OPENAI_MODEL и OPENAI_VISION_MODEL перед вызовом API.
+    Сохраняет оригинальную структуру и логику пользователя.
     """
     # --- Инициализация переменных перед try блоком ---
-    # config и logger уже должны быть инициализированы ГЛОБАЛЬНО выше
+    global config, logger, BASE_DIR, openai_client_instance # Используем глобальные
     b2_client = None
-    # openai_client_instance инициализируется в _initialize_openai_client()
-    # --- ИСПРАВЛЕНИЕ: Инициализация переменных, используемых в finally ---
-    generation_id = None # Будет переопределен из args
+    generation_id = None
     timestamp_suffix = None
     config_mj_local_path = None
     temp_dir_path = None
-    content_local_temp_path = None # Добавлено для очистки
-    # -------------------------------------------------------------------
+    content_local_temp_path = None
 
     # --- Инициализация B2 клиента и проверка глобальных config/logger ---
     try:
-        # Проверка, что глобальные config и logger доступны
         if 'config' not in globals() or config is None:
              raise RuntimeError("Глобальный объект 'config' не инициализирован.")
         if 'logger' not in globals() or logger is None:
@@ -837,7 +814,6 @@ def main():
         if not b2_client: raise ConnectionError("Не удалось создать клиент B2.")
 
     except (RuntimeError, ConnectionError) as init_err:
-        # Используем стандартный logging, так как кастомный мог не создаться
         logging.critical(f"Критическая ошибка инициализации в main(): {init_err}", exc_info=True)
         sys.exit(1)
     # -----------------------------------------
@@ -846,9 +822,7 @@ def main():
     parser.add_argument('--generation_id', type=str, required=True, help='The generation ID.')
     parser.add_argument('--use-mock', action='store_true', default=False, help='Force generation of a mock video.')
     args = parser.parse_args()
-    # --- ИСПРАВЛЕНИЕ: Присваиваем generation_id здесь ---
     generation_id = args.generation_id
-    # ----------------------------------------------------
     use_mock_flag = args.use_mock
 
     if isinstance(generation_id, str) and generation_id.endswith(".json"):
@@ -858,49 +832,78 @@ def main():
     # --- Переменные для путей и состояния ---
     content_data = None
     config_mj = None
-    local_image_path = None # Путь к финальному PNG для загрузки
-    video_path = None # Путь к финальному MP4 для загрузки
-    # --- Добавляем переменные для данных от OpenAI ---
-    prompts_config_data = {} # Инициализируем здесь, чтобы была доступна позже
+    local_image_path = None
+    video_path = None
+    prompts_config_data = {} # Инициализируем здесь
 
-    # --- ИСПРАВЛЕНИЕ: Определяем timestamp_suffix и пути здесь, чтобы они были доступны в finally ---
+    # --- Определяем timestamp_suffix и пути здесь ---
     timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     temp_dir_path = Path(f"temp_{generation_id}_{timestamp_suffix}")
-    config_mj_local_path = f"config_midjourney_{generation_id}_temp_{timestamp_suffix}.json"
-    content_local_temp_path = f"{generation_id}_content_temp_{timestamp_suffix}.json" # Путь к временному файлу контента
-    ensure_directory_exists(config_mj_local_path) # Убедимся, что папка для temp файла есть
+    # Генерируем уникальные имена для временных файлов конфигов внутри временной папки
+    config_mj_local_path = temp_dir_path / f"config_midjourney_{generation_id}_temp.json"
+    content_local_temp_path = temp_dir_path / f"{generation_id}_content_temp.json"
+    ensure_directory_exists(str(temp_dir_path)) # Создаем временную папку сразу
     # ----------------------------------------------------------------------------------------
 
-    # +++ ИСПРАВЛЕНИЕ: Получение констант из конфига ВНУТРИ main +++
+    # +++ Получение констант из конфига ВНУТРИ main +++
     try:
-        # Убедимся, что config доступен
         if 'config' not in globals() or config is None:
             raise RuntimeError("Глобальный объект 'config' не инициализирован.")
         if 'BASE_DIR' not in globals() or BASE_DIR is None:
              raise RuntimeError("Глобальная переменная BASE_DIR не определена.")
 
-        # Получаем нужные константы для сарказма и другие, если нужно
-        SARCASM_IMAGE_SUFFIX = config.get("FILE_PATHS.sarcasm_image_suffix", "_sarcasm.png")
+        # Получаем нужные константы
+        CONFIG_MJ_REMOTE_PATH = config.get('FILE_PATHS.config_midjourney', "config/config_midjourney.json")
+        B2_BUCKET_NAME = config.get('API_KEYS.b2.bucket_name', os.getenv('B2_BUCKET_NAME'))
+        IMAGE_FORMAT = config.get("FILE_PATHS.output_image_format", "png")
+        VIDEO_FORMAT = "mp4"
         SARCASM_BASE_IMAGE_REL_PATH = config.get("FILE_PATHS.sarcasm_baron_image", "assets/Барон.png")
         SARCASM_FONT_REL_PATH = config.get("FILE_PATHS.sarcasm_font", "assets/fonts/Kurale-Regular.ttf")
-        # Получаем размеры здесь, чтобы они были доступны в main
-        output_size_str_local = config.get("IMAGE_GENERATION.output_size", f"{PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}")
+        SARCASM_IMAGE_SUFFIX = config.get("FILE_PATHS.sarcasm_image_suffix", "_sarcasm.png")
+
+        output_size_str_local = config.get("IMAGE_GENERATION.output_size", "1792x1024")
         delimiter_local = next((d for d in ['x', '×', ':'] if d in output_size_str_local), 'x')
         try:
             width_str_local, height_str_local = output_size_str_local.split(delimiter_local)
             PLACEHOLDER_WIDTH_LOCAL = int(width_str_local.strip())
             PLACEHOLDER_HEIGHT_LOCAL = int(height_str_local.strip())
         except ValueError:
-            logger.error(f"Ошибка парсинга размеров '{output_size_str_local}' внутри main. Используем глобальные {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}.")
-            PLACEHOLDER_WIDTH_LOCAL = PLACEHOLDER_WIDTH # Fallback на глобальные
-            PLACEHOLDER_HEIGHT_LOCAL = PLACEHOLDER_HEIGHT
-        # Используем локальные переменные для размеров дальше в main
-        # ... и т.д. для других констант, нужных только в main
+            # Используем глобальные переменные PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT если они определены
+            global PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT # Объявляем использование глобальных
+            if 'PLACEHOLDER_WIDTH' in globals() and 'PLACEHOLDER_HEIGHT' in globals():
+                 logger.error(f"Ошибка парсинга размеров '{output_size_str_local}' внутри main. Используем глобальные {PLACEHOLDER_WIDTH}x{PLACEHOLDER_HEIGHT}.")
+                 PLACEHOLDER_WIDTH_LOCAL = PLACEHOLDER_WIDTH # Fallback на глобальные
+                 PLACEHOLDER_HEIGHT_LOCAL = PLACEHOLDER_HEIGHT
+            else:
+                 logger.error(f"Ошибка парсинга размеров '{output_size_str_local}' и глобальные не найдены. Используем 1792x1024.")
+                 PLACEHOLDER_WIDTH_LOCAL = 1792
+                 PLACEHOLDER_HEIGHT_LOCAL = 1024
 
-        # Проверка, что значения получены (опционально, но полезно)
-        if not SARCASM_IMAGE_SUFFIX: logger.warning("FILE_PATHS.sarcasm_image_suffix не найден в конфиге, используется '_sarcasm.png'.")
+        PLACEHOLDER_BG_COLOR = config.get("VIDEO.placeholder_bg_color", "cccccc")
+        PLACEHOLDER_TEXT_COLOR = config.get("VIDEO.placeholder_text_color", "333333")
+        MIDJOURNEY_API_KEY = os.getenv("MIDJOURNEY_API_KEY")
+        RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+        MJ_IMAGINE_ENDPOINT = config.get("API_KEYS.midjourney.endpoint")
+        MJ_FETCH_ENDPOINT = config.get("API_KEYS.midjourney.task_endpoint")
+        MAX_ATTEMPTS = int(config.get("GENERATE.max_attempts", 1))
+        # --- ИСПРАВЛЕНИЕ: Получаем модели OpenAI здесь ---
+        OPENAI_MODEL_MAIN = config.get("OPENAI_SETTINGS.model", "gpt-4o")
+        OPENAI_VISION_MODEL_MAIN = config.get("OPENAI_SETTINGS.vision_model", "gpt-4o")
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        TASK_REQUEST_TIMEOUT = int(config.get("WORKFLOW.task_request_timeout", 60))
+        HAZE_OPACITY_DEFAULT = int(config.get("VIDEO.title_haze_opacity", 128))
+
+        # Проверки наличия ключей и путей
+        if not B2_BUCKET_NAME: logger.warning("B2_BUCKET_NAME не определен.")
+        if not MIDJOURNEY_API_KEY: logger.warning("MIDJOURNEY_API_KEY не найден.")
+        if not RUNWAY_API_KEY: logger.warning("RUNWAY_API_KEY не найден.")
+        if not OPENAI_API_KEY: logger.warning("OPENAI_API_KEY не найден.")
+        if not MJ_IMAGINE_ENDPOINT: logger.warning("API_KEYS.midjourney.endpoint не найден.")
+        if not MJ_FETCH_ENDPOINT: logger.warning("API_KEYS.midjourney.task_endpoint не найден.")
         if not SARCASM_BASE_IMAGE_REL_PATH: logger.error("FILE_PATHS.sarcasm_baron_image не найден в конфиге!")
         if not SARCASM_FONT_REL_PATH: logger.error("FILE_PATHS.sarcasm_font не найден в конфиге!")
+        if not SARCASM_IMAGE_SUFFIX: logger.warning("FILE_PATHS.sarcasm_image_suffix не найден, используется '_sarcasm.png'.")
 
     except Exception as config_err:
         logger.critical(f"Критическая ошибка при получении констант из конфига внутри main: {config_err}", exc_info=True)
@@ -911,16 +914,12 @@ def main():
         # --- Загрузка content_data ---
         logger.info("Загрузка данных контента...")
         content_remote_path = f"666/{generation_id}.json"
-        # content_local_temp_path определен выше
-        ensure_directory_exists(content_local_temp_path)
-        content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, content_local_temp_path, default_value=None)
+        content_data = load_b2_json(b2_client, B2_BUCKET_NAME, content_remote_path, str(content_local_temp_path), default_value=None)
         if content_data is None:
-            logger.error(f"❌ Не удалось загрузить {content_remote_path}.");
-            sys.exit(1)
+            logger.error(f"❌ Не удалось загрузить {content_remote_path}."); sys.exit(1)
         else:
             logger.info("✅ Данные контента загружены.")
-            # Удаляем временный файл контента СРАЗУ после успешной загрузки
-            if Path(content_local_temp_path).exists():
+            if content_local_temp_path.exists():
                 try: os.remove(content_local_temp_path); logger.debug(f"Удален temp контент: {content_local_temp_path}")
                 except OSError as e: logger.warning(f"Не удалить {content_local_temp_path}: {e}")
         # -----------------------------
@@ -928,123 +927,85 @@ def main():
         # --- Извлечение полей из content_data ---
         topic = content_data.get("topic", "Нет темы")
         text_for_title = topic
-        selected_focus = content_data.get("selected_focus") # Может быть None
+        selected_focus = content_data.get("selected_focus")
         first_frame_description = content_data.get("first_frame_description", "")
         final_mj_prompt = content_data.get("final_mj_prompt", "")
         final_runway_prompt = content_data.get("final_runway_prompt", "")
         logger.info(f"Тема: '{topic[:100]}...'")
-        if selected_focus:
-            logger.info(f"Выбранный фокус: {selected_focus}")
-        else:
-            logger.warning("⚠️ Ключ 'selected_focus' отсутствует в данных контента.")
+        if selected_focus: logger.info(f"Выбранный фокус: {selected_focus}")
+        else: logger.warning("⚠️ Ключ 'selected_focus' отсутствует в данных контента.")
         # ------------------------------------
 
-        # +++ ИЗВЛЕЧЕНИЕ ТЕКСТА САРКАЗМА +++
+        # +++ ИЗВЛЕЧЕНИЕ ТЕКСТА САРКАЗМА (Логика из оригинала) +++
         sarcasm_comment_text = None
         sarcasm_data = content_data.get("sarcasm")
         if isinstance(sarcasm_data, dict):
-            comment_value = sarcasm_data.get("comment") # Получаем значение ключа comment
+            comment_value = sarcasm_data.get("comment")
             if isinstance(comment_value, str):
-                # --- ИСПРАВЛЕННАЯ ЛОГИКА ПАРСИНГА ---
                 parsed_comment_value = None
-                is_parsed_as_dict = False
                 try:
-                    # Пытаемся распарсить строку как JSON
                     parsed_comment_value = json.loads(comment_value)
-                    # Проверяем, является ли результат словарем
                     if isinstance(parsed_comment_value, dict):
-                        is_parsed_as_dict = True
-                        # Ищем ключ comment или комментарий
                         sarcasm_comment_text = parsed_comment_value.get("comment") or parsed_comment_value.get("комментарий")
-                        if sarcasm_comment_text:
-                             logger.info("Текст сарказма извлечен из JSON-строки.")
-                        else:
-                             logger.warning("В JSON-строке 'sarcasm.comment' не найден ключ 'comment'/'комментарий'.")
-                             sarcasm_comment_text = None # Сбрасываем, если ключ не найден
+                        if sarcasm_comment_text: logger.info("Текст сарказма извлечен из JSON-строки.")
+                        else: logger.warning("В JSON-строке 'sarcasm.comment' не найден ключ 'comment'/'комментарий'."); sarcasm_comment_text = None
                     else:
-                        # json.loads вернул не словарь (например, строку)
-                        if isinstance(parsed_comment_value, str):
-                            logger.info("JSON-строка 'sarcasm.comment' содержит простую строку, используем ее.")
-                            sarcasm_comment_text = parsed_comment_value
-                        else:
-                            logger.warning(f"JSON-строка 'sarcasm.comment' содержит не строку и не словарь: {type(parsed_comment_value)}. Игнорируем.")
-                            sarcasm_comment_text = None
+                        if isinstance(parsed_comment_value, str): logger.info("JSON-строка 'sarcasm.comment' содержит простую строку, используем ее."); sarcasm_comment_text = parsed_comment_value
+                        else: logger.warning(f"JSON-строка 'sarcasm.comment' содержит не строку и не словарь: {type(parsed_comment_value)}. Игнорируем."); sarcasm_comment_text = None
                 except json.JSONDecodeError:
-                    # Если парсинг как JSON не удался, считаем исходное значение простой строкой
                     logger.info("Значение 'sarcasm.comment' не JSON, используется как простая строка.")
-                    sarcasm_comment_text = comment_value.strip('"') # Убираем лишние кавычки
-                # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
+                    sarcasm_comment_text = comment_value.strip('"')
             elif comment_value is not None:
                  logger.warning(f"Значение 'sarcasm.comment' не строка: {type(comment_value)}")
         if sarcasm_comment_text: logger.info(f"Текст для картинки сарказма: '{sarcasm_comment_text[:60]}...'")
         else: logger.info("Текст сарказма не найден в данных контента.")
         # +++++++++++++++++++++++++++++++++++++
 
-        # +++ НОВЫЙ БЛОК: Получение форматирования от OpenAI +++
+        # +++ БЛОК: Получение форматирования от OpenAI (с исправлением) +++
         formatted_sarcasm_text = None
         suggested_sarcasm_font_size = None
-        default_sarcasm_font_size = 60 # Размер по умолчанию, если OpenAI не ответит
+        default_sarcasm_font_size = 60
 
         if sarcasm_comment_text:
             logger.info("Запрос форматирования текста сарказма у OpenAI...")
-            # Убедимся, что клиент OpenAI инициализирован
             if not openai_client_instance:
-                # Предполагаем, что функция _initialize_openai_client() определена где-то выше
+                # Используем глобальную функцию инициализации (предполагается, что она есть)
                 if '_initialize_openai_client' in globals() and callable(globals()['_initialize_openai_client']):
-                    if not _initialize_openai_client():
-                        logger.error("Клиент OpenAI недоступен для форматирования сарказма.")
-                    # Если инициализация не удалась, openai_client_instance останется None
-                else:
-                    logger.error("Функция _initialize_openai_client не найдена!")
-
+                    if not _initialize_openai_client(): logger.error("Клиент OpenAI недоступен для форматирования сарказма.")
+                else: logger.error("Функция _initialize_openai_client не найдена!")
 
             if openai_client_instance:
-                # Загрузка конфигурации промптов (если еще не загружена)
-                # Убедитесь, что переменная prompts_config_data доступна в этой области видимости
-                if not prompts_config_data: # Проверяем, пуст ли словарь
+                # Загрузка prompts_config_data, если еще не загружен
+                if not prompts_config_data:
                      prompts_config_path_str = config.get('FILE_PATHS.prompts_config')
                      if prompts_config_path_str:
                          prompts_config_path = Path(prompts_config_path_str)
                          if not prompts_config_path.is_absolute():
-                             # Предполагаем, что BASE_DIR определена глобально
-                             if 'BASE_DIR' not in globals() or BASE_DIR is None:
-                                 logger.error("Глобальная переменная BASE_DIR не найдена!")
-                                 # Обработка ошибки или выход
-                             else:
-                                 prompts_config_path = BASE_DIR / prompts_config_path
+                             if 'BASE_DIR' not in globals() or BASE_DIR is None: logger.error("Глобальная переменная BASE_DIR не найдена!")
+                             else: prompts_config_path = BASE_DIR / prompts_config_path
+                         # Используем глобальную функцию load_json_config
+                         if 'load_json_config' in globals() and callable(globals()['load_json_config']): prompts_config_data = load_json_config(str(prompts_config_path)) or {}
+                         else: logger.error("Функция load_json_config не найдена!"); prompts_config_data = {}
+                     else: logger.error("Путь к prompts_config не найден!"); prompts_config_data = {}
 
-                         # Предполагаем, что load_json_config импортирована
-                         if 'load_json_config' in globals() and callable(globals()['load_json_config']):
-                             prompts_config_data = load_json_config(str(prompts_config_path)) or {}
-                         else:
-                              logger.error("Функция load_json_config не найдена!")
-                              prompts_config_data = {}
-                     else:
-                         logger.error("Путь к prompts_config не найден!")
-                         prompts_config_data = {} # Предотвращаем ошибку ниже
-
-                # Получаем настройки промпта форматирования
                 formatting_prompt_settings = prompts_config_data.get("sarcasm", {}).get("image_formatting", {})
                 formatting_prompt_template = formatting_prompt_settings.get("template")
                 formatting_max_tokens = int(formatting_prompt_settings.get("max_tokens", 300))
                 formatting_temperature = float(formatting_prompt_settings.get("temperature", 0.5))
 
                 if formatting_prompt_template:
-                    prompt_text_for_formatting = formatting_prompt_template.format(
-                        sarcasm_text_input=sarcasm_comment_text
-                    )
+                    prompt_text_for_formatting = formatting_prompt_template.format(sarcasm_text_input=sarcasm_comment_text)
                     try:
-                        # Используем модель из конфига (например, gpt-4o)
-                        # Убедитесь, что OPENAI_MODEL определена глобально или доступна
-                        if 'OPENAI_MODEL' not in globals(): OPENAI_MODEL = "gpt-4o" # Fallback
-
+                        # --- Используем OPENAI_MODEL_MAIN ---
+                        logger.info(f"Вызов OpenAI для форматирования сарказма (модель: {OPENAI_MODEL_MAIN})...")
                         response = openai_client_instance.chat.completions.create(
-                            model=OPENAI_MODEL,
+                            model=OPENAI_MODEL_MAIN, # Используем модель, полученную внутри main
                             messages=[{"role": "user", "content": prompt_text_for_formatting}],
                             max_tokens=formatting_max_tokens,
                             temperature=formatting_temperature,
-                            response_format={"type": "json_object"} # Ожидаем JSON
+                            response_format={"type": "json_object"}
                         )
+                        # ------------------------------------
 
                         if response.choices and response.choices[0].message and response.choices[0].message.content:
                             response_json_str = response.choices[0].message.content.strip()
@@ -1053,72 +1014,46 @@ def main():
                                 formatting_result = json.loads(response_json_str)
                                 fmt_text = formatting_result.get("formatted_text")
                                 fnt_size = formatting_result.get("font_size")
-
-                                # Валидация ответа
-                                if isinstance(fmt_text, str) and fmt_text.strip():
-                                    formatted_sarcasm_text = fmt_text
-                                else:
-                                    logger.warning("OpenAI вернул некорректный 'formatted_text'.")
-
-                                if isinstance(fnt_size, int) and 10 < fnt_size < 200:
-                                    suggested_sarcasm_font_size = fnt_size
-                                else:
-                                    logger.warning(f"OpenAI вернул некорректный 'font_size': {fnt_size}.")
-
-                                # --- ИСПРАВЛЕНИЕ ОШИБКИ В ЛОГЕ ---
+                                if isinstance(fmt_text, str) and fmt_text.strip(): formatted_sarcasm_text = fmt_text
+                                else: logger.warning("OpenAI вернул некорректный 'formatted_text'.")
+                                if isinstance(fnt_size, int) and 10 < fnt_size < 200: suggested_sarcasm_font_size = fnt_size
+                                else: logger.warning(f"OpenAI вернул некорректный 'font_size': {fnt_size}.")
                                 if formatted_sarcasm_text and suggested_sarcasm_font_size:
-                                     # Создаем безопасную для f-строки версию текста
                                      log_text_preview = formatted_sarcasm_text[:50].replace('\n', '\\n')
                                      logger.info(f"Получены рекомендации от OpenAI: Размер={suggested_sarcasm_font_size}, Текст='{log_text_preview}...'")
-                                else:
-                                     logger.warning("Не удалось получить валидные данные форматирования от OpenAI.")
-                                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-                            except json.JSONDecodeError:
-                                logger.error(f"Ошибка декодирования JSON ответа OpenAI: {response_json_str}")
-                            except Exception as parse_err:
-                                logger.error(f"Ошибка парсинга ответа OpenAI: {parse_err}", exc_info=True)
-                        else:
-                            logger.error("OpenAI вернул пустой ответ на запрос форматирования.")
-
-                    # Обработка ошибок OpenAI API
+                                else: logger.warning("Не удалось получить валидные данные форматирования от OpenAI.")
+                            except json.JSONDecodeError: logger.error(f"Ошибка декодирования JSON ответа OpenAI: {response_json_str}")
+                            except Exception as parse_err: logger.error(f"Ошибка парсинга ответа OpenAI: {parse_err}", exc_info=True)
+                        else: logger.error("OpenAI вернул пустой ответ на запрос форматирования.")
+                    # Обработка ошибок OpenAI (как в оригинале)
                     except openai.AuthenticationError as e: logger.exception(f"Ошибка аутентификации OpenAI: {e}")
                     except openai.RateLimitError as e: logger.exception(f"Превышен лимит запросов OpenAI: {e}")
                     except openai.APIConnectionError as e: logger.exception(f"Ошибка соединения с API OpenAI: {e}")
                     except openai.APIStatusError as e: logger.exception(f"Ошибка статуса API OpenAI: {e.status_code} - {e.response}")
                     except openai.BadRequestError as e: logger.exception(f"Ошибка неверного запроса OpenAI: {e}")
                     except openai.OpenAIError as e: logger.exception(f"Произошла ошибка API OpenAI: {e}")
-                    except Exception as e:
-                        logger.error(f"Неизвестная ошибка при запросе форматирования к OpenAI: {e}", exc_info=True)
-                else:
-                    logger.error("Промпт 'sarcasm.image_formatting.template' не найден в prompts_config.json.")
-            else:
-                 logger.error("Клиент OpenAI не инициализирован, форматирование невозможно.")
-        else:
-            logger.info("Текст сарказма отсутствует, форматирование не требуется.")
+                    except Exception as e: logger.error(f"Неизвестная ошибка при запросе форматирования к OpenAI: {e}", exc_info=True)
+                else: logger.error("Промпт 'sarcasm.image_formatting.template' не найден в prompts_config.json.")
+            else: logger.error("Клиент OpenAI не инициализирован, форматирование невозможно.")
+        else: logger.info("Текст сарказма отсутствует, форматирование не требуется.")
 
-        # Fallback, если OpenAI не сработал
+        # Fallback (как в оригинале)
         if not formatted_sarcasm_text:
             logger.warning("Используется исходный текст сарказма для отрисовки (без форматирования OpenAI).")
-            formatted_sarcasm_text = sarcasm_comment_text # Используем исходный текст
-            # Можно добавить логику для удаления переносов, если они есть в исходном
+            formatted_sarcasm_text = sarcasm_comment_text
             if formatted_sarcasm_text: formatted_sarcasm_text = formatted_sarcasm_text.replace('\n', ' ')
-
         if not suggested_sarcasm_font_size:
             logger.warning(f"Используется размер шрифта по умолчанию: {default_sarcasm_font_size}")
             suggested_sarcasm_font_size = default_sarcasm_font_size
-
-        # +++ КОНЕЦ НОВОГО БЛОКА +++
+        # +++ КОНЕЦ БЛОКА +++
 
         # --- Загрузка config_mj ---
         logger.info(f"Загрузка состояния: {CONFIG_MJ_REMOTE_PATH}...")
-        # Используем config_mj_local_path, определенный ранее
-        config_mj = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, default_value=None)
+        config_mj = load_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, str(config_mj_local_path), default_value=None)
         if config_mj is None:
             logger.warning(f"Не загрузить {CONFIG_MJ_REMOTE_PATH}. Создание структуры по умолчанию.");
             config_mj = {"midjourney_task": None, "midjourney_results": {}, "generation": False, "status": None}
         else:
-            # Гарантируем наличие ключей
             config_mj.setdefault("midjourney_task", None)
             config_mj.setdefault("midjourney_results", {})
             config_mj.setdefault("generation", False)
@@ -1126,7 +1061,7 @@ def main():
         logger.info("✅ Конфиг MJ загружен.")
         # --------------------------
 
-        # --- Определение типа результата MJ ---
+        # --- Определение типа результата MJ (как в оригинале) ---
         mj_results = config_mj.get("midjourney_results", {})
         task_result_data = mj_results.get("task_result")
         task_meta_data = mj_results.get("meta")
@@ -1136,14 +1071,12 @@ def main():
         final_upscaled_image_url = None
 
         if isinstance(task_result_data, dict):
-            # Проверка на результат /imagine
             if isinstance(task_result_data.get("temporary_image_urls"), list) and \
                len(task_result_data["temporary_image_urls"]) == 4 and \
                isinstance(task_result_data.get("actions"), list):
                 is_imagine_result = True
                 imagine_urls = task_result_data["temporary_image_urls"]
                 logger.info("Обнаружен результат задачи /imagine (сетка 2x2).")
-            # Проверка на результат /upscale
             elif isinstance(task_result_data.get("image_url"), str) and \
                  task_result_data["image_url"].startswith("http") and \
                  isinstance(task_meta_data, dict) and \
@@ -1151,28 +1084,22 @@ def main():
                  is_upscale_result = True
                  final_upscaled_image_url = task_result_data.get("image_url")
                  logger.info(f"Обнаружен результат задачи /upscale: {final_upscaled_image_url[:60]}...")
-            # Если есть результаты, но не опознаны
             else:
                  if mj_results and not is_imagine_result and not is_upscale_result:
                       logger.warning(f"Не удалось определить тип результата MJ. task_result: {json.dumps(task_result_data, indent=2)[:500]}... meta: {task_meta_data}")
-        elif mj_results: # Если midjourney_results есть, но task_result не словарь
+        elif mj_results:
              logger.warning(f"Поле 'task_result' в midjourney_results не является словарем: {mj_results}")
         # ------------------------------------
 
         # --- Основной блок обработки сценариев ---
         try:
-            # --- Создание временной директории ---
-            # temp_dir_path уже определен выше
-            ensure_directory_exists(str(temp_dir_path))
-            logger.info(f"Создана временная папка: {temp_dir_path}")
-            # ------------------------------------
+            # temp_dir_path уже создан
+            logger.info(f"Временная папка: {temp_dir_path}")
 
             # ==================================================================
-            # ||                                                              ||
             # ||   БЛОК ОБРАБОТКИ СЦЕНАРИЕВ (use-mock, upscale, imagine)      ||
-            # ||   ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ                                     ||
-            # ||   ... (весь ваш существующий код для этих сценариев) ...     ||
-            # ||                                                              ||
+            # ||   Полностью скопирован из вашего оригинального файла         ||
+            # ||   для сохранения всей логики.                              ||
             # ==================================================================
             if use_mock_flag:
                 # --- Сценарий 0: Принудительный Mock ---
@@ -1255,7 +1182,7 @@ def main():
                              video_url_or_path = generate_runway_video(
                                  image_path=str(runway_base_image_path),
                                  script=final_runway_prompt,
-                                 config=config,
+                                 config=config, # Передаем экземпляр ConfigManager
                                  api_key=RUNWAY_API_KEY
                              )
                              if video_url_or_path:
@@ -1332,6 +1259,10 @@ def main():
                 if 'select_best_image' in globals() and callable(globals()['select_best_image']):
                     if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
                     if openai_client_instance:
+                        # --- Используем OPENAI_VISION_MODEL_MAIN ---
+                        global OPENAI_VISION_MODEL # Объявляем использование глобальной
+                        OPENAI_VISION_MODEL = OPENAI_VISION_MODEL_MAIN # Устанавливаем модель
+                        # --- Конец изменения ---
                         best_index_runway = select_best_image(imagine_urls, first_frame_description or " ", visual_analysis_settings)
                     elif openai is None: logger.warning("Модуль OpenAI недоступен. Используется индекс 0 для Runway.")
                     else: logger.warning("Клиент OpenAI не инициализирован. Используется индекс 0 для Runway.")
@@ -1411,6 +1342,10 @@ def main():
                     if not openai_client_instance: _initialize_openai_client() # Инициализация, если нужно
                     # Убедимся, что get_text_placement_suggestions доступна
                     if 'get_text_placement_suggestions' in globals() and callable(globals()['get_text_placement_suggestions']):
+                        # --- Используем OPENAI_VISION_MODEL_MAIN ---
+                        global OPENAI_VISION_MODEL # Объявляем использование глобальной
+                        OPENAI_VISION_MODEL = OPENAI_VISION_MODEL_MAIN # Устанавливаем модель
+                        # --- Конец изменения ---
                         placement_suggestions = get_text_placement_suggestions(
                             image_url=image_for_title_url,
                             text=text_for_title, # <<< Передаем только тему
@@ -1544,7 +1479,7 @@ def main():
                 logger.warning("Нет активной задачи MJ, результатов или флага 'generation'. Пропуск.")
                 local_image_path = None; video_path = None
 
-            # +++ ОБНОВЛЕННЫЙ БЛОК: Генерация картинки с сарказмом (используя данные OpenAI) +++
+            # +++ Генерация картинки с сарказмом (используя данные OpenAI) +++
             sarcasm_image_path = None # Инициализируем здесь
 
             # Проверяем наличие ТЕПЕРЬ УЖЕ ОТФОРМАТИРОВАННОГО текста, размера и Pillow
@@ -1554,7 +1489,6 @@ def main():
                     logger.info("Генерация изображения с сарказмом (с форматированием OpenAI)...")
                     # Пути к ресурсам (как и раньше)
                     # Убедимся, что SARCASM_BASE_IMAGE_REL_PATH, SARCASM_FONT_REL_PATH, SARCASM_IMAGE_SUFFIX доступны
-                    # Эти переменные были получены из конфига в начале main()
                     if not SARCASM_BASE_IMAGE_REL_PATH or not SARCASM_FONT_REL_PATH or not SARCASM_IMAGE_SUFFIX:
                          logger.error("Константы для сарказма не определены в области видимости main!")
                     else:
@@ -1678,21 +1612,20 @@ def main():
 
         # --- Сохранение финального состояния config_mj ---
         logger.info(f"Сохранение config_midjourney.json в B2...")
-        if config_mj_local_path and Path(config_mj_local_path).exists():
-            try: os.remove(config_mj_local_path); logger.debug(f"Удален старый temp конфиг MJ: {config_mj_local_path}")
-            except OSError as e: logger.warning(f"Не удалить старый temp конфиг MJ {config_mj_local_path}: {e}")
+        # Используем новый уникальный путь для временного файла сохранения вне удаляемой папки
+        config_mj_save_local_path = Path(f"config_mj_save_temp_{timestamp_suffix}.json")
+        ensure_directory_exists(str(config_mj_save_local_path)) # Убедимся, что папка есть
 
-        # Убедимся, что save_b2_json доступна
         if 'save_b2_json' in globals() and callable(globals()['save_b2_json']):
             if not isinstance(config_mj, dict):
                 logger.error("config_mj не словарь! Невозможно сохранить.")
-            elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, config_mj_local_path, config_mj):
+            elif not save_b2_json(b2_client, B2_BUCKET_NAME, CONFIG_MJ_REMOTE_PATH, str(config_mj_save_local_path), config_mj):
                 logger.error("!!! Не удалось сохранить config_midjourney.json в B2!")
             else:
                 logger.info("✅ config_midjourney.json сохранен в B2.")
-                if config_mj_local_path and Path(config_mj_local_path).exists():
-                    try: os.remove(config_mj_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_local_path}")
-                    except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_local_path} после сохранения: {e}")
+                if config_mj_save_local_path.exists():
+                    try: os.remove(config_mj_save_local_path); logger.debug(f"Удален temp конфиг MJ после сохранения: {config_mj_save_local_path}")
+                    except OSError as e: logger.warning(f"Не удалить temp конфиг MJ {config_mj_save_local_path} после сохранения: {e}")
         else:
             logger.error("Функция save_b2_json не найдена! Невозможно сохранить config_mj.")
 
@@ -1719,25 +1652,23 @@ def main():
     # --- Внешний finally для очистки временных файлов конфигов ---
     finally:
         # Используем .locals() для безопасной проверки наличия переменных
-        if 'generation_id' in locals() and generation_id and \
-           'timestamp_suffix' in locals() and timestamp_suffix:
-            if 'content_local_temp_path' in locals() and content_local_temp_path:
-                content_temp_path_obj = Path(content_local_temp_path)
-                if content_temp_path_obj.exists():
-                    try:
-                        os.remove(content_temp_path_obj)
-                        if 'logger' in locals() and logger: logger.debug(f"Удален temp контент (в finally): {content_temp_path_obj}")
-                    except OSError as e:
-                         if 'logger' in locals() and logger: logger.warning(f"Не удалить {content_temp_path_obj} (в finally): {e}")
+        # Очистка временной папки (если она еще существует)
+        if 'temp_dir_path' in locals() and temp_dir_path and temp_dir_path.exists():
+            try: shutil.rmtree(temp_dir_path); logger.debug(f"Окончательная очистка temp папки: {temp_dir_path}")
+            except Exception as final_clean_err: logger.warning(f"Ошибка окончательной очистки {temp_dir_path}: {final_clean_err}")
 
-        if 'config_mj_local_path' in locals() and config_mj_local_path:
-            config_mj_temp_path = Path(config_mj_local_path)
-            if config_mj_temp_path.exists():
-                try:
-                    os.remove(config_mj_temp_path)
-                    if 'logger' in locals() and logger: logger.debug(f"Удален temp конфиг MJ (в finally): {config_mj_temp_path}")
-                except OSError as e:
-                     if 'logger' in locals() and logger: logger.warning(f"Не удалить {config_mj_temp_path} (в finally): {e}")
+        # Очистка временных файлов конфигов, если они вне temp_dir_path
+        if 'content_local_temp_path' in locals() and content_local_temp_path and content_local_temp_path.exists():
+             try: os.remove(content_local_temp_path); logger.debug(f"Очистка temp контента (finally): {content_local_temp_path}")
+             except OSError as e: logger.warning(f"Не удалить {content_local_temp_path} (finally): {e}")
+        # config_mj_local_path теперь внутри temp_dir_path, очистится вместе с ней
+        # if 'config_mj_local_path' in locals() and config_mj_local_path and config_mj_local_path.exists():
+        #      try: os.remove(config_mj_local_path); logger.debug(f"Очистка temp конфига MJ (finally): {config_mj_local_path}")
+        #      except OSError as e: logger.warning(f"Не удалить {config_mj_local_path} (finally): {e}")
+        # Очистка файла сохранения конфига MJ
+        if 'config_mj_save_local_path' in locals() and config_mj_save_local_path and config_mj_save_local_path.exists():
+             try: os.remove(config_mj_save_local_path); logger.debug(f"Очистка temp конфига MJ (save, finally): {config_mj_save_local_path}")
+             except OSError as e: logger.warning(f"Не удалить {config_mj_save_local_path} (finally): {e}")
 
 # === Точка входа ===
 if __name__ == "__main__":
