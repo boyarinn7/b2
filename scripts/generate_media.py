@@ -1387,8 +1387,8 @@ def main():
                         output_path_str=str(sarcasm_output_path_temp),
                         text_color_hex="#FFFFFF", # Белый
                         align='right',
-                        vertical_align='center',
-                        padding=40, # Отступы (можно настроить)
+                 #      vertical_align='center',
+                        padding_fraction=0.05, # Отступы (можно настроить)
                         initial_font_size=80, # Можно вынести в конфиг
                         min_font_size=24,     # Можно вынести в конфиг
                         logger_instance=logger # Передаем логгер
