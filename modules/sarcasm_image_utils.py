@@ -433,7 +433,7 @@ def add_text_to_image_sarcasm_openai_ready(
     except Exception as e:
         log.error(f"Критическая ошибка в add_text_to_image_sarcasm_openai_ready: {e}", exc_info=True)
         return False
-    
+
 # --- КОНЕЦ ОБНОВЛЕННОЙ ФУНКЦИИ ---
 
 # --- Старая функция (можно удалить или оставить для сравнения) ---

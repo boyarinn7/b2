@@ -207,8 +207,9 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
 
     try:
         # Проверка ключей (оставляем как было)
+        # ИЗМЕНЕНО: Добавляем 'hashtags' в список обязательных ключей
         required_keys = ["topic", "content", "sarcasm", "script", "first_frame_description",
-                         "creative_brief", "final_mj_prompt", "final_runway_prompt"]
+                         "creative_brief", "final_mj_prompt", "final_runway_prompt", "hashtags"]
         missing_keys = [key for key in required_keys if key not in content_dict]
         null_keys = [key for key in required_keys if key in content_dict and content_dict[key] is None]
         if missing_keys: logger.warning(f"⚠️ Отсутствуют ключи: {missing_keys}.")
@@ -234,9 +235,10 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
 
 
 # +++ НОВАЯ ФУНКЦИЯ: Валидация выходного JSON +++
+# ИЗМЕНЕНО: Добавлена проверка ключа 'hashtags'
 def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
     """
-    Проверяет соответствие словаря `data` требованиям ТЗ к формату полей 'content' и 'sarcasm.comment'.
+    Проверяет соответствие словаря `data` требованиям ТЗ к формату полей 'content', 'sarcasm.comment' и 'hashtags'.
 
     Args:
         data: Словарь с данными для сохранения.
@@ -248,7 +250,7 @@ def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
     log = logger_instance if logger_instance else logger
     log.info("Запуск валидации выходного JSON...")
 
-    # --- Проверка поля 'content' ---
+    # --- Проверка поля 'content' (без изменений) ---
     content_val = data.get("content")
     if not isinstance(content_val, str):
         msg = "Ошибка валидации: Поле 'content' не является строкой."
@@ -296,7 +298,7 @@ def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
 
     log.debug("Валидация поля 'content' пройдена.")
 
-    # --- Проверка поля 'sarcasm.comment' ---
+    # --- Проверка поля 'sarcasm.comment' (без изменений) ---
     sarcasm_data = data.get("sarcasm")
     # Допускаем отсутствие 'sarcasm' или 'sarcasm.comment'
     if not isinstance(sarcasm_data, dict):
@@ -340,6 +342,28 @@ def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
                 return False, msg
 
             log.debug("Валидация поля 'sarcasm.comment' пройдена.")
+
+    # --- НОВОЕ: Проверка поля 'hashtags' ---
+    hashtags_val = data.get("hashtags")
+    if hashtags_val is None:
+        # Допускаем отсутствие хештегов
+        log.debug("Поле 'hashtags' отсутствует, валидация пропущена.")
+    elif not isinstance(hashtags_val, list):
+        msg = "Ошибка валидации: Поле 'hashtags' не является списком (и не None)."
+        log.error(msg)
+        return False, msg
+    elif not all(isinstance(tag, str) for tag in hashtags_val):
+        msg = "Ошибка валидации: Не все элементы в списке 'hashtags' являются строками."
+        log.error(msg)
+        return False, msg
+    # Можно добавить проверку на количество хештегов, если нужно
+    # elif not (5 <= len(hashtags_val) <= 8):
+    #     msg = f"Ошибка валидации: Количество хештегов ({len(hashtags_val)}) не в диапазоне 5-8."
+    #     log.error(msg)
+    #     return False, msg
+    else:
+        log.debug("Валидация поля 'hashtags' пройдена.")
+    # --- КОНЕЦ ПРОВЕРКИ 'hashtags' ---
 
     # --- Все проверки пройдены ---
     log.info("✅ Валидация выходного JSON успешно пройдена.")
@@ -604,6 +628,55 @@ class ContentGenerator:
             else: self.logger.error(f"❌ Структура JSON опроса неверна: {poll_data}"); return {}
         except Exception as e: self.logger.error(f"❌ Исключение опроса: {e}"); return {}
 
+    # +++ НОВАЯ ФУНКЦИЯ: Генерация хештегов +++
+    def generate_hashtags(self, topic: str, main_text: str) -> list[str] | None:
+        """
+        Генерирует список хештегов на основе темы и текста поста.
+        Возвращает список строк (хештегов) или None при ошибке.
+        """
+        self.logger.info("Запрос хештегов...")
+        if not topic or not main_text:
+            self.logger.warning("Тема или текст поста отсутствуют, генерация хештегов невозможна.")
+            return None
+
+        prompt_config_key = "content.hashtags" # Используем новый ключ
+        prompt_template = self._get_prompt_template(prompt_config_key)
+        if not prompt_template:
+            self.logger.error(f"Промпт {prompt_config_key} не найден.")
+            return None
+
+        prompt = prompt_template.format(topic=topic, main_text=main_text)
+
+        try:
+            hashtags_data = call_openai(prompt,
+                                        prompt_config_key=prompt_config_key,
+                                        use_json_mode=True, # Ожидаем JSON
+                                        config_manager_instance=self.config,
+                                        prompts_config_data_instance=self.prompts_config_data)
+
+            if not hashtags_data:
+                self.logger.error(f"❌ Ошибка генерации хештегов ({prompt_config_key}).")
+                return None
+
+            # Валидация ответа
+            if isinstance(hashtags_data, dict) and "hashtags" in hashtags_data:
+                hashtags_list = hashtags_data["hashtags"]
+                if isinstance(hashtags_list, list) and all(isinstance(tag, str) for tag in hashtags_list):
+                    # Очистка хештегов (удаление #, пробелов по краям)
+                    cleaned_hashtags = [tag.strip().replace('#', '').lower() for tag in hashtags_list if tag.strip()]
+                    self.logger.info(f"✅ Сгенерированы хештеги: {cleaned_hashtags}")
+                    return cleaned_hashtags
+                else:
+                    self.logger.error(f"❌ Неверный формат списка хештегов в ответе: {hashtags_list}")
+                    return None
+            else:
+                self.logger.error(f"❌ Ответ OpenAI для хештегов не содержит ключ 'hashtags' или не является словарем: {hashtags_data}")
+                return None
+        except Exception as e:
+            self.logger.error(f"❌ Исключение при генерации хештегов: {e}", exc_info=True)
+            return None
+    # +++ КОНЕЦ НОВОЙ ФУНКЦИИ +++
+
     def save_to_generated_content(self, stage, data):
         """Сохраняет промежуточные данные в локальный JSON файл."""
         try:
@@ -681,6 +754,8 @@ class ContentGenerator:
         # Переменные для сарказма
         sarcastic_comment_text = None  # <<< ИЗМЕНЕНИЕ: Храним ТЕКСТ комментария
         sarcastic_poll = {}
+        # НОВОЕ: Переменная для хештегов
+        generated_hashtags = []
 
         try:
             # Шаг 1: Подготовка
@@ -735,6 +810,11 @@ class ContentGenerator:
             # Сохраняем промежуточный результат (текст комментария)
             self.save_to_generated_content("sarcasm", {"comment_text": sarcastic_comment_text,
                                                        "poll": sarcastic_poll})  # Сохраняем текст, а не JSON-строку
+
+            # НОВЫЙ ШАГ 5.5: Генерация хештегов
+            if text_initial_with_paragraphs:
+                generated_hashtags = self.generate_hashtags(topic, text_initial_with_paragraphs) or []
+            self.save_to_generated_content("hashtags", generated_hashtags) # Сохраняем хештеги
 
             # Шаг 6: Многошаговая Генерация Брифа и Промптов (EN) + Перевод (RU)
             self.logger.info("--- Запуск многошаговой генерации ---")
@@ -968,6 +1048,8 @@ class ContentGenerator:
                 "final_runway_prompt": final_runway_prompt_en,
                 "script_ru": script_ru, "first_frame_description_ru": frame_description_ru,
                 "final_mj_prompt_ru": final_mj_prompt_ru, "final_runway_prompt_ru": final_runway_prompt_ru,
+                # НОВОЕ: Добавляем хештеги
+                "hashtags": generated_hashtags if generated_hashtags else None,
             }
             # Очистка None значений
             complete_content_dict = {k: v for k, v in complete_content_dict.items() if v is not None}
@@ -981,6 +1063,7 @@ class ContentGenerator:
                 f"Итоговый словарь перед валидацией: {json.dumps(complete_content_dict, ensure_ascii=False, indent=2)}")
 
             # Шаг 7.1: Валидация выходного JSON
+            # ИЗМЕНЕНО: Используем обновленную функцию валидации
             is_valid, validation_message = validate_output_json(complete_content_dict, self.logger)
             if not is_valid:
                 self.logger.error(f"❌ ВАЛИДАЦИЯ НЕ ПРОЙДЕНА для ID {generation_id}: {validation_message}")
