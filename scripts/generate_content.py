@@ -16,6 +16,11 @@ from pathlib import Path
 import logging # Добавляем logging
 import httpx # <-- Добавляем импорт httpx
 
+from modules.utils import (
+        # ... другие функции ...
+        upload_to_b2 # <<< УБЕДИТЕСЬ, ЧТО ЭТА СТРОКА ЕСТЬ
+    )
+
 # Импортируем ClientError из botocore
 try:
     from botocore.exceptions import ClientError
@@ -999,6 +1004,32 @@ class ContentGenerator:
                                 log_file.write("TimestampUTC,GenerationID,CoreChoice,DriverChoice,AestheticChoice\n")
                             log_file.write(log_line)
                         self.logger.info(f"Креативный выбор для {generation_id} записан в {log_path}")
+                        # --- Начало добавленного кода: Загрузка CSV в B2 ---
+                        if os.path.exists(log_path) and self.b2_client:  # Проверяем, что файл создан и клиент B2 есть
+                            b2_log_path_key = log_path_str  # Используем путь из конфига как ключ в B2 (e.g., "data/creative_choices.csv")
+                            b2_log_folder = os.path.dirname(b2_log_path_key)  # Папка в B2 (e.g., "data")
+                            b2_log_filename = os.path.basename(
+                                b2_log_path_key)  # Имя файла в B2 (e.g., "creative_choices.csv")
+
+                            self.logger.info(
+                                f"Попытка загрузки локального лога {log_path} в B2 как {b2_log_path_key}...")
+                            # Используем функцию upload_to_b2 из utils.py
+                            if 'upload_to_b2' in globals() and callable(globals()['upload_to_b2']):
+                                if upload_to_b2(self.b2_client, self.b2_bucket_name, b2_log_folder, str(log_path),
+                                                b2_log_filename):
+                                    self.logger.info(
+                                        f"✅ Файл лога креативных выборов успешно загружен в B2: {b2_log_path_key}")
+                                else:
+                                    self.logger.error(
+                                        f"❌ Не удалось загрузить лог креативных выборов в B2: {b2_log_path_key}")
+                            else:
+                                self.logger.error(
+                                    "Функция upload_to_b2 не найдена в globals(), загрузка лога в B2 невозможна.")
+                        elif not os.path.exists(log_path):
+                            self.logger.error(f"Локальный файл лога {log_path} не найден, загрузка в B2 невозможна.")
+                        elif not self.b2_client:
+                            self.logger.error("B2 клиент недоступен, загрузка лога в B2 невозможна.")
+                        # --- Конец добавленного кода ---
                     except Exception as log_write_err:
                         self.logger.error(f"Не удалось записать лог креативного выбора в {log_path}: {log_write_err}")
                 except Exception as logging_err:
