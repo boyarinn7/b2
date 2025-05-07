@@ -982,63 +982,117 @@ class ContentGenerator:
         # --- ИЗМЕНЕНИЕ: Добавлен блок finally для логирования ---
         finally:
             # --- Логирование креативных выборов ---
-            if 'creative_brief' in locals() and creative_brief: # Проверяем, что бриф был создан
+            # --- НАЧАЛО ИЗМЕНЕННОГО БЛОКА: Логирование и Накопительная Загрузка CSV в B2 ---
+            if 'creative_brief' in locals() and creative_brief:
                 try:
-                    log_path_str = self.config.get('FILE_PATHS.creative_choices_log_path', 'data/creative_choices.log') # Получаем путь
-                    log_path = BASE_DIR / log_path_str # Преобразуем в абсолютный путь
-                    ensure_directory_exists(str(log_path)) # Создаем папку, если нужно
+                    # --- Получаем пути ---
+                    log_path_rel = self.config.get('FILE_PATHS.creative_choices_log_path', 'data/creative_choices.csv')
+                    # Локальный путь для временного хранения/обновления CSV
+                    local_temp_csv_path = BASE_DIR / (
+                                log_path_rel + ".local_temp")  # Добавляем суффикс, чтобы не конфликтовать
+                    b2_log_path_key = log_path_rel  # Путь/ключ в B2
 
+                    ensure_directory_exists(str(local_temp_csv_path))  # Убедимся, что папка для temp файла есть
+
+                    # --- Извлекаем данные для новой строки ---
                     core_choice = creative_brief.get('core', {}).get('chosen_value', 'N/A')
                     driver_choice = creative_brief.get('driver', {}).get('chosen_driver_value', 'N/A')
                     aesthetic_choice = creative_brief.get('aesthetic', {}).get('chosen_style_value', 'N/A')
                     style_needed = creative_brief.get('aesthetic', {}).get('style_needed', False)
-                    aesthetic_log = aesthetic_choice if style_needed else 'None' # Записываем 'None', если стиль не нужен
-
+                    aesthetic_log = aesthetic_choice if style_needed else 'None'
                     timestamp_log = datetime.now(timezone.utc).isoformat()
-                    log_line = f"{timestamp_log},{generation_id},{core_choice},{driver_choice},{aesthetic_log}\n" # Формат CSV
+                    new_log_line = f"{timestamp_log},{generation_id},{core_choice},{driver_choice},{aesthetic_log}\n"
 
-                    try:
-                        with open(log_path, 'a', encoding='utf-8') as log_file:
-                            # Добавляем заголовок, если файл пустой
-                            if log_file.tell() == 0:
-                                log_file.write("TimestampUTC,GenerationID,CoreChoice,DriverChoice,AestheticChoice\n")
-                            log_file.write(log_line)
-                        self.logger.info(f"Креативный выбор для {generation_id} записан в {log_path}")
-                        # --- Начало добавленного кода: Загрузка CSV в B2 ---
-                        if os.path.exists(log_path) and self.b2_client:  # Проверяем, что файл создан и клиент B2 есть
-                            b2_log_path_key = log_path_str  # Используем путь из конфига как ключ в B2 (e.g., "data/creative_choices.csv")
-                            b2_log_folder = os.path.dirname(b2_log_path_key)  # Папка в B2 (e.g., "data")
-                            b2_log_filename = os.path.basename(
-                                b2_log_path_key)  # Имя файла в B2 (e.g., "creative_choices.csv")
+                    # --- Скачиваем существующий CSV из B2 (если есть) ---
+                    existing_content = ""
+                    header = "TimestampUTC,GenerationID,CoreChoice,DriverChoice,AestheticChoice\n"
+                    needs_header = True  # По умолчанию считаем, что заголовок нужен
 
-                            self.logger.info(
-                                f"Попытка загрузки локального лога {log_path} в B2 как {b2_log_path_key}...")
-                            # Используем функцию upload_to_b2 из utils.py
-                            if 'upload_to_b2' in globals() and callable(globals()['upload_to_b2']):
-                                if upload_to_b2(self.b2_client, self.b2_bucket_name, b2_log_folder, str(log_path),
-                                                b2_log_filename):
-                                    self.logger.info(
-                                        f"✅ Файл лога креативных выборов успешно загружен в B2: {b2_log_path_key}")
-                                else:
-                                    self.logger.error(
-                                        f"❌ Не удалось загрузить лог креативных выборов в B2: {b2_log_path_key}")
+                    if self.b2_client:
+                        self.logger.info(f"Попытка скачать существующий лог из B2: {b2_log_path_key}")
+                        try:
+                            # Скачиваем во временный файл
+                            self.b2_client.download_file(self.b2_bucket_name, b2_log_path_key, str(local_temp_csv_path))
+                            # Читаем содержимое скачанного файла
+                            with open(local_temp_csv_path, 'r', encoding='utf-8') as temp_f:
+                                existing_content = temp_f.read()
+                            # Проверяем, есть ли уже заголовок
+                            if existing_content.strip().startswith("TimestampUTC,GenerationID"):
+                                needs_header = False
+                            self.logger.info(f"Существующий лог {b2_log_path_key} успешно скачан.")
+                        except ClientError as e:
+                            error_code = e.response.get('Error', {}).get('Code')
+                            if error_code == 'NoSuchKey' or '404' in str(e):
+                                self.logger.info(f"Файл лога {b2_log_path_key} не найден в B2. Будет создан новый.")
+                                existing_content = ""  # Файла нет, начинаем с нуля
+                                needs_header = True
                             else:
                                 self.logger.error(
-                                    "Функция upload_to_b2 не найдена в globals(), загрузка лога в B2 невозможна.")
-                        elif not os.path.exists(log_path):
-                            self.logger.error(f"Локальный файл лога {log_path} не найден, загрузка в B2 невозможна.")
-                        elif not self.b2_client:
-                            self.logger.error("B2 клиент недоступен, загрузка лога в B2 невозможна.")
-                        # --- Конец добавленного кода ---
-                    except Exception as log_write_err:
-                        self.logger.error(f"Не удалось записать лог креативного выбора в {log_path}: {log_write_err}")
-                except Exception as logging_err:
-                     self.logger.error(f"Ошибка при попытке логирования креативных выборов: {logging_err}", exc_info=True)
-            else:
-                 self.logger.warning("Словарь creative_brief не был создан, логирование креативных выборов пропущено.")
-            # --- Конец логирования ---
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                                    f"Ошибка B2 при скачивании лога {b2_log_path_key}: {e}. Не удастся накопить данные.")
+                                existing_content = None  # Сигнал об ошибке скачивания
+                        except Exception as download_err:
+                            self.logger.error(
+                                f"Неизвестная ошибка при скачивании лога {b2_log_path_key}: {download_err}. Не удастся накопить данные.")
+                            existing_content = None  # Сигнал об ошибке скачивания
+                    else:
+                        self.logger.error("B2 клиент недоступен, скачивание существующего лога невозможно.")
+                        existing_content = None  # Сигнал об ошибке
 
+                    # --- Записываем обновленное содержимое в локальный файл ---
+                    if existing_content is not None:  # Продолжаем только если не было ошибки скачивания
+                        try:
+                            with open(local_temp_csv_path, 'w', encoding='utf-8') as log_file:
+                                if needs_header:
+                                    log_file.write(header)
+                                # Если скачали существующий контент, дописываем его (убираем лишние пустые строки в конце, если были)
+                                if existing_content.strip():
+                                    log_file.write(existing_content.strip() + '\n')
+                                # Добавляем новую строку
+                                log_file.write(new_log_line)
+                            self.logger.info(
+                                f"Обновленное содержимое лога записано в локальный файл: {local_temp_csv_path}")
+
+                            # --- Загружаем обновленный локальный файл в B2 ---
+                            if self.b2_client:
+                                b2_log_folder = os.path.dirname(b2_log_path_key)
+                                b2_log_filename = os.path.basename(b2_log_path_key)
+                                self.logger.info(
+                                    f"Попытка загрузки обновленного лога {local_temp_csv_path} в B2 как {b2_log_path_key}...")
+                                if 'upload_to_b2' in globals() and callable(globals()['upload_to_b2']):
+                                    if upload_to_b2(self.b2_client, self.b2_bucket_name, b2_log_folder,
+                                                    str(local_temp_csv_path), b2_log_filename):
+                                        self.logger.info(
+                                            f"✅ Накопительный лог креативных выборов успешно загружен в B2: {b2_log_path_key}")
+                                    else:
+                                        self.logger.error(
+                                            f"❌ Не удалось загрузить накопительный лог в B2: {b2_log_path_key}")
+                                else:
+                                    self.logger.error("Функция upload_to_b2 не найдена, загрузка лога в B2 невозможна.")
+                            else:
+                                self.logger.error("B2 клиент недоступен, загрузка обновленного лога в B2 невозможна.")
+
+                        except Exception as write_upload_err:
+                            self.logger.error(f"Ошибка при записи или загрузке обновленного лога: {write_upload_err}")
+                    else:
+                        self.logger.error(
+                            "Пропускаем запись и загрузку лога из-за ошибки скачивания предыдущей версии.")
+
+                except Exception as logging_err:
+                    self.logger.error(f"Ошибка при попытке логирования/загрузки креативных выборов: {logging_err}",
+                                      exc_info=True)
+                finally:
+                    # Удаляем временный локальный CSV файл в любом случае
+                    if local_temp_csv_path.exists():
+                        try:
+                            os.remove(local_temp_csv_path)
+                            self.logger.debug(f"Удален временный CSV файл: {local_temp_csv_path}")
+                        except OSError as rm_err:
+                            self.logger.warning(
+                                f"Не удалось удалить временный CSV файл {local_temp_csv_path}: {rm_err}")
+            else:
+                self.logger.warning(
+                    f"Словарь creative_brief не был создан для ID {generation_id}, логирование/загрузка креативных выборов пропущено.")
+            # --- КОНЕЦ ИЗМЕНЕННОГО БЛОКА ---
 
 # --- Точка входа ---
 if __name__ == "__main__":
