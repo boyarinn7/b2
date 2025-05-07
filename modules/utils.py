@@ -43,15 +43,13 @@ except ImportError:
     PIL_AVAILABLE = False
     # Логируем ошибку, если Pillow не найден
     try:
-        # Попытка получить существующий логгер utils
-        logger_utils = logging.getLogger("utils") # Предполагаем, что логгер utils уже есть
-        if not logger_utils.hasHandlers(): # Настроить, если нет
+        logger_utils = logging.getLogger("utils")
+        if not logger_utils.hasHandlers():
              logging.basicConfig(level=logging.INFO)
              logger_utils = logging.getLogger("utils_fallback")
         logger_utils.error("!!! Библиотека Pillow (PIL) не найдена. Функция add_text_to_image не будет работать. Установите: pip install Pillow !!!")
     except Exception:
         print("!!! ОШИБКА: Библиотека Pillow (PIL) не найдена И не удалось получить логгер. Установите: pip install Pillow !!!")
-    # Определяем заглушки, чтобы код ниже не падал при импорте
     Image = None
     ImageDraw = None
     ImageFont = None
@@ -83,14 +81,11 @@ def load_json_config(file_path):
         return None
     try:
         with open(path_obj, 'r', encoding='utf-8') as f:
-            # Проверяем, не пустой ли файл
             content = f.read()
             if not content.strip():
                 logger.warning(f"Файл {file_path} пуст.")
                 return None
-            # Если не пустой, пытаемся загрузить JSON
             data = json.loads(content)
-        # logger.debug(f"Конфигурация успешно загружена из {file_path}")
         return data
     except json.JSONDecodeError as e:
         logger.error(f"Ошибка декодирования JSON в файле {file_path}: {e}")
@@ -99,20 +94,22 @@ def load_json_config(file_path):
         logger.error(f"Не удалось прочитать файл {file_path}: {e}", exc_info=True)
         return None
 
+# --- ИЗМЕНЕНИЕ ФАЗЫ 1: Убеждаемся в наличии ensure_ascii=False, indent=4 ---
 def save_local_json(file_path_str, data):
-    """Сохраняет данные в локальный JSON файл."""
+    """Сохраняет данные в локальный JSON файл с кириллицей и отступами."""
     try:
         ensure_directory_exists(file_path_str)
         path_obj = Path(file_path_str)
         with open(path_obj, 'w', encoding='utf-8') as f:
-            # *** ИЗМЕНЕНИЕ: Добавлен ensure_ascii=False ***
+            # *** Убеждаемся, что параметры здесь правильные ***
             json.dump(data, f, ensure_ascii=False, indent=4)
-            # *** КОНЕЦ ИЗМЕНЕНИЯ ***
+            # *** КОНЕЦ ПРОВЕРКИ ***
         logger.info(f"Данные успешно сохранены в локальный файл: {path_obj}")
         return True
     except Exception as e:
         logger.error(f"Ошибка сохранения данных в {file_path_str}: {e}", exc_info=True)
         return False
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_value=None):
     """Загружает JSON из B2, сохраняя во временный локальный файл."""
@@ -121,13 +118,11 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
         logger.debug(f"Попытка загрузки {remote_path} из B2 в {local_temp_path}...")
         s3_client.download_file(bucket_name, remote_path, local_temp_path)
         logger.info(f"Успешно загружен {remote_path} из B2.")
-        # Загружаем уже из локального temp файла с проверкой на пустоту/валидность
         data = load_json_config(local_temp_path)
         if data is not None:
              logger.info(f"Успешно распарсен JSON из {local_temp_path}.")
              return data
         else:
-             # Если load_json_config вернул None (файл пуст или невалидный JSON)
              logger.warning(f"Файл {local_temp_path} (скачанный из {remote_path}) пуст или содержит невалидный JSON. Возвращаем default_value.")
              return default_value
     except ClientError as e:
@@ -146,17 +141,18 @@ def load_b2_json(s3_client, bucket_name, remote_path, local_temp_path, default_v
             try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
             except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
 
-
+# --- ИЗМЕНЕНИЕ ФАЗЫ 1: Убеждаемся, что используется исправленная save_local_json ---
 def save_b2_json(s3_client, bucket_name, remote_path, local_temp_path, data):
     """Сохраняет данные в JSON файл в B2 через временный локальный файл."""
     try:
+        # *** Убеждаемся, что вызывается save_local_json с ensure_ascii=False ***
         if not save_local_json(local_temp_path, data):
              raise IOError(f"Не удалось сохранить данные локально в {local_temp_path}")
+        # *** КОНЕЦ ПРОВЕРКИ ***
 
         logger.debug(f"Загрузка {local_temp_path} в B2 как {remote_path}...")
         s3_client.upload_file(local_temp_path, bucket_name, remote_path)
-        # Логируем только начало данных для краткости
-        data_preview = json.dumps(data, ensure_ascii=False)[:100]
+        data_preview = json.dumps(data, ensure_ascii=False)[:100] # Для лога используем ensure_ascii=False
         logger.info(f"Данные успешно сохранены в {remote_path} в B2: {data_preview}...")
         return True
     except (IOError, ClientError, NoCredentialsError, Exception) as e:
@@ -166,6 +162,12 @@ def save_b2_json(s3_client, bucket_name, remote_path, local_temp_path, data):
          if Path(local_temp_path).exists():
              try: os.remove(local_temp_path); logger.debug(f"Удален временный файл: {local_temp_path}")
              except OSError as remove_err: logger.warning(f"Не удалось удалить временный файл {local_temp_path}: {remove_err}")
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+# --- Остальные функции utils.py остаются без изменений ---
+# ... (download_file, download_image, download_video, upload_to_b2, ...)
+# ... (list_b2_folder_contents, move_b2_object, delete_b2_object, is_folder_empty, ...)
+# ... (generate_file_id, save_error_to_b2, hex_to_rgba, add_text_to_image, ...)
 
 def download_file(url, local_path_str, stream=False, timeout=30):
     """Скачивает файл по URL."""
@@ -212,29 +214,26 @@ def upload_to_b2(s3_client, bucket_name, target_folder, local_file_path_str, b2_
         logger.error(f"Локальный файл для загрузки не найден: {local_path}")
         return False
 
-    # Формируем ключ объекта B2
     b2_object_key = f"{target_folder.rstrip('/')}/{b2_filename_with_ext}"
 
     logger.info(f"Загрузка {local_path} в B2 как {b2_object_key}...")
     try:
-        # Шаг 1: Попытка загрузки
         s3_client.upload_file(str(local_path), bucket_name, b2_object_key)
         logger.info(f"Вызов upload_file для {b2_object_key} завершен.")
 
-        # Шаг 2: Проверка наличия файла в B2
         logger.info(f"Проверка наличия {b2_object_key} в B2...")
-        time.sleep(1) # Небольшая пауза на всякий случай перед проверкой
+        time.sleep(1)
         try:
             s3_client.head_object(Bucket=bucket_name, Key=b2_object_key)
             logger.info(f"✅ ПРОВЕРКА УСПЕШНА: Файл {b2_object_key} найден в B2.")
-            return True # Загрузка и проверка успешны
+            return True
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code')
             if error_code == '404' or 'NotFound' in str(e):
                  logger.error(f"❌ ПРОВЕРКА НЕУДАЧНА: Файл {b2_object_key} НЕ НАЙДЕН в B2 после upload_file!")
             else:
                  logger.error(f"❌ ОШИБКА ПРОВЕРКИ (head_object) для {b2_object_key}: {e}")
-            return False # Ошибка проверки
+            return False
 
     except ClientError as e:
         logger.error(f"Ошибка Boto3 при вызове upload_file для {b2_object_key}: {e}", exc_info=True)
@@ -252,7 +251,7 @@ def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
     Игнорирует саму папку и placeholder'ы .bzEmpty.
     """
     contents = []
-    logger_list = logging.getLogger(__name__) # Используем существующий логгер
+    logger_list = logging.getLogger(__name__)
 
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
@@ -264,12 +263,10 @@ def list_b2_folder_contents(s3_client, bucket_name, folder_prefix):
                 for obj in page.get('Contents', []):
                     key = obj.get('Key')
                     size_bytes = obj.get('Size', 0)
-                    last_modified = obj.get('LastModified') # <<< ПОЛУЧАЕМ ДАТУ МОДИФИКАЦИИ
+                    last_modified = obj.get('LastModified')
                     if key == prefix or key.endswith('.bzEmpty'):
                          continue
-                    # <<< ДОБАВЛЯЕМ LastModified В СЛОВАРЬ >>>
                     contents.append({'Key': key, 'Size': size_bytes, 'LastModified': last_modified})
-                    # logger_list.debug(f"Найден файл: {key}, Размер: {size_bytes}, Дата: {last_modified}")
 
     except ClientError as e:
         logger_list.error(f"Ошибка Boto3 при листинге папки {folder_prefix}: {e}", exc_info=True)
@@ -317,7 +314,6 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
     """
     logger.debug(f"Проверка на пустоту папки: {bucket_name}/{folder_prefix}")
     try:
-        # Используем обновленную функцию, которая возвращает список словарей
         contents = list_b2_folder_contents(s3_client, bucket_name, folder_prefix)
         if contents:
              logger.debug(f"Папка {folder_prefix} не пуста, найдены файлы: {[item.get('Key') for item in contents]}")
@@ -329,47 +325,28 @@ def is_folder_empty(s3_client, bucket_name, folder_prefix):
         logger.error(f"Ошибка при проверке пустоты папки {folder_prefix}: {e}", exc_info=True)
         return False # В случае ошибки считаем, что не пуста
 
-# --- ИЗМЕНЕНИЕ: Возвращаем формат ID к ГГГГММДД-ЧЧММ ---
 def generate_file_id():
     """Генерирует уникальный ID на основе текущей даты и времени UTC."""
-    # Возвращаем исходный формат без секунд
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, error_data_dict, max_error_files=20):
     """
     Сохраняет данные об ошибке (словарь) в JSON файл в папку ошибок B2 (`error_folder`, например '000/'),
     реализуя ротацию (удаление самого старого файла, если превышен лимит `max_error_files`).
-
-    Args:
-        s3_client: Инициализированный клиент Boto3 S3.
-        bucket_name: Имя бакета B2.
-        error_folder: Путь к папке ошибок в B2 (например, '000/').
-        local_file_path_str: Путь к локальному файлу, который будет создан для временного хранения данных ошибки.
-        error_data_dict: Словарь с данными об ошибке для сохранения в JSON.
-        max_error_files: Максимальное количество файлов в папке ошибок.
-
-    Returns:
-        True, если сохранение (и возможная ротация) прошли успешно, иначе False.
     """
     error_folder_norm = error_folder.rstrip('/') + '/'
     local_path = Path(local_file_path_str)
-    # Имя файла в B2 будет таким же, как у локального временного файла
     b2_filename = local_path.name
     b2_object_key = f"{error_folder_norm}{b2_filename}"
 
     logger.info(f"Сохранение файла ошибки {b2_filename} в папку {error_folder_norm}...")
 
     try:
-        # 1. Проверка и ротация папки ошибок
         logger.debug(f"Проверка количества файлов в {error_folder_norm}...")
-        # Используем обновленную list_b2_folder_contents, которая возвращает LastModified
         error_files = list_b2_folder_contents(s3_client, bucket_name, error_folder_norm)
 
         if len(error_files) >= max_error_files:
             logger.warning(f"В папке {error_folder_norm} {len(error_files)} файлов (лимит: {max_error_files}). Удаление самого старого...")
-            # Сортируем файлы по дате модификации (от старых к новым)
-            # Убедимся, что LastModified существует и является datetime объектом
             valid_files_with_date = [f for f in error_files if isinstance(f.get('LastModified'), datetime)]
             if not valid_files_with_date:
                  logger.error("Не удалось получить дату модификации для файлов в папке ошибок. Ротация невозможна.")
@@ -382,13 +359,12 @@ def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, 
                 else:
                     logger.info(f"Старый файл {oldest_file_key} успешно удален.")
 
-        # 2. Сохранение данных ошибки в локальный временный файл
         logger.debug(f"Сохранение данных ошибки в локальный файл: {local_path}...")
+        # Используем save_local_json, который уже содержит ensure_ascii=False
         if not save_local_json(str(local_path), error_data_dict):
             logger.error(f"Не удалось сохранить данные ошибки локально в {local_path}")
             return False
 
-        # 3. Загрузка локального файла в папку ошибок B2
         logger.debug(f"Загрузка {local_path} в B2 как {b2_object_key}...")
         s3_client.upload_file(str(local_path), bucket_name, b2_object_key)
         logger.info(f"✅ Файл ошибки {b2_filename} успешно сохранен в {error_folder_norm}")
@@ -398,7 +374,6 @@ def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, 
         logger.error(f"Ошибка при сохранении файла ошибки {b2_filename} в {error_folder_norm}: {e}", exc_info=True)
         return False
     finally:
-        # Удаление временного локального файла
         if local_path.exists():
             try:
                 os.remove(local_path)
@@ -406,17 +381,13 @@ def save_error_to_b2(s3_client, bucket_name, error_folder, local_file_path_str, 
             except OSError as remove_err:
                 logger.warning(f"Не удалось удалить временный файл ошибки {local_path}: {remove_err}")
 
-# --- Функции для обработки изображений (Pillow) ---
-# ВАЖНО: Эта функция оставлена БЕЗ ИЗМЕНЕНИЙ по сравнению с вашим файлом
-
 def hex_to_rgba(hex_color, alpha=255):
     """Конвертирует HEX цвет (#RRGGBB) в кортеж RGBA."""
-    # Получаем логгер (если logger не глобальный)
     local_logger = logging.getLogger("utils_hex_converter")
     if not local_logger.hasHandlers(): logging.basicConfig(level=logging.INFO)
 
     hex_color = hex_color.lstrip('#')
-    default_color = (0, 0, 0, alpha)  # Черный по умолчанию
+    default_color = (0, 0, 0, alpha)
     if len(hex_color) != 6:
         local_logger.warning(f"Некорректный HEX цвет '{hex_color}'. Используется черный.")
         return default_color
@@ -427,17 +398,15 @@ def hex_to_rgba(hex_color, alpha=255):
         local_logger.warning(f"Не удалось сконвертировать HEX '{hex_color}'. Используется черный.")
         return default_color
 
-
-# Основная функция с логированием параметра цвета
 def add_text_to_image(
     image_path_str: str,
-    text: str, # Текст с переносами \n от ИИ
+    text: str,
     font_path_str: str,
     output_path_str: str,
-    text_color_hex: str = "#000000", # Цвет по умолчанию черный (или ваш темно-серый, если меняли)
-    position: tuple = ('center', 'center'), # Позиция текста (ожидаем ('center','center'))
-    padding: int = 50, # Отступы (меньше используются при center)
-    haze_opacity: int = 100, # Прозрачность белой дымки (0-255)
+    text_color_hex: str = "#000000",
+    position: tuple = ('center', 'center'),
+    padding: int = 50,
+    haze_opacity: int = 100,
     bg_blur_radius: float = 0,
     bg_opacity: int = 0,
     logger_instance=None,
@@ -451,20 +420,14 @@ def add_text_to_image(
     """
     Наносит текст на изображение с автоподбором размера шрифта,
     добавляя белую "дымку" и обводку текста.
-    Добавлено логирование получаемого цвета.
     """
-    # Получаем логгер
-    log = logger_instance if logger_instance else logging.getLogger("utils_add_text") # Используем стандартный, если logger не передан
+    log = logger_instance if logger_instance else logging.getLogger("utils_add_text")
     if not log.hasHandlers(): logging.basicConfig(level=logging.INFO)
-    # Установим DEBUG уровень, если нужно больше деталей
     if log.level > logging.DEBUG: log.setLevel(logging.DEBUG)
 
     log.debug(">>> Вход в add_text_to_image (автоподбор v4 - крупнее, с логом цвета)")
-    # --- ДОБАВЛЕНО ЛОГИРОВАНИЕ ПАРАМЕТРА ---
     log.info(f"Получен параметр text_color_hex: {text_color_hex}")
-    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
 
-    # Проверка доступности Pillow
     if not PIL_AVAILABLE or Image is None:
         log.error("Библиотека Pillow недоступна. Невозможно добавить текст.")
         return False
@@ -484,7 +447,6 @@ def add_text_to_image(
         img_width, img_height = img.size
         log.debug(f"Изображение открыто: {img_width}x{img_height}, режим={img.mode}")
 
-        # Добавление белой "дымки" (haze)
         if haze_opacity > 0:
             log.info(f"Добавление белой дымки (прозрачность: {haze_opacity})...")
             haze_layer = Image.new('RGBA', img.size, (255, 255, 255, haze_opacity))
@@ -496,7 +458,6 @@ def add_text_to_image(
         draw = ImageDraw.Draw(img)
         log.debug("Объект ImageDraw создан/обновлен.")
 
-        # Автоподбор размера шрифта
         num_lines = text.count('\n') + 1
         log.info(f"Начало автоподбора размера шрифта (старт: {initial_font_size}, строк: {num_lines})...")
         current_min_font_size = min_font_size_multiline if num_lines >= 3 else min_font_size
@@ -549,7 +510,6 @@ def add_text_to_image(
         final_font_size = current_font_size
         log.debug(f"Финальный размер шрифта: {final_font_size}")
 
-        # Расчет финальных размеров и позиции
         log.debug("Расчет финальных размеров и позиции...")
         try:
             bbox_multiline = draw.textbbox((0, 0), text, font=font)
@@ -570,9 +530,7 @@ def add_text_to_image(
         text_position = (int(x), int(y))
         log.info(f"Позиция текста (левый верхний угол): {text_position}")
 
-        # Добавление подложки/размытия (если нужно)
         if bg_blur_radius > 0 or bg_opacity > 0:
-            # ... (код подложки остается прежним) ...
             log.info("Добавление эффектов фона под текстом...")
             log.debug(f"Параметры фона: blur={bg_blur_radius}, opacity={bg_opacity}")
             background_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
@@ -608,18 +566,17 @@ def add_text_to_image(
                     log.warning(f"Не удалось применить размытие под текстом: {blur_err}")
             if bg_opacity > 0:
                  log.info(f"Создание полупрозрачной подложки под текстом (opacity: {bg_opacity}) в области {bg_rect_coords}")
-                 overlay_color = (0, 0, 0, bg_opacity) # Черный с заданной прозрачностью
+                 overlay_color = (0, 0, 0, bg_opacity)
                  log.debug(f"Рисование прямоугольника подложки цветом {overlay_color}...")
                  draw_bg.rectangle(bg_rect_coords, fill=overlay_color)
                  log.debug("Подложка нарисована.")
             log.debug("Наложение слоя фона на основное изображение...")
             img = Image.alpha_composite(img, background_layer)
-            draw = ImageDraw.Draw(img) # Обновляем draw для финального изображения
+            draw = ImageDraw.Draw(img)
             log.debug("Слой фона наложен, ImageDraw обновлен.")
         else:
             log.debug("Эффекты фона под текстом отключены.")
 
-        # Нанесение текста
         log.debug(f"Конвертация HEX цвета текста: {text_color_hex}")
         final_text_color = hex_to_rgba(text_color_hex, alpha=240)
         log.debug(f"Финальный цвет текста (RGBA): {final_text_color}")
@@ -627,9 +584,7 @@ def add_text_to_image(
         log.debug(f"Цвет обводки (RGBA): {final_stroke_color}, Ширина: {stroke_width}")
 
         log_text_preview = text[:50].replace('\n', '\\n')
-        # --- ИЗМЕНЕНИЕ: Логируем цвет, который БУДЕТ использоваться ---
         log.info(f"Нанесение текста '{log_text_preview}...' цветом {final_text_color} (из HEX: {text_color_hex}) с обводкой (размер: {final_font_size})")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         align_option = 'center' if position[0] == 'center' else 'left'
         log.debug(f"Выравнивание текста: {align_option}")
@@ -643,7 +598,6 @@ def add_text_to_image(
         except Exception as draw_err:
              log.error(f"Ошибка при вызове draw.text: {draw_err}", exc_info=True); return False
 
-        # Сохранение результата
         log.debug("Подготовка к сохранению...")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         log.debug(f"Сохранение изображения в {output_path}...")
@@ -661,40 +615,112 @@ def add_text_to_image(
         log.debug(f"<<< Выход из add_text_to_image (Ошибка Exception: {e})")
         return False
 
-# +++ КОНЕЦ ФУНКЦИИ add_text_to_image +++
+# --- НОВАЯ ФУНКЦИЯ для валидации ---
+def validate_output_json(data: dict, logger_instance=None) -> tuple[bool, str]:
+    """
+    Проверяет соответствие словаря `data` требованиям ТЗ к формату полей 'content', 'sarcasm.comment' и 'hashtags'.
+    """
+    log = logger_instance if logger_instance else logger
+    log.info("Запуск валидации выходного JSON...")
 
-# Пример использования (можно закомментировать или удалить в финальной версии)
-# if __name__ == '__main__':
-#     # Нужен Pillow: pip install Pillow
-#     if PIL_AVAILABLE:
-#         # Создаем тестовое изображение
-#         test_img_path = "test_image.png"
-#         img = Image.new('RGB', (800, 200), color = (73, 109, 137))
-#         img.save(test_img_path)
-#
-#         # Нужен файл шрифта, например, скачанный Roboto-Regular.ttf
-#         # Поместите его рядом со скриптом или укажите полный путь
-#         test_font_path = "fonts/Roboto-Regular.ttf" # Пример пути
-#         output_file = "test_output.png"
-#         test_text = "Пример текста для проверки функции"
-#
-#         if Path(test_font_path).is_file():
-#             success = add_text_to_image(
-#                 test_img_path,
-#                 test_text,
-#                 test_font_path,
-#                 output_file,
-#                 font_size=40,
-#                 position=('center', 'center'),
-#                 bg_blur_radius=5,
-#                 bg_opacity=120
-#             )
-#             if success:
-#                 print(f"Тестовое изображение сохранено как {output_file}")
-#             else:
-#                 print("Не удалось создать тестовое изображение.")
-#         else:
-#             print(f"Тестовый шрифт не найден по пути: {test_font_path}")
-#     else:
-#         print("Pillow не установлен. Тест не может быть выполнен.")
+    content_val = data.get("content")
+    if not isinstance(content_val, str):
+        msg = "Ошибка валидации: Поле 'content' не является строкой."
+        log.error(msg)
+        return False, msg
 
+    try:
+        content_json = json.loads(content_val)
+        if not isinstance(content_json, dict):
+            msg = "Ошибка валидации: Поле 'content' не содержит валидный JSON-объект."
+            log.error(msg)
+            return False, msg
+        if list(content_json.keys()) != ["текст"]:
+            msg = f"Ошибка валидации: JSON в поле 'content' должен содержать ровно один ключ 'текст'. Найдено: {list(content_json.keys())}"
+            log.error(msg)
+            return False, msg
+
+        main_text = content_json.get("текст")
+        if not isinstance(main_text, str):
+            msg = "Ошибка валидации: Значение по ключу 'текст' в поле 'content' не является строкой."
+            log.error(msg)
+            return False, msg
+        if not main_text.strip():
+            msg = "Ошибка валидации: Значение по ключу 'текст' в поле 'content' пустое."
+            log.error(msg)
+            return False, msg
+        if "\n\n" not in main_text:
+            if main_text.count('\n') > 0:
+                 msg = "Ошибка валидации: Текст в поле 'content'['текст'] не разбит на абзацы с помощью '\\n\\n'."
+                 log.error(msg)
+                 return False, msg
+            else:
+                 log.debug("Текст в 'content'['текст'] состоит из одной строки, проверка '\\n\\n' пропущена.")
+
+    except json.JSONDecodeError:
+        msg = "Ошибка валидации: Не удалось распарсить JSON-строку в поле 'content'."
+        log.error(msg)
+        return False, msg
+    except Exception as e:
+        msg = f"Неожиданная ошибка при валидации 'content': {e}"
+        log.error(msg, exc_info=True)
+        return False, msg
+
+    log.debug("Валидация поля 'content' пройдена.")
+
+    sarcasm_data = data.get("sarcasm")
+    if not isinstance(sarcasm_data, dict):
+        log.debug("Поле 'sarcasm' отсутствует или не словарь, проверка 'comment' пропущена.")
+    else:
+        comment_val = sarcasm_data.get("comment")
+        if comment_val is None or comment_val == "":
+            log.debug("Поле 'sarcasm.comment' отсутствует или пустое, валидация пропущена.")
+        elif not isinstance(comment_val, str):
+            msg = "Ошибка валидации: Поле 'sarcasm.comment' не является строкой (и не None/пустое)."
+            log.error(msg)
+            return False, msg
+        else:
+            try:
+                comment_json = json.loads(comment_val)
+                if not isinstance(comment_json, dict):
+                    msg = "Ошибка валидации: Поле 'sarcasm.comment' не содержит валидный JSON-объект."
+                    log.error(msg)
+                    return False, msg
+                if list(comment_json.keys()) != ["комментарий"]:
+                    msg = f"Ошибка валидации: JSON в поле 'sarcasm.comment' должен содержать ровно один ключ 'комментарий'. Найдено: {list(comment_json.keys())}"
+                    log.error(msg)
+                    return False, msg
+
+                comment_text = comment_json.get("комментарий")
+                if not isinstance(comment_text, str):
+                    msg = "Ошибка валидации: Значение по ключу 'комментарий' в поле 'sarcasm.comment' не является строкой."
+                    log.error(msg)
+                    return False, msg
+
+            except json.JSONDecodeError:
+                msg = "Ошибка валидации: Не удалось распарсить JSON-строку в поле 'sarcasm.comment'."
+                log.error(msg)
+                return False, msg
+            except Exception as e:
+                msg = f"Неожиданная ошибка при валидации 'sarcasm.comment': {e}"
+                log.error(msg, exc_info=True)
+                return False, msg
+
+            log.debug("Валидация поля 'sarcasm.comment' пройдена.")
+
+    hashtags_val = data.get("hashtags")
+    if hashtags_val is None:
+        log.debug("Поле 'hashtags' отсутствует, валидация пропущена.")
+    elif not isinstance(hashtags_val, list):
+        msg = "Ошибка валидации: Поле 'hashtags' не является списком (и не None)."
+        log.error(msg)
+        return False, msg
+    elif not all(isinstance(tag, str) for tag in hashtags_val):
+        msg = "Ошибка валидации: Не все элементы в списке 'hashtags' являются строками."
+        log.error(msg)
+        return False, msg
+    else:
+        log.debug("Валидация поля 'hashtags' пройдена.")
+
+    log.info("✅ Валидация выходного JSON успешно пройдена.")
+    return True, "OK"

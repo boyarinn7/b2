@@ -17,7 +17,8 @@
         }
     },
     "OPENAI_SETTINGS": {
-        "model": "gpt-4o"
+        "model": "gpt-4o",
+        "vision_model": "gpt-4o"
     },
     "FILE_PATHS": {
         "meta_folder": "data/meta/",
@@ -42,7 +43,11 @@
         "fonts_folder": "fonts/",
         "sarcasm_baron_image": "assets/Барон.png",
         "sarcasm_font": "assets/fonts/Kurale-Regular.ttf",
-        "sarcasm_image_suffix": "_sarcasm.png"
+        "sarcasm_image_suffix": "_sarcasm.png",
+        "tracker_path": "data/topics_tracker.json",
+        "failsafe_path": "config/FailSafeVault.json",
+        "error_folder": "000/",
+        "creative_choices_log_path": "data/creative_choices.csv"
     },
     "CONTENT": {
         "topic": {
@@ -61,7 +66,7 @@
             "enabled": false
         },
         "improve": {
-            "enabled": false 
+            "enabled": false
         }
     },
     "SARCASM": {
@@ -81,7 +86,7 @@
             "humor_ratio": 0.5
         }
     },
-    "IMAGE_GENERATION": { 
+    "IMAGE_GENERATION": {
         "output_size": "1280x720",
         "midjourney_version": "7.0",
         "midjourney_style": null
@@ -92,7 +97,8 @@
         "mj_timeout_seconds": 18000,
         "runway_polling_timeout": 300,
         "runway_polling_interval": 15,
-        "enable_russian_translation": true
+        "enable_russian_translation": true,
+        "max_error_files": 20
     },
     "VIDEO": {
         "placeholder_bg_color": "cccccc",
@@ -101,6 +107,7 @@
         "mock_fps": 24,
         "mock_codec": "libx264",
         "runway_duration": 10,
-        "runway_ratio": "1280:720"
+        "runway_ratio": "1280:720",
+        "title_haze_opacity": 128
     }
 }
