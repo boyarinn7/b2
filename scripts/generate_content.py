@@ -981,84 +981,159 @@ class ContentGenerator:
 
         # --- ИЗМЕНЕНИЕ: Добавлен блок finally для логирования ---
         finally:
-            # --- Логирование креативных выборов ---
-            # --- НАЧАЛО ИЗМЕНЕННОГО БЛОКА: Логирование и Накопительная Загрузка CSV в B2 ---
+            # Фрагмент для блока finally в методе run класса ContentGenerator (generate_content.py)
+            # ... (начало блока finally) ...
+            # --- Логирование креативных выборов (РАСШИРЕННОЕ) ---
             if 'creative_brief' in locals() and creative_brief:
                 try:
-                    # --- Получаем пути ---
+                    # --- Получаем пути (как и раньше) ---
                     log_path_rel = self.config.get('FILE_PATHS.creative_choices_log_path', 'data/creative_choices.csv')
-                    # Локальный путь для временного хранения/обновления CSV
                     local_temp_csv_path = BASE_DIR / (
-                                log_path_rel + ".local_temp")  # Добавляем суффикс, чтобы не конфликтовать
-                    b2_log_path_key = log_path_rel  # Путь/ключ в B2
+                                log_path_rel + ".local_temp_v2")  # Используем новый суффикс для временного файла
+                    b2_log_path_key = log_path_rel
 
-                    ensure_directory_exists(str(local_temp_csv_path))  # Убедимся, что папка для temp файла есть
+                    ensure_directory_exists(str(local_temp_csv_path))
 
-                    # --- Извлекаем данные для новой строки ---
-                    core_choice = creative_brief.get('core', {}).get('chosen_value', 'N/A')
-                    driver_choice = creative_brief.get('driver', {}).get('chosen_driver_value', 'N/A')
-                    aesthetic_choice = creative_brief.get('aesthetic', {}).get('chosen_style_value', 'N/A')
-                    style_needed = creative_brief.get('aesthetic', {}).get('style_needed', False)
-                    aesthetic_log = aesthetic_choice if style_needed else 'None'
+                    # --- Извлекаем ОСНОВНЫЕ данные для новой строки (как и раньше) ---
+                    core_data = creative_brief.get('core', {})
+                    driver_data = creative_brief.get('driver', {})
+                    aesthetic_data = creative_brief.get('aesthetic', {})
+
+                    core_choice_value = core_data.get('chosen_value', 'N/A')
+                    driver_choice_value = driver_data.get('chosen_driver_value', 'N/A')
+
+                    style_needed = aesthetic_data.get('style_needed', False)
+                    aesthetic_choice_value = aesthetic_data.get('chosen_style_value', 'N/A') if style_needed else 'None'
+
                     timestamp_log = datetime.now(timezone.utc).isoformat()
-                    new_log_line = f"{timestamp_log},{generation_id},{core_choice},{driver_choice},{aesthetic_log}\n"
 
-                    # --- Скачиваем существующий CSV из B2 (если есть) ---
+                    # --- ДОПОЛНИТЕЛЬНЫЕ ДАННЫЕ для логирования ---
+                    # Важно: эти переменные должны быть доступны в этой области видимости.
+                    # Они должны были быть определены ранее в методе run().
+
+                    # 1. InputTopic (переменная 'topic' из метода run)
+                    input_topic_log = topic if 'topic' in locals() and topic else 'N/A'
+
+                    # 2. CoreChoiceType
+                    core_choice_type_log = core_data.get('chosen_type', 'N/A')
+
+                    # 3. DriverChoiceType
+                    driver_choice_type_log = driver_data.get('chosen_driver_type', 'N/A')
+
+                    # 4. AestheticChoiceType
+                    aesthetic_choice_type_log = aesthetic_data.get('chosen_style_type',
+                                                                   'N/A') if style_needed else 'None'
+
+                    # 5. StyleKeywords (список или None)
+                    style_keywords_list = aesthetic_data.get('style_keywords') if style_needed else None
+                    # Преобразуем список в строку для CSV, например, через точку с запятой, или оставляем пустым
+                    style_keywords_log = ";".join(style_keywords_list) if isinstance(style_keywords_list,
+                                                                                     list) else 'None'
+
+                    # 6. FinalMJPrompt_EN (переменная 'final_mj_prompt_en' из метода run)
+                    final_mj_prompt_en_log = final_mj_prompt_en if 'final_mj_prompt_en' in locals() and final_mj_prompt_en else 'N/A'
+
+                    # 7. FinalRunwayPrompt_EN (переменная 'final_runway_prompt_en' из метода run)
+                    final_runway_prompt_en_log = final_runway_prompt_en if 'final_runway_prompt_en' in locals() and final_runway_prompt_en else 'N/A'
+
+                    # Очистка данных от запятых, чтобы не ломать CSV
+                    def clean_csv_value(value):
+                        if isinstance(value, str):
+                            return value.replace(',', ';').replace('\n', ' ').replace('\r', '')
+                        return value
+
+                    input_topic_log = clean_csv_value(input_topic_log)
+                    core_choice_value = clean_csv_value(core_choice_value)
+                    driver_choice_value = clean_csv_value(driver_choice_value)
+                    aesthetic_choice_value = clean_csv_value(aesthetic_choice_value)
+                    style_keywords_log = clean_csv_value(style_keywords_log)
+                    final_mj_prompt_en_log = clean_csv_value(final_mj_prompt_en_log)
+                    final_runway_prompt_en_log = clean_csv_value(final_runway_prompt_en_log)
+
+                    # --- ОБНОВЛЕННЫЙ ЗАГОЛОВОК CSV ---
+                    header = (
+                        "TimestampUTC,GenerationID,InputTopic,"
+                        "CoreChoiceValue,CoreChoiceType,"
+                        "DriverChoiceValue,DriverChoiceType,"
+                        "AestheticChoiceValue,AestheticChoiceType,StyleKeywords,"
+                        "FinalMJPrompt_EN,FinalRunwayPrompt_EN\n"
+                    )
+
+                    # --- ОБНОВЛЕННАЯ СТРОКА ДАННЫХ ---
+                    new_log_line = (
+                        f"{timestamp_log},{generation_id},{input_topic_log},"
+                        f"{core_choice_value},{core_choice_type_log},"
+                        f"{driver_choice_value},{driver_choice_type_log},"
+                        f"{aesthetic_choice_value},{aesthetic_choice_type_log},{style_keywords_log},"
+                        f"{final_mj_prompt_en_log},{final_runway_prompt_en_log}\n"
+                    )
+
+                    # --- Логика скачивания, записи и загрузки CSV (остается прежней, но проверяет новый header) ---
                     existing_content = ""
-                    header = "TimestampUTC,GenerationID,CoreChoice,DriverChoice,AestheticChoice\n"
-                    needs_header = True  # По умолчанию считаем, что заголовок нужен
+                    needs_header = True
 
                     if self.b2_client:
                         self.logger.info(f"Попытка скачать существующий лог из B2: {b2_log_path_key}")
                         try:
-                            # Скачиваем во временный файл
                             self.b2_client.download_file(self.b2_bucket_name, b2_log_path_key, str(local_temp_csv_path))
-                            # Читаем содержимое скачанного файла
                             with open(local_temp_csv_path, 'r', encoding='utf-8') as temp_f:
                                 existing_content = temp_f.read()
-                            # Проверяем, есть ли уже заголовок
-                            if existing_content.strip().startswith("TimestampUTC,GenerationID"):
+                            # Проверяем, есть ли уже НОВЫЙ заголовок
+                            if existing_content.strip().startswith(
+                                    "TimestampUTC,GenerationID,InputTopic"):  # Проверка по началу нового заголовка
                                 needs_header = False
+                            elif existing_content.strip().startswith(
+                                    "TimestampUTC,GenerationID,CoreChoice"):  # Проверка на старый заголовок
+                                self.logger.warning(
+                                    "Обнаружен старый формат заголовка в CSV. Файл будет перезаписан с новым заголовком.")
+                                existing_content = ""  # Перезаписываем, если заголовок старый
+                                needs_header = True
+                            else:  # Если заголовок вообще не найден или файл пуст
+                                needs_header = True
+
                             self.logger.info(f"Существующий лог {b2_log_path_key} успешно скачан.")
                         except ClientError as e:
                             error_code = e.response.get('Error', {}).get('Code')
                             if error_code == 'NoSuchKey' or '404' in str(e):
                                 self.logger.info(f"Файл лога {b2_log_path_key} не найден в B2. Будет создан новый.")
-                                existing_content = ""  # Файла нет, начинаем с нуля
+                                existing_content = ""
                                 needs_header = True
                             else:
                                 self.logger.error(
                                     f"Ошибка B2 при скачивании лога {b2_log_path_key}: {e}. Не удастся накопить данные.")
-                                existing_content = None  # Сигнал об ошибке скачивания
+                                existing_content = None
                         except Exception as download_err:
                             self.logger.error(
                                 f"Неизвестная ошибка при скачивании лога {b2_log_path_key}: {download_err}. Не удастся накопить данные.")
-                            existing_content = None  # Сигнал об ошибке скачивания
+                            existing_content = None
                     else:
                         self.logger.error("B2 клиент недоступен, скачивание существующего лога невозможно.")
-                        existing_content = None  # Сигнал об ошибке
+                        existing_content = None
 
-                    # --- Записываем обновленное содержимое в локальный файл ---
-                    if existing_content is not None:  # Продолжаем только если не было ошибки скачивания
+                    if existing_content is not None:
                         try:
-                            with open(local_temp_csv_path, 'w', encoding='utf-8') as log_file:
+                            # Используем 'a' (append) если заголовок уже есть и он правильный, иначе 'w' (write)
+                            write_mode = 'a' if not needs_header else 'w'
+                            with open(local_temp_csv_path, write_mode, encoding='utf-8',
+                                      newline='') as log_file:  # newline='' для корректной записи CSV
                                 if needs_header:
                                     log_file.write(header)
-                                # Если скачали существующий контент, дописываем его (убираем лишние пустые строки в конце, если были)
-                                if existing_content.strip():
-                                    log_file.write(existing_content.strip() + '\n')
-                                # Добавляем новую строку
+                                # Если мы дописываем (append), а не перезаписываем, то старый контент уже в файле (если был скачан)
+                                # или файл пуст и мы только что записали заголовок.
+                                # Если existing_content был, но мы решили перезаписать (write_mode='w'), то он не пишется.
+                                # Логика выше уже обработала existing_content для needs_header.
+                                # Здесь просто дописываем новую строку.
                                 log_file.write(new_log_line)
                             self.logger.info(
                                 f"Обновленное содержимое лога записано в локальный файл: {local_temp_csv_path}")
 
-                            # --- Загружаем обновленный локальный файл в B2 ---
                             if self.b2_client:
                                 b2_log_folder = os.path.dirname(b2_log_path_key)
                                 b2_log_filename = os.path.basename(b2_log_path_key)
                                 self.logger.info(
                                     f"Попытка загрузки обновленного лога {local_temp_csv_path} в B2 как {b2_log_path_key}...")
-                                if 'upload_to_b2' in globals() and callable(globals()['upload_to_b2']):
+                                if 'upload_to_b2' in globals() and callable(
+                                        globals()['upload_to_b2']):  # Проверка наличия функции
                                     if upload_to_b2(self.b2_client, self.b2_bucket_name, b2_log_folder,
                                                     str(local_temp_csv_path), b2_log_filename):
                                         self.logger.info(
@@ -1070,7 +1145,6 @@ class ContentGenerator:
                                     self.logger.error("Функция upload_to_b2 не найдена, загрузка лога в B2 невозможна.")
                             else:
                                 self.logger.error("B2 клиент недоступен, загрузка обновленного лога в B2 невозможна.")
-
                         except Exception as write_upload_err:
                             self.logger.error(f"Ошибка при записи или загрузке обновленного лога: {write_upload_err}")
                     else:
@@ -1081,8 +1155,7 @@ class ContentGenerator:
                     self.logger.error(f"Ошибка при попытке логирования/загрузки креативных выборов: {logging_err}",
                                       exc_info=True)
                 finally:
-                    # Удаляем временный локальный CSV файл в любом случае
-                    if local_temp_csv_path.exists():
+                    if local_temp_csv_path.exists():  # Используем Path.exists()
                         try:
                             os.remove(local_temp_csv_path)
                             self.logger.debug(f"Удален временный CSV файл: {local_temp_csv_path}")
@@ -1092,7 +1165,7 @@ class ContentGenerator:
             else:
                 self.logger.warning(
                     f"Словарь creative_brief не был создан для ID {generation_id}, логирование/загрузка креативных выборов пропущено.")
-            # --- КОНЕЦ ИЗМЕНЕННОГО БЛОКА ---
+        # ... (конец блока finally) ...
 
 # --- Точка входа ---
 if __name__ == "__main__":
