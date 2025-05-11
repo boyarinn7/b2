@@ -236,6 +236,11 @@ def save_content_to_b2(folder, content_dict, generation_id, config_manager_insta
             except OSError as remove_err: logger.warning(f"Не удалить {local_temp_path}: {remove_err}")
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+# Очистка данных от запятых, чтобы не ломать CSV
+def clean_csv_value(value):
+    if isinstance(value, str):
+        return value.replace(',', ';').replace('\n', ' ').replace('\r', '')
+    return value
 
 # --- КЛАСС ГЕНЕРАТОРА КОНТЕНТА ---
 class ContentGenerator:
@@ -794,6 +799,48 @@ class ContentGenerator:
                 self.logger.info(f"Описание (EN): {frame_description_en[:100]}...");
                 self.save_to_generated_content("script_frame_en",
                                                {"script": script_en, "first_frame_description": frame_description_en})
+                # --- НОВЫЙ ШАГ 5.1: Детализированный Визуальный Сценарий (EN) ---
+                detailed_visual_script_en = None  # Сначала создаем пустую "коробочку" для нашего детализированного сценария
+                self.logger.info("--- Шаг 5.1: Детализированный Визуальный Сценарий (EN) ---");
+                prompt_key5_1 = "multi_step.step5_1_detailed_visual_script";  # Это имя нашего нового промпта из prompts_config.json
+                tmpl5_1 = self._get_prompt_template(prompt_key5_1);  # Получаем сам текст промпта
+
+                if not tmpl5_1:
+                    # Если вдруг мы забыли добавить промпт в prompts_config.json
+                    self.logger.warning(f"Промпт {prompt_key5_1} не найден. Пропуск шага детализации сценария.")
+                elif not script_en or not frame_description_en:
+                    # Если предыдущий шаг не дал нам общий сценарий или описание кадра, детализировать нечего
+                    self.logger.warning(
+                        "Общий сценарий или описание первого кадра отсутствуют для Шага 5.1. Пропуск детализации.")
+                else:
+                    # Если все на месте, готовим "задание" для OpenAI
+                    prompt5_1 = tmpl5_1.format(
+                        script_en=script_en,  # Общий сценарий, который получили на Шаге 5
+                        first_frame_description_en=frame_description_en,  # Описание первого кадра (тоже с Шага 5)
+                        creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2)
+                        # Наш креативный бриф
+                    )
+                    # Отправляем задание OpenAI и ждем ответ
+                    detailed_script_data = call_openai(
+                        prompt5_1,
+                        prompt_config_key=prompt_key5_1,  # Имя промпта для настроек температуры и токенов
+                        use_json_mode=True,  # Мы ожидаем ответ в формате JSON
+                        config_manager_instance=self.config,
+                        prompts_config_data_instance=self.prompts_config_data
+                    )
+
+                    # Проверяем, что OpenAI ответил и дал нам то, что мы просили
+                    if detailed_script_data and "detailed_visual_script" in detailed_script_data:
+                        detailed_visual_script_en = detailed_script_data["detailed_visual_script"]
+                        self.logger.info(
+                            f"Детализированный Визуальный Сценарий (EN): {detailed_visual_script_en[:150]}...")  # Показываем кусочек результата
+                        # Сохраняем результат во временный файл (как и для других шагов)
+                        self.save_to_generated_content("detailed_visual_script_en",
+                                                       {"detailed_visual_script": detailed_visual_script_en})
+                    else:
+                        self.logger.error(
+                            f"Шаг 5.1: не удалось сгенерировать детализированный сценарий или ответ пришел в неверном формате. Ответ: {detailed_script_data}")
+                # --- КОНЕЦ НОВОГО ШАГА 5.1 ---
 
                 # Шаг 6.6a: MJ Промпт (EN)
                 self.logger.info("--- Шаг 6.6a: MJ Промпт (EN) ---");
@@ -827,9 +874,23 @@ class ContentGenerator:
                 prompt_key6b = "multi_step.step6b_runway_adapt";
                 tmpl6b = self._get_prompt_template(prompt_key6b);
                 if not tmpl6b: raise ValueError(f"{prompt_key6b} не найден.")
-                prompt6b = tmpl6b.format(script=script_en,
-                                         creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2),
-                                         input_text=topic)
+
+                # --- ОБНОВЛЕННАЯ ЛОГИКА: Выбираем, какой сценарий использовать ---
+                # Если мы успешно получили детализированный сценарий (detailed_visual_script_en не пустой),
+                # то используем его. Иначе, если что-то пошло не так, используем старый общий сценарий (script_en).
+                script_for_runway_prompt = detailed_visual_script_en if detailed_visual_script_en else script_en
+
+                if detailed_visual_script_en:
+                    self.logger.info("Используем ДЕТАЛИЗИРОВАННЫЙ сценарий для Runway промпта.")
+                else:
+                    self.logger.warning(
+                        "Детализированный сценарий ОТСУТСТВУЕТ или не был сгенерирован, используем ОБЩИЙ сценарий для Runway промпта.")
+
+                prompt6b = tmpl6b.format(
+                    script=script_for_runway_prompt,  # <--- ПЕРЕДАЕМ НУЖНЫЙ СЦЕНАРИЙ
+                    creative_brief_json=json.dumps(creative_brief, ensure_ascii=False, indent=2),
+                    input_text=topic
+                )
                 runway_prompt_data = call_openai(prompt6b, prompt_config_key=prompt_key6b, use_json_mode=True,
                                                  config_manager_instance=self.config,
                                                  prompts_config_data_instance=self.prompts_config_data)
@@ -899,16 +960,22 @@ class ContentGenerator:
             complete_content_dict = {
                 "topic": topic,
                 "content": content_json_str,
-                "selected_focus": selected_focus,
+                "selected_focus": selected_focus,  # Убедитесь, что это поле тоже есть, если оно нужно
                 "sarcasm": {
                     "comment": sarcasm_comment_json_str_final,
                     "poll": sarcastic_poll if sarcastic_poll else None
                 },
-                "script": script_en, "first_frame_description": frame_description_en,
-                "creative_brief": creative_brief, "final_mj_prompt": final_mj_prompt_en,
+                "script": script_en,
+                "first_frame_description": frame_description_en,
+                "detailed_visual_script": detailed_visual_script_en if 'detailed_visual_script_en' in locals() and detailed_visual_script_en else None,
+                # <-- ДОБАВЛЕНО (с проверкой)
+                "creative_brief": creative_brief,
+                "final_mj_prompt": final_mj_prompt_en,
                 "final_runway_prompt": final_runway_prompt_en,
-                "script_ru": script_ru, "first_frame_description_ru": frame_description_ru,
-                "final_mj_prompt_ru": final_mj_prompt_ru, "final_runway_prompt_ru": final_runway_prompt_ru,
+                "script_ru": script_ru,  # Если есть перевод
+                "first_frame_description_ru": frame_description_ru,  # Если есть перевод
+                "final_mj_prompt_ru": final_mj_prompt_ru,  # Если есть перевод
+                "final_runway_prompt_ru": final_runway_prompt_ru,  # Если есть перевод
                 "hashtags": generated_hashtags if generated_hashtags else None,
             }
             # Очистка None значений
@@ -1036,11 +1103,10 @@ class ContentGenerator:
                     # 7. FinalRunwayPrompt_EN (переменная 'final_runway_prompt_en' из метода run)
                     final_runway_prompt_en_log = final_runway_prompt_en if 'final_runway_prompt_en' in locals() and final_runway_prompt_en else 'N/A'
 
-                    # Очистка данных от запятых, чтобы не ломать CSV
-                    def clean_csv_value(value):
-                        if isinstance(value, str):
-                            return value.replace(',', ';').replace('\n', ' ').replace('\r', '')
-                        return value
+                    # 8. DetailedVisualScript_EN (новая переменная 'detailed_visual_script_en' из метода run)
+                    # Убедимся, что detailed_visual_script_en существует в локальной области видимости
+                    detailed_visual_script_en_log = detailed_visual_script_en if 'detailed_visual_script_en' in locals() and detailed_visual_script_en else 'N/A'
+                    detailed_visual_script_en_log = clean_csv_value(detailed_visual_script_en_log)  # Очищаем для CSV
 
                     input_topic_log = clean_csv_value(input_topic_log)
                     core_choice_value = clean_csv_value(core_choice_value)
@@ -1056,7 +1122,7 @@ class ContentGenerator:
                         "CoreChoiceValue,CoreChoiceType,"
                         "DriverChoiceValue,DriverChoiceType,"
                         "AestheticChoiceValue,AestheticChoiceType,StyleKeywords,"
-                        "FinalMJPrompt_EN,FinalRunwayPrompt_EN\n"
+                        "FinalMJPrompt_EN,FinalRunwayPrompt_EN,DetailedVisualScript_EN\n"  # <-- ДОБАВЛЕНО ПОЛЕ
                     )
 
                     # --- ОБНОВЛЕННАЯ СТРОКА ДАННЫХ ---
@@ -1065,7 +1131,7 @@ class ContentGenerator:
                         f"{core_choice_value},{core_choice_type_log},"
                         f"{driver_choice_value},{driver_choice_type_log},"
                         f"{aesthetic_choice_value},{aesthetic_choice_type_log},{style_keywords_log},"
-                        f"{final_mj_prompt_en_log},{final_runway_prompt_en_log}\n"
+                        f"{final_mj_prompt_en_log},{final_runway_prompt_en_log},{detailed_visual_script_en_log}\n" # <-- ДОБАВЛЕНО ПОЛЕ
                     )
 
                     # --- Логика скачивания, записи и загрузки CSV (остается прежней, но проверяет новый header) ---
